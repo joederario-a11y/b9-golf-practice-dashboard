@@ -17,7 +17,7 @@ type RuntimeEnv = {
 };
 
 const MATRAT_AI_INSTRUCTIONS = `
-You are MatRat AI, an embedded simulator golf coach for GolfIQ.
+You are MatRat AI, an embedded simulator golf coach for Free Range Golf.
 
 Mission:
 - Simplify launch-monitor data into plain English.
@@ -104,7 +104,7 @@ function normalizeMessages(value: unknown) {
 function stringifyContext(context: unknown) {
   const text = JSON.stringify(context ?? {}, null, 2);
   if (text.length <= 18000) return text;
-  return `${text.slice(0, 18000)}\n[GolfIQ context truncated for length]`;
+  return `${text.slice(0, 18000)}\n[Free Range Golf context truncated for length]`;
 }
 
 function extractOutputText(payload: unknown) {
@@ -140,7 +140,7 @@ export async function POST(request: Request) {
       return Response.json({
         mode: "setup",
         answer:
-          "MatRat AI is wired into GolfIQ and ready for the selected club/session data. Add OPENAI_API_KEY as a Sites runtime secret to turn on live coaching responses.",
+          "MatRat AI is wired into Free Range Golf and ready for the selected club/session data. Add OPENAI_API_KEY as a Sites runtime secret to turn on live coaching responses.",
       });
     }
 
@@ -150,7 +150,7 @@ export async function POST(request: Request) {
       ...messages,
       {
         role: "user",
-        content: `Golfer question: ${question}\n\nGolfIQ session context:\n${context}`,
+        content: `Golfer question: ${question}\n\nFree Range Golf session context:\n${context}`,
       },
     ];
 

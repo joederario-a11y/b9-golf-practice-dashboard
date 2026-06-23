@@ -72,6 +72,10 @@ button {
   padding: 8px 8px 18px;
 }
 
+.brand-lockup > div:last-child {
+  min-width: 0;
+}
+
 .brand-lockup strong,
 .brand-lockup span {
   display: block;
@@ -79,8 +83,9 @@ button {
 
 .brand-lockup strong {
   color: var(--ink);
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 800;
+  line-height: 1.08;
 }
 
 .brand-lockup span {
@@ -88,16 +93,22 @@ button {
   font-size: 12px;
 }
 
-.brand-mark {
+.brand-logo {
   display: grid;
-  width: 42px;
-  height: 42px;
+  flex: 0 0 64px;
+  width: 64px;
+  height: 48px;
   place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--ink);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 900;
+  background: #fff;
+}
+
+.brand-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 .rail-nav {
@@ -469,6 +480,10 @@ button {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.dashboard-grid.comparison-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .split-view {
   grid-template-columns: minmax(320px, 0.45fr) minmax(0, 0.9fr);
 }
@@ -645,6 +660,7 @@ dd {
 .insight-list,
 .metric-matrix,
 .benchmark-list,
+.pro-stat-list,
 .import-mode-grid,
 .connection-grid {
   display: grid;
@@ -679,6 +695,73 @@ dd {
   color: var(--ink);
   font-size: 16px;
   font-weight: 900;
+}
+
+.pro-stat-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 12px;
+}
+
+.pro-stat-card header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 4px 10px;
+}
+
+.pro-stat-card header span,
+.pro-stat-grid span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.pro-stat-card header strong {
+  color: var(--ink);
+  font-size: 24px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.pro-stat-card header small {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.pro-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.pro-stat-grid div {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  padding: 9px;
+}
+
+.pro-stat-grid strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.pro-stat-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.5;
 }
 
 .gap-row {
@@ -1327,6 +1410,7 @@ dd {
 
   .dashboard-grid,
   .dashboard-grid.two-up,
+  .dashboard-grid.comparison-grid,
   .split-view,
   .practice-board,
   .import-grid,

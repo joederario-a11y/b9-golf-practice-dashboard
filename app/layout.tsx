@@ -13,11 +13,11 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "GolfIQ Performance Analytics",
-  description: "Golf simulator session analytics and practice planning.",
+  title: "Free Range Golf",
+  description: "Free Range Golf simulator analytics and practice planning.",
   icons: {
-    icon: "/favicon.svg",
-    shortcut: "/favicon.svg",
+    icon: "/logos/free-range-golf-icon.png",
+    shortcut: "/logos/free-range-golf-icon.png",
   },
 };
 

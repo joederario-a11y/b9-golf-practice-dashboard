@@ -70,6 +70,16 @@ type ClubSummary = {
   quality: number;
 };
 
+type ProTourStats = {
+  carry: number;
+  total: number;
+  ballSpeed: number;
+  clubSpeed: number;
+  launch: number;
+  spin: number;
+  descent: number;
+};
+
 type CoachMessage = {
   id: string;
   role: "user" | "assistant";
@@ -106,6 +116,57 @@ const CLUB_TARGETS: Record<
   GW: { carry: 96, total: 101, ballSpeed: 80, clubSpeed: 60, smash: 1.33, launch: 27, spin: 9100, apex: 39, descent: 52, proximity: 22, spinAxis: 4, faceToPath: 2, sideCarry: 5 },
   SW: { carry: 82, total: 86, ballSpeed: 72, clubSpeed: 56, smash: 1.29, launch: 31, spin: 9800, apex: 33, descent: 54, proximity: 18, spinAxis: 4, faceToPath: 2, sideCarry: 5 },
   LW: { carry: 61, total: 64, ballSpeed: 62, clubSpeed: 50, smash: 1.24, launch: 35, spin: 10300, apex: 27, descent: 56, proximity: 14, spinAxis: 4, faceToPath: 2, sideCarry: 4 },
+};
+
+const PRO_REFERENCE_STATS: Record<string, { pga: ProTourStats; lpga: ProTourStats }> = {
+  Driver: {
+    pga: { carry: 285, total: 303, ballSpeed: 175, clubSpeed: 117, launch: 11, spin: 2700, descent: 37 },
+    lpga: { carry: 221, total: 246, ballSpeed: 140, clubSpeed: 94, launch: 13, spin: 2600, descent: 34 },
+  },
+  "3-Wood": {
+    pga: { carry: 243, total: 262, ballSpeed: 158, clubSpeed: 107, launch: 9, spin: 3650, descent: 39 },
+    lpga: { carry: 195, total: 218, ballSpeed: 132, clubSpeed: 90, launch: 11, spin: 3650, descent: 38 },
+  },
+  "5-Wood": {
+    pga: { carry: 230, total: 247, ballSpeed: 152, clubSpeed: 103, launch: 10, spin: 4350, descent: 42 },
+    lpga: { carry: 185, total: 204, ballSpeed: 128, clubSpeed: 88, launch: 12, spin: 4300, descent: 40 },
+  },
+  "5-Iron": {
+    pga: { carry: 194, total: 208, ballSpeed: 132, clubSpeed: 94, launch: 12, spin: 5360, descent: 45 },
+    lpga: { carry: 161, total: 173, ballSpeed: 104, clubSpeed: 79, launch: 15, spin: 4600, descent: 43 },
+  },
+  "6-Iron": {
+    pga: { carry: 186, total: 198, ballSpeed: 127, clubSpeed: 92, launch: 14, spin: 6230, descent: 47 },
+    lpga: { carry: 152, total: 163, ballSpeed: 104, clubSpeed: 78, launch: 17, spin: 5600, descent: 45 },
+  },
+  "7-Iron": {
+    pga: { carry: 176, total: 186, ballSpeed: 120, clubSpeed: 90, launch: 16, spin: 7100, descent: 50 },
+    lpga: { carry: 145, total: 153, ballSpeed: 96, clubSpeed: 76, launch: 19, spin: 6700, descent: 47 },
+  },
+  "8-Iron": {
+    pga: { carry: 160, total: 169, ballSpeed: 115, clubSpeed: 87, launch: 18, spin: 8000, descent: 51 },
+    lpga: { carry: 130, total: 137, ballSpeed: 92, clubSpeed: 74, launch: 21, spin: 7500, descent: 49 },
+  },
+  "9-Iron": {
+    pga: { carry: 148, total: 156, ballSpeed: 109, clubSpeed: 85, launch: 20, spin: 8650, descent: 52 },
+    lpga: { carry: 119, total: 125, ballSpeed: 86, clubSpeed: 72, launch: 23, spin: 8100, descent: 50 },
+  },
+  PW: {
+    pga: { carry: 136, total: 142, ballSpeed: 102, clubSpeed: 83, launch: 24, spin: 9300, descent: 54 },
+    lpga: { carry: 107, total: 112, ballSpeed: 80, clubSpeed: 70, launch: 26, spin: 8600, descent: 52 },
+  },
+  GW: {
+    pga: { carry: 123, total: 128, ballSpeed: 96, clubSpeed: 79, launch: 27, spin: 9800, descent: 55 },
+    lpga: { carry: 95, total: 99, ballSpeed: 74, clubSpeed: 66, launch: 28, spin: 9000, descent: 53 },
+  },
+  SW: {
+    pga: { carry: 115, total: 119, ballSpeed: 90, clubSpeed: 76, launch: 29, spin: 10300, descent: 56 },
+    lpga: { carry: 82, total: 86, ballSpeed: 68, clubSpeed: 62, launch: 31, spin: 9400, descent: 54 },
+  },
+  LW: {
+    pga: { carry: 95, total: 98, ballSpeed: 78, clubSpeed: 67, launch: 32, spin: 10500, descent: 58 },
+    lpga: { carry: 65, total: 68, ballSpeed: 58, clubSpeed: 55, launch: 34, spin: 9800, descent: 56 },
+  },
 };
 
 const CLUB_ORDER = [
@@ -648,7 +709,7 @@ export default function Home() {
   const [importMessage, setImportMessage] = useState("Demo CSV loaded");
   const [accountMode, setAccountMode] = useState<AccountMode>("pending");
   const [userName, setUserName] = useState<string | null>(null);
-  const [syncStatus, setSyncStatus] = useState("Choose how you want to use GolfIQ.");
+  const [syncStatus, setSyncStatus] = useState("Choose how you want to use Free Range Golf.");
 
   const clubs = useMemo(() => summarizeClubs(sessions), [sessions]);
   const insights = useMemo(() => computeInsights(clubs, sessions), [clubs, sessions]);
@@ -661,6 +722,7 @@ export default function Home() {
   const avgSmash = selectedClubSummary?.smash ?? round(average(allShots.map((shot) => shot.smash)), 2);
   const avgDispersion = selectedClubSummary?.dispersion ?? round(standardDeviation(allShots.map((shot) => shot.offline)));
   const performanceIndex = Math.round(average(clubs.map((club) => club.quality)));
+  const ballCountLabel = `${allShots.length.toLocaleString()} ${allShots.length === 1 ? "ball" : "balls"}`;
   const topInsight = insights[0];
 
   async function saveUserSessions(nextSessions: Session[]) {
@@ -740,11 +802,14 @@ export default function Home() {
 
   return (
     <main className="app-shell">
-      <aside className="rail" aria-label="GolfIQ navigation">
+      <aside className="rail" aria-label="Free Range Golf navigation">
         <div className="brand-lockup">
-          <div className="brand-mark">GIQ</div>
+          <div className="brand-logo">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img alt="Free Range Golf logo" src="/logos/free-range-golf.png" />
+          </div>
           <div>
-            <strong>GolfIQ</strong>
+            <strong>Free Range Golf</strong>
             <span>Sim performance</span>
           </div>
         </div>
@@ -762,8 +827,8 @@ export default function Home() {
           ))}
         </nav>
         <div className="rail-footer">
-          <span>{accountMode === "user" ? "Saved account" : "Data health"}</span>
-          <strong>{allShots.length} shots</strong>
+          <span>Total Balls Struck</span>
+          <strong>{ballCountLabel}</strong>
         </div>
       </aside>
 
@@ -929,7 +994,7 @@ function DashboardView({
         </section>
       )}
 
-      <section className="dashboard-grid two-up">
+      <section className="dashboard-grid comparison-grid">
         <article className="panel">
           <PanelHeader kicker="Selected club detail" title={`${selectedClub} delivery`} meta="Full Swing-style data points" />
           <MetricMatrix summary={selectedClubSummary} />
@@ -937,6 +1002,10 @@ function DashboardView({
         <article className="panel">
           <PanelHeader kicker="Benchmark guide" title={`${selectedClub} windows`} meta="Hover cards use these targets" />
           <BenchmarkList club={selectedClub} />
+        </article>
+        <article className="panel">
+          <PanelHeader kicker="Pro comparison" title={`${selectedClub} tour stats`} meta="PGA + LPGA reference" />
+          <ProStatsList club={selectedClub} />
         </article>
       </section>
 
@@ -1552,6 +1621,48 @@ function BenchmarkList({ club }: { club: string }) {
   );
 }
 
+function ProStatsList({ club }: { club: string }) {
+  const reference = PRO_REFERENCE_STATS[club] ?? PRO_REFERENCE_STATS["7-Iron"];
+  const tours = [
+    { label: "PGA Tour avg", stats: reference.pga },
+    { label: "LPGA Tour avg", stats: reference.lpga },
+  ];
+
+  return (
+    <div className="pro-stat-list">
+      {tours.map(({ label, stats }) => {
+        const rows = [
+          ["Ball speed", `${stats.ballSpeed} mph`],
+          ["Club speed", `${stats.clubSpeed} mph`],
+          ["Launch", `${stats.launch} deg`],
+          ["Spin", `${stats.spin} rpm`],
+          ["Descent", `${stats.descent} deg`],
+          ["Total", `${stats.total} yd`],
+        ];
+
+        return (
+          <article className="pro-stat-card" key={label}>
+            <header>
+              <span>{label}</span>
+              <strong>{stats.carry} yd</strong>
+              <small>carry</small>
+            </header>
+            <div className="pro-stat-grid">
+              {rows.map(([name, value]) => (
+                <div key={name}>
+                  <span>{name}</span>
+                  <strong>{value}</strong>
+                </div>
+              ))}
+            </div>
+          </article>
+        );
+      })}
+      <p className="pro-stat-note">Use these as reference points, not requirements. Speed profile, age, contact, and shot intent all change the right target.</p>
+    </div>
+  );
+}
+
 function AccountGate({
   connectAccount,
   continueAsGuest,
@@ -1565,7 +1676,7 @@ function AccountGate({
     <div className="account-overlay">
       <section className="account-modal">
         <div>
-          <p className="eyebrow">Welcome to GolfIQ</p>
+          <p className="eyebrow">Welcome to Free Range Golf</p>
           <h2>Save sessions or keep it temporary.</h2>
           <span>{syncStatus}</span>
         </div>
