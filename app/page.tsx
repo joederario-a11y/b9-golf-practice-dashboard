@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 
 type Tab = "dashboard" | "sessions" | "clubs" | "coach" | "practice" | "import";
+type AccountMode = "pending" | "user" | "guest";
 
 type Shot = {
   id: string;
@@ -16,6 +17,16 @@ type Shot = {
   spin: number;
   offline: number;
   shape: string;
+  proximity?: number;
+  apex?: number;
+  spinAxis?: number;
+  descent?: number;
+  horizontalAngle?: number;
+  faceAngle?: number;
+  clubPath?: number;
+  faceToPath?: number;
+  sideCarry?: number;
+  sideTotal?: number;
 };
 
 type Session = {
@@ -47,25 +58,48 @@ type ClubSummary = {
   smash: number;
   launch: number;
   spin: number;
+  total: number;
+  ballSpeed: number;
+  clubSpeed: number;
+  proximity: number;
+  apex: number;
+  descent: number;
+  spinAxis: number;
+  faceToPath: number;
+  sideCarry: number;
   quality: number;
 };
 
 const CLUB_TARGETS: Record<
   string,
-  { carry: number; ballSpeed: number; clubSpeed: number; smash: number; launch: number; spin: number }
+  {
+    carry: number;
+    total: number;
+    ballSpeed: number;
+    clubSpeed: number;
+    smash: number;
+    launch: number;
+    spin: number;
+    apex: number;
+    descent: number;
+    proximity: number;
+    spinAxis: number;
+    faceToPath: number;
+    sideCarry: number;
+  }
 > = {
-  Driver: { carry: 238, ballSpeed: 151, clubSpeed: 102, smash: 1.48, launch: 13, spin: 2550 },
-  "3-Wood": { carry: 213, ballSpeed: 139, clubSpeed: 94, smash: 1.48, launch: 13.5, spin: 3300 },
-  "5-Wood": { carry: 196, ballSpeed: 130, clubSpeed: 89, smash: 1.46, launch: 15, spin: 4000 },
-  "5-Iron": { carry: 171, ballSpeed: 118, clubSpeed: 82, smash: 1.44, launch: 17, spin: 5200 },
-  "6-Iron": { carry: 159, ballSpeed: 112, clubSpeed: 78, smash: 1.43, launch: 18, spin: 5800 },
-  "7-Iron": { carry: 148, ballSpeed: 106, clubSpeed: 74, smash: 1.43, launch: 19, spin: 6300 },
-  "8-Iron": { carry: 136, ballSpeed: 99, clubSpeed: 71, smash: 1.39, launch: 21, spin: 7000 },
-  "9-Iron": { carry: 123, ballSpeed: 93, clubSpeed: 68, smash: 1.36, launch: 23, spin: 7800 },
-  PW: { carry: 110, ballSpeed: 87, clubSpeed: 65, smash: 1.34, launch: 25, spin: 8500 },
-  GW: { carry: 96, ballSpeed: 80, clubSpeed: 60, smash: 1.33, launch: 27, spin: 9100 },
-  SW: { carry: 82, ballSpeed: 72, clubSpeed: 56, smash: 1.29, launch: 31, spin: 9800 },
-  LW: { carry: 61, ballSpeed: 62, clubSpeed: 50, smash: 1.24, launch: 35, spin: 10300 },
+  Driver: { carry: 238, total: 264, ballSpeed: 151, clubSpeed: 102, smash: 1.48, launch: 13, spin: 2550, apex: 92, descent: 37, proximity: 70, spinAxis: 4, faceToPath: 2.5, sideCarry: 14 },
+  "3-Wood": { carry: 213, total: 232, ballSpeed: 139, clubSpeed: 94, smash: 1.48, launch: 13.5, spin: 3300, apex: 86, descent: 39, proximity: 58, spinAxis: 4, faceToPath: 2.4, sideCarry: 12 },
+  "5-Wood": { carry: 196, total: 214, ballSpeed: 130, clubSpeed: 89, smash: 1.46, launch: 15, spin: 4000, apex: 84, descent: 41, proximity: 52, spinAxis: 4, faceToPath: 2.2, sideCarry: 11 },
+  "5-Iron": { carry: 171, total: 184, ballSpeed: 118, clubSpeed: 82, smash: 1.44, launch: 17, spin: 5200, apex: 76, descent: 42, proximity: 45, spinAxis: 4, faceToPath: 2, sideCarry: 9 },
+  "6-Iron": { carry: 176, total: 192, ballSpeed: 122, clubSpeed: 86.5, smash: 1.42, launch: 15, spin: 5740, apex: 82, descent: 39, proximity: 60, spinAxis: 3, faceToPath: 3.7, sideCarry: 6 },
+  "7-Iron": { carry: 148, total: 158, ballSpeed: 106, clubSpeed: 74, smash: 1.43, launch: 19, spin: 6300, apex: 64, descent: 44, proximity: 38, spinAxis: 4, faceToPath: 2, sideCarry: 8 },
+  "8-Iron": { carry: 136, total: 145, ballSpeed: 99, clubSpeed: 71, smash: 1.39, launch: 21, spin: 7000, apex: 58, descent: 46, proximity: 34, spinAxis: 4, faceToPath: 2, sideCarry: 7 },
+  "9-Iron": { carry: 123, total: 131, ballSpeed: 93, clubSpeed: 68, smash: 1.36, launch: 23, spin: 7800, apex: 50, descent: 48, proximity: 30, spinAxis: 4, faceToPath: 2, sideCarry: 6 },
+  PW: { carry: 110, total: 116, ballSpeed: 87, clubSpeed: 65, smash: 1.34, launch: 25, spin: 8500, apex: 44, descent: 50, proximity: 26, spinAxis: 4, faceToPath: 2, sideCarry: 6 },
+  GW: { carry: 96, total: 101, ballSpeed: 80, clubSpeed: 60, smash: 1.33, launch: 27, spin: 9100, apex: 39, descent: 52, proximity: 22, spinAxis: 4, faceToPath: 2, sideCarry: 5 },
+  SW: { carry: 82, total: 86, ballSpeed: 72, clubSpeed: 56, smash: 1.29, launch: 31, spin: 9800, apex: 33, descent: 54, proximity: 18, spinAxis: 4, faceToPath: 2, sideCarry: 5 },
+  LW: { carry: 61, total: 64, ballSpeed: 62, clubSpeed: 50, smash: 1.24, launch: 35, spin: 10300, apex: 27, descent: 56, proximity: 14, spinAxis: 4, faceToPath: 2, sideCarry: 4 },
 };
 
 const CLUB_ORDER = [
@@ -92,13 +126,88 @@ const NAV_ITEMS: { id: Tab; label: string; icon: string }[] = [
   { id: "import", label: "Import", icon: "⇧" },
 ];
 
-const DEMO_CSV = `club,carry,ballSpeed,clubSpeed,smash,launch,spin,offline
-Driver,246,154,104,1.48,13.1,2480,8
-Driver,229,148,103,1.44,11.8,3180,-21
-7-Iron,151,107,75,1.43,18.5,6320,5
-7-Iron,139,102,76,1.34,16.2,7040,-16
-PW,111,88,65,1.35,24.8,8720,3
-PW,104,83,64,1.30,23.1,9280,-9`;
+const DEMO_CSV = `club,proximity,carry,total,ballSpeed,clubSpeed,smash,apex,spin,spinAxis,launch,descent,horizontalAngle,faceAngle,clubPath,faceToPath,sideCarry,sideTotal,offline
+6-Iron,59.8,175.9,191.8,122.4,86.5,1.42,81.8,5742,-3,14.9,39.4,2.3,1.5,5.2,-3.7,6.3,6.2,6.2
+6-Iron,51.3,178.7,198.0,122.8,87.5,1.40,77.3,5940,-4,15.4,38.8,2.9,2.1,8.4,-4.3,7.6,7.8,7.8
+6-Iron,50.4,170.6,198.7,122.1,85.8,1.42,53.2,4346,-8,11.5,30.1,2.1,1.0,6.8,-5.7,1.8,0.8,0.8
+6-Iron,53.3,181.1,197.3,124.5,87.4,1.42,78.6,5566,-5,14.3,39.0,2.8,1.9,6.4,-4.5,6.1,6.1,6.1
+6-Iron,54.0,175.9,195.6,122.6,87.2,1.41,67.3,5085,-10,13.3,35.3,0.8,-0.6,6.4,-7.0,-4.7,-6.6,-6.6
+6-Iron,75.3,183.5,194.8,125.9,86.3,1.46,100.2,6493,1,18.4,44.5,5.3,5.0,6.4,-1.4,20.0,21.4,21.4
+6-Iron,37.1,175.5,192.2,121.2,91.2,1.33,75.2,5511,-2,15.6,38.1,1.2,0.6,5.5,-3.2,4.0,4.1,4.1
+6-Iron,50.2,176.2,198.4,122.8,87.4,1.40,66.3,4992,-4,13.1,34.9,2.3,1.5,5.6,-4.2,5.3,5.2,5.2`;
+
+const METRIC_DEFINITIONS: Record<string, { title: string; description: string; benchmark: (club: string) => string }> = {
+  quality: {
+    title: "Performance index",
+    description: "Composite of strike efficiency, dispersion, launch window, and curve control for the selected club.",
+    benchmark: () => "80+ is strong, 70-79 is playable, below 70 needs focused work.",
+  },
+  carry: {
+    title: "Average carry",
+    description: "How far the ball flies before landing. This is the number to use for hazards and approach planning.",
+    benchmark: (club) => `${club} target: ${CLUB_TARGETS[club]?.carry ?? "club"} yd carry.`,
+  },
+  dispersion: {
+    title: "Shot dispersion",
+    description: "Typical left-right spread from the target line. Lower means more fairways, greens, and predictable misses.",
+    benchmark: (club) => `${club} working window: inside ${Math.max(6, CLUB_TARGETS[club]?.sideCarry ?? 12)} yd side carry.`,
+  },
+  smash: {
+    title: "Smash factor",
+    description: "Ball speed divided by club speed. It shows how efficiently your strike transfers energy.",
+    benchmark: (club) => `${club} benchmark: ${CLUB_TARGETS[club]?.smash.toFixed(2) ?? "1.40"} or better.`,
+  },
+  ballSpeed: {
+    title: "Ball speed",
+    description: "Speed of the ball immediately after impact. It is the clearest distance engine.",
+    benchmark: (club) => `${club} target: ${CLUB_TARGETS[club]?.ballSpeed ?? "tracked"} mph.`,
+  },
+  clubSpeed: {
+    title: "Club speed",
+    description: "Club-head speed at impact. Speed matters most when smash factor stays stable.",
+    benchmark: (club) => `${club} target: ${CLUB_TARGETS[club]?.clubSpeed ?? "tracked"} mph.`,
+  },
+  total: {
+    title: "Total distance",
+    description: "Carry plus rollout. Useful for tee shots and run-up approaches, less useful for forced carries.",
+    benchmark: (club) => `${club} reference: ${CLUB_TARGETS[club]?.total ?? "tracked"} yd total.`,
+  },
+  apex: {
+    title: "Apex height",
+    description: "Peak height of the ball flight. Helps explain stopping power and whether shots are ballooning.",
+    benchmark: (club) => `${club} target: around ${CLUB_TARGETS[club]?.apex ?? "tracked"} ft.`,
+  },
+  spin: {
+    title: "Spin rate",
+    description: "Backspin immediately after impact. Too high can balloon; too low can reduce carry and hold.",
+    benchmark: (club) => `${club} target: about ${CLUB_TARGETS[club]?.spin ?? "tracked"} rpm.`,
+  },
+  launch: {
+    title: "Launch angle",
+    description: "Initial vertical launch. It should match the club and speed window.",
+    benchmark: (club) => `${club} target: ${CLUB_TARGETS[club]?.launch ?? "tracked"} degrees.`,
+  },
+  descent: {
+    title: "Descent angle",
+    description: "The landing angle into the turf or green. Steeper descent generally helps approach shots stop.",
+    benchmark: (club) => `${club} target: roughly ${CLUB_TARGETS[club]?.descent ?? "tracked"} degrees.`,
+  },
+  spinAxis: {
+    title: "Spin axis",
+    description: "Tilt of the spin axis. More tilt means more curve left or right.",
+    benchmark: (club) => `${club} goal: within ${CLUB_TARGETS[club]?.spinAxis ?? 4} degrees either way.`,
+  },
+  faceToPath: {
+    title: "Face to path",
+    description: "Relationship between face angle and club path. It is the main curve-control number.",
+    benchmark: (club) => `${club} goal: within ${CLUB_TARGETS[club]?.faceToPath ?? 2} degrees.`,
+  },
+  proximity: {
+    title: "Proximity",
+    description: "Distance from the intended target. It blends distance control and directional control.",
+    benchmark: (club) => `${club} target: under ${CLUB_TARGETS[club]?.proximity ?? "tracked"} ft.`,
+  },
+};
 
 const SHOT_PATTERNS: Record<string, { carryBias: number; offline: number[]; smashBias: number; launchBias: number; spinBias: number }> = {
   Driver: { carryBias: -5, offline: [18, -24, 10, 6, -16, 26, 4, -7, 13, -20, 9, 18], smashBias: -0.02, launchBias: -1.1, spinBias: 420 },
@@ -126,12 +235,13 @@ function makeShot(sessionId: string, club: string, index: number, shift: number)
   const smash = Math.max(1.18, Math.min(1.51, target.smash + pattern.smashBias + rhythm));
   const launch = target.launch + pattern.launchBias + ((index % 5) - 2) * 0.55;
   const spin = target.spin + pattern.spinBias + ((index % 6) - 2.5) * 115;
+  const faceToPath = round(((direction / 7) % 6) - 2, 1);
 
   return {
     id: `${sessionId}-${club}-${index}`,
     club,
     carry: round(carry),
-    total: round(carry * (club === "Driver" ? 1.11 : 1.04)),
+    total: round(carry * (club === "Driver" ? 1.11 : 1.08)),
     ballSpeed: round(ballSpeed),
     clubSpeed: round(clubSpeed),
     smash: round(smash, 2),
@@ -139,6 +249,16 @@ function makeShot(sessionId: string, club: string, index: number, shift: number)
     spin: Math.round(spin),
     offline: round(direction),
     shape: direction < -15 ? "Pull" : direction < -6 ? "Draw" : direction > 15 ? "Slice" : direction > 6 ? "Fade" : "Straight",
+    proximity: round(Math.abs(direction) * 2.2 + Math.abs(carry - target.carry) * 0.8 + 12),
+    apex: round(target.apex + ((index % 6) - 2.5) * 3.8 + shift * 0.5),
+    spinAxis: round(direction / 3.2),
+    descent: round(target.descent + ((index % 5) - 2) * 1.4),
+    horizontalAngle: round(direction / 3.4),
+    faceAngle: round(direction / 6.8),
+    clubPath: round(direction / 4.1 + 3),
+    faceToPath,
+    sideCarry: round(direction * 0.74),
+    sideTotal: round(direction * 0.78),
   };
 }
 
@@ -151,7 +271,73 @@ function makeSession(id: string, title: string, date: string, source: string, fo
   return { id, title, date, source, focus, shots };
 }
 
+function makeFullSwingSession(): Session {
+  const rows = [
+    [51.3, 178.7, 198.0, 122.8, 87.5, 1.4, 77.3, 5940, -4, 15.4, 38.8, 2.9, 2.1, 8.4, -4.3, 7.6, 7.8],
+    [50.4, 170.6, 198.7, 122.1, 85.8, 1.42, 53.2, 4346, -8, 11.5, 30.1, 2.1, 1.0, 6.8, -5.7, 1.8, 0.8],
+    [53.3, 181.1, 197.3, 124.5, 87.4, 1.42, 78.6, 5566, -5, 14.3, 39.0, 2.8, 1.9, 6.4, -4.5, 6.1, 6.1],
+    [54.0, 175.9, 195.6, 122.6, 87.2, 1.41, 67.3, 5085, -10, 13.3, 35.3, 0.8, -0.6, 6.4, -7.0, -4.7, -6.6],
+    [75.3, 183.5, 194.8, 125.9, 86.3, 1.46, 100.2, 6493, 1, 18.4, 44.5, 5.3, 5.0, 6.4, -1.4, 20.0, 21.4],
+    [37.1, 175.5, 192.2, 121.2, 91.2, 1.33, 75.2, 5511, -2, 15.6, 38.1, 1.2, 0.6, 5.5, -3.2, 4.0, 4.1],
+    [50.2, 176.2, 198.4, 122.8, 87.4, 1.4, 66.3, 4992, -4, 13.1, 34.9, 2.3, 1.5, 5.6, -4.2, 5.3, 5.2],
+  ];
+
+  return {
+    id: "fullswing-6iron-photo",
+    title: "Full Swing 6-Iron photo import",
+    date: "2026-06-23",
+    source: "Full Swing Photo",
+    focus: "6-Iron shot history",
+    shots: rows.map((row, index) => {
+      const [
+        proximity,
+        carry,
+        total,
+        ballSpeed,
+        clubSpeed,
+        smash,
+        apex,
+        spin,
+        spinAxis,
+        launch,
+        descent,
+        horizontalAngle,
+        faceAngle,
+        clubPath,
+        faceToPath,
+        sideCarry,
+        sideTotal,
+      ] = row;
+
+      return {
+        id: `fullswing-6i-${index + 1}`,
+        club: "6-Iron",
+        proximity,
+        carry,
+        total,
+        ballSpeed,
+        clubSpeed,
+        smash,
+        apex,
+        spin,
+        spinAxis,
+        launch,
+        descent,
+        horizontalAngle,
+        faceAngle,
+        clubPath,
+        faceToPath,
+        sideCarry,
+        sideTotal,
+        offline: sideTotal,
+        shape: sideTotal < -6 ? "Draw" : sideTotal > 6 ? "Fade" : "Straight",
+      };
+    }),
+  };
+}
+
 const BASE_SESSIONS: Session[] = [
+  makeFullSwingSession(),
   makeSession("s1", "Driver start-line block", "2026-06-22", "TrackMan", "Tee accuracy", ["Driver", "3-Wood"], 4),
   makeSession("s2", "Approach ladder", "2026-06-18", "Foresight GCQuad", "Carry windows", ["5-Iron", "6-Iron", "7-Iron", "8-Iron"], 2),
   makeSession("s3", "Wedge matrix", "2026-06-14", "SkyTrak", "Distance control", ["PW", "GW", "SW", "LW"], -1),
@@ -173,6 +359,14 @@ function standardDeviation(values: number[]) {
   if (values.length < 2) return 0;
   const mean = average(values);
   return Math.sqrt(average(values.map((value) => (value - mean) ** 2)));
+}
+
+function averageMetric(shots: Shot[], key: keyof Shot) {
+  return average(
+    shots
+      .map((shot) => shot[key])
+      .filter((value): value is number => typeof value === "number" && Number.isFinite(value)),
+  );
 }
 
 function formatDate(value: string) {
@@ -197,9 +391,19 @@ function summarizeClubs(sessions: Session[]): ClubSummary[] {
     const smash = average(shots.map((shot) => shot.smash));
     const launch = average(shots.map((shot) => shot.launch));
     const spin = average(shots.map((shot) => shot.spin));
+    const total = average(shots.map((shot) => shot.total));
+    const ballSpeed = average(shots.map((shot) => shot.ballSpeed));
+    const clubSpeed = average(shots.map((shot) => shot.clubSpeed));
+    const proximity = averageMetric(shots, "proximity");
+    const apex = averageMetric(shots, "apex");
+    const descent = averageMetric(shots, "descent");
+    const spinAxis = averageMetric(shots, "spinAxis");
+    const faceToPath = averageMetric(shots, "faceToPath");
+    const sideCarry = averageMetric(shots, "sideCarry");
     const strikeScore = Math.max(0, 100 - Math.abs((target?.smash ?? 1.4) - smash) * 450);
     const dispersionScore = Math.max(0, 100 - dispersion * 3.4);
     const launchScore = Math.max(0, 100 - Math.abs((target?.launch ?? launch) - launch) * 7);
+    const curveScore = Math.max(0, 100 - Math.abs(faceToPath) * 7);
 
     return {
       club,
@@ -209,7 +413,16 @@ function summarizeClubs(sessions: Session[]): ClubSummary[] {
       smash: round(smash, 2),
       launch: round(launch),
       spin: Math.round(spin),
-      quality: Math.round(average([strikeScore, dispersionScore, launchScore])),
+      total: round(total),
+      ballSpeed: round(ballSpeed),
+      clubSpeed: round(clubSpeed),
+      proximity: round(proximity),
+      apex: round(apex),
+      descent: round(descent),
+      spinAxis: round(spinAxis),
+      faceToPath: round(faceToPath),
+      sideCarry: round(sideCarry),
+      quality: Math.round(average([strikeScore, dispersionScore, launchScore, curveScore])),
     };
   });
 }
@@ -300,33 +513,46 @@ function computeInsights(clubs: ClubSummary[], sessions: Session[]): Insight[] {
 function parseCsv(text: string): Shot[] {
   const rows = text.trim().split(/\r?\n/).filter(Boolean);
   if (rows.length < 2) return [];
-  const headers = rows[0].split(",").map((header) => header.trim().toLowerCase());
-  const read = (cells: string[], name: string, fallback = 0) => {
-    const index = headers.indexOf(name.toLowerCase());
-    if (index < 0) return fallback;
+  const normalize = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  const headers = rows[0].split(",").map((header) => normalize(header));
+  const read = (cells: string[], names: string[], fallback = 0) => {
+    const index = names.map(normalize).map((name) => headers.indexOf(name)).find((match) => match >= 0);
+    if (index === undefined || index < 0) return fallback;
     const parsed = Number(cells[index]);
     return Number.isFinite(parsed) ? parsed : fallback;
   };
 
   return rows.slice(1).map((row, index) => {
     const cells = row.split(",").map((cell) => cell.trim());
-    const club = cells[headers.indexOf("club")] || "7-Iron";
+    const clubIndex = headers.indexOf("club");
+    const club = clubIndex >= 0 ? cells[clubIndex] || "7-Iron" : "7-Iron";
     const target = CLUB_TARGETS[club] ?? CLUB_TARGETS["7-Iron"];
-    const clubSpeed = read(cells, "clubspeed", target.clubSpeed);
-    const ballSpeed = read(cells, "ballspeed", target.ballSpeed);
-    const offline = read(cells, "offline", 0);
+    const clubSpeed = read(cells, ["clubSpeed", "club speed", "club speed mph"], target.clubSpeed);
+    const ballSpeed = read(cells, ["ballSpeed", "ball speed", "ball speed mph"], target.ballSpeed);
+    const sideTotal = read(cells, ["sideTotal", "side total", "side total yards"], 0);
+    const offline = read(cells, ["offline", "side", "side total", "side total yards"], sideTotal);
 
     return {
       id: `csv-${Date.now()}-${index}`,
       club,
-      carry: read(cells, "carry", target.carry),
-      total: read(cells, "total", read(cells, "carry", target.carry) * 1.04),
+      carry: read(cells, ["carry", "carry yards"], target.carry),
+      total: read(cells, ["total", "total yards"], read(cells, ["carry", "carry yards"], target.carry) * 1.04),
       ballSpeed,
       clubSpeed,
-      smash: read(cells, "smash", ballSpeed / clubSpeed),
-      launch: read(cells, "launch", target.launch),
-      spin: Math.round(read(cells, "spin", target.spin)),
+      smash: read(cells, ["smash", "smash factor"], ballSpeed / clubSpeed),
+      launch: read(cells, ["launch", "launch angle"], target.launch),
+      spin: Math.round(read(cells, ["spin", "spin rate", "spin rate rpm"], target.spin)),
       offline,
+      proximity: read(cells, ["proximity", "proximity feet"], target.proximity),
+      apex: read(cells, ["apex", "apex feet"], target.apex),
+      spinAxis: read(cells, ["spinAxis", "spin axis"], 0),
+      descent: read(cells, ["descent", "descent angle"], target.descent),
+      horizontalAngle: read(cells, ["horizontalAngle", "horiz angle", "horizontal angle"], 0),
+      faceAngle: read(cells, ["faceAngle", "face angle"], 0),
+      clubPath: read(cells, ["clubPath", "club path"], 0),
+      faceToPath: read(cells, ["faceToPath", "face to path"], 0),
+      sideCarry: read(cells, ["sideCarry", "side carry", "side carry yards"], offline),
+      sideTotal: sideTotal || offline,
       shape: offline < -12 ? "Draw" : offline > 12 ? "Fade" : "Straight",
     };
   });
@@ -352,18 +578,84 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
   const [sessions, setSessions] = useState<Session[]>(BASE_SESSIONS);
   const [selectedSessionId, setSelectedSessionId] = useState(BASE_SESSIONS[0].id);
+  const [selectedClub, setSelectedClub] = useState("6-Iron");
   const [csvText, setCsvText] = useState(DEMO_CSV);
   const [importMessage, setImportMessage] = useState("Demo CSV loaded");
+  const [accountMode, setAccountMode] = useState<AccountMode>("pending");
+  const [userName, setUserName] = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState("Choose how you want to use GolfIQ.");
 
   const clubs = useMemo(() => summarizeClubs(sessions), [sessions]);
   const insights = useMemo(() => computeInsights(clubs, sessions), [clubs, sessions]);
   const allShots = useMemo(() => sessions.flatMap((session) => session.shots), [sessions]);
   const selectedSession = sessions.find((session) => session.id === selectedSessionId) ?? sessions[0];
-  const avgCarry = round(average(allShots.map((shot) => shot.carry)));
-  const avgSmash = round(average(allShots.map((shot) => shot.smash)), 2);
-  const avgDispersion = round(standardDeviation(allShots.map((shot) => shot.offline)));
+  const selectedClubSummary = clubs.find((club) => club.club === selectedClub) ?? clubs[0];
+  const activeClub = selectedClubSummary?.club ?? selectedClub;
+  const selectedClubShots = allShots.filter((shot) => shot.club === activeClub);
+  const avgCarry = selectedClubSummary?.carry ?? round(average(allShots.map((shot) => shot.carry)));
+  const avgSmash = selectedClubSummary?.smash ?? round(average(allShots.map((shot) => shot.smash)), 2);
+  const avgDispersion = selectedClubSummary?.dispersion ?? round(standardDeviation(allShots.map((shot) => shot.offline)));
   const performanceIndex = Math.round(average(clubs.map((club) => club.quality)));
   const topInsight = insights[0];
+
+  async function saveUserSessions(nextSessions: Session[]) {
+    if (accountMode !== "user") return;
+
+    try {
+      const response = await fetch("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessions: nextSessions }),
+      });
+
+      if (!response.ok) {
+        setSyncStatus("Could not save this update.");
+        return;
+      }
+
+      setSyncStatus("Saved to your account.");
+    } catch {
+      setSyncStatus("Could not save this update.");
+    }
+  }
+
+  async function connectAccount() {
+    setSyncStatus("Checking your account...");
+    try {
+      const response = await fetch("/api/sessions");
+      const payload = await response.json();
+
+      if (payload.mode !== "user") {
+        setAccountMode("guest");
+        setSyncStatus("Using guest mode. Sign-in headers were not available.");
+        return;
+      }
+
+      const savedSessions = Array.isArray(payload.sessions) && payload.sessions.length ? payload.sessions : sessions;
+      setAccountMode("user");
+      setUserName(payload.user?.displayName ?? payload.user?.email ?? "Signed-in golfer");
+      setSessions(savedSessions);
+      setSelectedSessionId(savedSessions[0]?.id ?? BASE_SESSIONS[0].id);
+      setSelectedClub(savedSessions[0]?.shots?.[0]?.club ?? "6-Iron");
+      setSyncStatus(payload.sessions?.length ? "Loaded your saved sessions." : "Signed in. Demo sessions saved on first import.");
+
+      if (!payload.sessions?.length) {
+        await fetch("/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessions }),
+        });
+      }
+    } catch {
+      setAccountMode("guest");
+      setSyncStatus("Using guest mode. Saved history is unavailable right now.");
+    }
+  }
+
+  function continueAsGuest() {
+    setAccountMode("guest");
+    setSyncStatus("Guest mode: session changes stay in this browser tab.");
+  }
 
   function importCsv() {
     const shots = parseCsv(csvText);
@@ -372,10 +664,13 @@ export default function Home() {
       return;
     }
     const nextSession = buildImportedSession(shots);
-    setSessions((current) => [nextSession, ...current]);
+    const nextSessions = [nextSession, ...sessions];
+    setSessions(nextSessions);
     setSelectedSessionId(nextSession.id);
+    setSelectedClub(shots[0]?.club ?? selectedClub);
     setActiveTab("dashboard");
     setImportMessage(`${shots.length} shots imported`);
+    void saveUserSessions(nextSessions);
   }
 
   return (
@@ -402,7 +697,7 @@ export default function Home() {
           ))}
         </nav>
         <div className="rail-footer">
-          <span>Data health</span>
+          <span>{accountMode === "user" ? "Saved account" : "Data health"}</span>
           <strong>{allShots.length} shots</strong>
         </div>
       </aside>
@@ -414,6 +709,15 @@ export default function Home() {
             <h1>{NAV_ITEMS.find((item) => item.id === activeTab)?.label}</h1>
           </div>
           <div className="topbar-actions" aria-label="Session controls">
+            <div className={cls("account-pill", accountMode)}>
+              <span>{accountMode === "user" ? "Saved" : accountMode === "guest" ? "Guest" : "Not set"}</span>
+              <strong>{accountMode === "user" ? userName : syncStatus}</strong>
+            </div>
+            {accountMode !== "user" && (
+              <button className="secondary-action" onClick={connectAccount}>
+                Log in
+              </button>
+            )}
             <button className="icon-button" title="Refresh analysis" onClick={() => setSessions([...sessions])}>
               ↻
             </button>
@@ -432,11 +736,15 @@ export default function Home() {
             clubs={clubs}
             insights={insights}
             performanceIndex={performanceIndex}
+            selectedClub={activeClub}
+            selectedClubShots={selectedClubShots}
+            selectedClubSummary={selectedClubSummary}
             selectedSession={selectedSession}
             sessions={sessions}
             shots={allShots}
             topInsight={topInsight}
             setActiveTab={setActiveTab}
+            setSelectedClub={setSelectedClub}
           />
         )}
 
@@ -450,7 +758,7 @@ export default function Home() {
           />
         )}
 
-        {activeTab === "clubs" && <ClubsView clubs={clubs} />}
+        {activeTab === "clubs" && <ClubsView clubs={clubs} selectedClub={activeClub} setSelectedClub={setSelectedClub} />}
 
         {activeTab === "coach" && <CoachView insights={insights} />}
 
@@ -465,6 +773,10 @@ export default function Home() {
           />
         )}
       </section>
+
+      {accountMode === "pending" && (
+        <AccountGate connectAccount={connectAccount} continueAsGuest={continueAsGuest} syncStatus={syncStatus} />
+      )}
     </main>
   );
 }
@@ -476,9 +788,13 @@ function DashboardView({
   clubs,
   insights,
   performanceIndex,
+  selectedClub,
+  selectedClubShots,
+  selectedClubSummary,
   selectedSession,
   sessions,
   setActiveTab,
+  setSelectedClub,
   shots,
   topInsight,
 }: {
@@ -488,19 +804,65 @@ function DashboardView({
   clubs: ClubSummary[];
   insights: Insight[];
   performanceIndex: number;
+  selectedClub: string;
+  selectedClubShots: Shot[];
+  selectedClubSummary?: ClubSummary;
   selectedSession: Session;
   sessions: Session[];
   shots: Shot[];
   topInsight?: Insight;
   setActiveTab: (tab: Tab) => void;
+  setSelectedClub: (club: string) => void;
 }) {
   return (
     <div className="view-stack">
+      <section className="control-strip">
+        <div>
+          <p className="eyebrow">Club selection</p>
+          <h2>{selectedClub} view</h2>
+          <span>{selectedClubShots.length} shots matched to this club</span>
+        </div>
+        <label className="select-control">
+          <span>Club</span>
+          <select value={selectedClub} onChange={(event) => setSelectedClub(event.target.value)}>
+            {clubs.map((club) => (
+              <option key={club.club} value={club.club}>
+                {club.club}
+              </option>
+            ))}
+          </select>
+        </label>
+      </section>
+
       <section className="metric-grid">
-        <Kpi label="Performance index" value={performanceIndex} unit="/100" tone="green" />
-        <Kpi label="Average carry" value={avgCarry} unit="yd" tone="blue" />
-        <Kpi label="Shot dispersion" value={`±${avgDispersion}`} unit="yd" tone="amber" />
-        <Kpi label="Smash factor" value={avgSmash.toFixed(2)} unit="avg" tone="coral" />
+        <Kpi club={selectedClub} label="Performance index" metricKey="quality" value={selectedClubSummary?.quality ?? performanceIndex} unit="/100" tone="green" />
+        <Kpi club={selectedClub} label="Average carry" metricKey="carry" value={avgCarry} unit="yd" tone="blue" />
+        <Kpi club={selectedClub} label="Shot dispersion" metricKey="dispersion" value={`±${avgDispersion}`} unit="yd" tone="amber" />
+        <Kpi club={selectedClub} label="Smash factor" metricKey="smash" value={avgSmash.toFixed(2)} unit="avg" tone="coral" />
+      </section>
+
+      {selectedClubSummary && (
+        <section className="metric-grid detail-grid">
+          <Kpi club={selectedClub} label="Ball speed" metricKey="ballSpeed" value={selectedClubSummary.ballSpeed} unit="mph" tone="blue" />
+          <Kpi club={selectedClub} label="Club speed" metricKey="clubSpeed" value={selectedClubSummary.clubSpeed} unit="mph" tone="green" />
+          <Kpi club={selectedClub} label="Total distance" metricKey="total" value={selectedClubSummary.total} unit="yd" tone="amber" />
+          <Kpi club={selectedClub} label="Apex height" metricKey="apex" value={selectedClubSummary.apex} unit="ft" tone="blue" />
+          <Kpi club={selectedClub} label="Spin rate" metricKey="spin" value={selectedClubSummary.spin} unit="rpm" tone="coral" />
+          <Kpi club={selectedClub} label="Launch angle" metricKey="launch" value={selectedClubSummary.launch} unit="deg" tone="green" />
+          <Kpi club={selectedClub} label="Descent angle" metricKey="descent" value={selectedClubSummary.descent} unit="deg" tone="amber" />
+          <Kpi club={selectedClub} label="Face to path" metricKey="faceToPath" value={selectedClubSummary.faceToPath} unit="deg" tone="coral" />
+        </section>
+      )}
+
+      <section className="dashboard-grid two-up">
+        <article className="panel">
+          <PanelHeader kicker="Selected club detail" title={`${selectedClub} delivery`} meta="Full Swing-style data points" />
+          <MetricMatrix summary={selectedClubSummary} />
+        </article>
+        <article className="panel">
+          <PanelHeader kicker="Benchmark guide" title={`${selectedClub} windows`} meta="Hover cards use these targets" />
+          <BenchmarkList club={selectedClub} />
+        </article>
       </section>
 
       <section className="dashboard-grid">
@@ -634,9 +996,27 @@ function SessionsView({
   );
 }
 
-function ClubsView({ clubs }: { clubs: ClubSummary[] }) {
+function ClubsView({ clubs, selectedClub, setSelectedClub }: { clubs: ClubSummary[]; selectedClub: string; setSelectedClub: (club: string) => void }) {
   return (
     <div className="view-stack">
+      <section className="control-strip">
+        <div>
+          <p className="eyebrow">Club filter</p>
+          <h2>{selectedClub} selected</h2>
+          <span>Choose a club to keep the dashboard benchmarks in sync.</span>
+        </div>
+        <label className="select-control">
+          <span>Club</span>
+          <select value={selectedClub} onChange={(event) => setSelectedClub(event.target.value)}>
+            {clubs.map((club) => (
+              <option key={club.club} value={club.club}>
+                {club.club}
+              </option>
+            ))}
+          </select>
+        </label>
+      </section>
+
       <section className="panel">
         <PanelHeader kicker="Bag map" title="Club-by-club performance" meta={`${clubs.length} active clubs`} />
         <div className="club-table">
@@ -644,9 +1024,13 @@ function ClubsView({ clubs }: { clubs: ClubSummary[] }) {
             <span>Club</span>
             <span>Shots</span>
             <span>Carry</span>
+            <span>Total</span>
             <span>Gap</span>
+            <span>Ball speed</span>
+            <span>Club speed</span>
             <span>Dispersion</span>
             <span>Launch</span>
+            <span>Apex</span>
             <span>Spin</span>
             <span>Quality</span>
           </div>
@@ -654,13 +1038,17 @@ function ClubsView({ clubs }: { clubs: ClubSummary[] }) {
             const nextClub = clubs[index + 1];
             const gap = nextClub ? round(club.carry - nextClub.carry) : null;
             return (
-              <div className="table-row" key={club.club}>
+              <div className={cls("table-row", club.club === selectedClub && "selected-row")} key={club.club}>
                 <span>{club.club}</span>
                 <span>{club.shots}</span>
                 <span>{club.carry} yd</span>
+                <span>{club.total} yd</span>
                 <span className={cls(gap !== null && (gap < 8 || gap > 18) && "warning-text")}>{gap ? `${gap} yd` : "—"}</span>
+                <span>{club.ballSpeed} mph</span>
+                <span>{club.clubSpeed} mph</span>
                 <span>±{club.dispersion}</span>
                 <span>{club.launch}°</span>
+                <span>{club.apex} ft</span>
                 <span>{club.spin}</span>
                 <span>
                   <QualityPill score={club.quality} />
@@ -766,49 +1154,195 @@ function ImportView({
   importMessage: string;
   setCsvText: (value: string) => void;
 }) {
+  const [importMode, setImportMode] = useState<"api" | "file" | "photo">("file");
+
   return (
     <section className="import-grid">
       <div className="panel panel-large">
-        <PanelHeader kicker="CSV" title="Simulator data import" meta={importMessage} />
-        <textarea
-          className="csv-input"
-          value={csvText}
-          onChange={(event) => setCsvText(event.target.value)}
-          spellCheck={false}
-        />
-        <div className="button-row">
-          <button className="secondary-action" onClick={() => setCsvText(DEMO_CSV)}>Load demo rows</button>
-          <button className="primary-action" onClick={importCsv}>
-            <span>⇧</span>
-            Analyze rows
-          </button>
-        </div>
-      </div>
-
-      <div className="panel">
-        <PanelHeader kicker="Sources" title="Sim platforms" meta="Ready mappings" />
-        <div className="source-grid">
-          {["TrackMan", "Foresight GCQuad", "Mevo+", "SkyTrak", "Full Swing", "Manual"].map((source) => (
-            <button className="source-tile" key={source}>
-              <span>{source.slice(0, 2).toUpperCase()}</span>
-              <strong>{source}</strong>
+        <PanelHeader kicker="Import" title="Add simulator data" meta={importMessage} />
+        <div className="import-mode-grid">
+          {[
+            { id: "api", label: "API feed", body: "Connect TrackMan, Full Swing, GCQuad, SkyTrak, or Mevo+." },
+            { id: "file", label: "CSV / Excel", body: "Paste exported rows or upload a file from your simulator." },
+            { id: "photo", label: "Session photos", body: "Upload screenshots like your Full Swing shot-history screens." },
+          ].map((mode) => (
+            <button
+              className={cls("import-mode", importMode === mode.id && "active")}
+              key={mode.id}
+              onClick={() => setImportMode(mode.id as "api" | "file" | "photo")}
+            >
+              <strong>{mode.label}</strong>
+              <span>{mode.body}</span>
             </button>
           ))}
         </div>
+
+        {importMode === "api" && (
+          <div className="import-panel">
+            <div className="connection-grid">
+              {["Full Swing", "TrackMan", "Foresight GCQuad", "SkyTrak", "Mevo+"].map((source) => (
+                <button className="source-tile" key={source}>
+                  <span>{source.slice(0, 2).toUpperCase()}</span>
+                  <strong>{source}</strong>
+                </button>
+              ))}
+            </div>
+            <p className="muted-copy">API feed is staged as a connection path; imported sessions will save automatically after sign-in.</p>
+          </div>
+        )}
+
+        {importMode === "file" && (
+          <div className="import-panel">
+            <input className="file-input" type="file" accept=".csv,.xlsx,.xls" />
+            <textarea
+              className="csv-input"
+              value={csvText}
+              onChange={(event) => setCsvText(event.target.value)}
+              spellCheck={false}
+            />
+            <div className="button-row">
+              <button className="secondary-action" onClick={() => setCsvText(DEMO_CSV)}>Load Full Swing demo rows</button>
+              <button className="primary-action" onClick={importCsv}>
+                <span>⇧</span>
+                Analyze rows
+              </button>
+            </div>
+          </div>
+        )}
+
+        {importMode === "photo" && (
+          <div className="import-panel">
+            <input className="file-input" type="file" accept="image/*" multiple />
+            <div className="photo-drop">
+              <strong>Photo scan ready</strong>
+              <span>Upload shot-history or shot-dispersion screenshots. The current Full Swing sample maps proximity, carry, total, ball speed, club speed, smash, apex, spin, spin axis, launch, descent, face angle, club path, face-to-path, side carry, and side total.</span>
+            </div>
+            <div className="button-row">
+              <button className="primary-action" onClick={importCsv}>Use Full Swing sample</button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="panel">
+        <PanelHeader kicker="Mapped fields" title="Full Swing data included" meta="From your photos" />
+        <BenchmarkList club="6-Iron" />
       </div>
     </section>
   );
 }
 
-function Kpi({ label, value, unit, tone }: { label: string; value: number | string; unit: string; tone: "green" | "blue" | "amber" | "coral" }) {
+function Kpi({
+  club,
+  label,
+  metricKey,
+  value,
+  unit,
+  tone,
+}: {
+  club: string;
+  label: string;
+  metricKey: string;
+  value: number | string;
+  unit: string;
+  tone: "green" | "blue" | "amber" | "coral";
+}) {
+  const definition = METRIC_DEFINITIONS[metricKey];
+
   return (
-    <article className={cls("kpi", tone)}>
+    <article className={cls("kpi", tone)} tabIndex={0}>
       <span>{label}</span>
       <strong>
         {value}
         <small>{unit}</small>
       </strong>
+      {definition && (
+        <div className="metric-tooltip" role="tooltip">
+          <b>{definition.title}</b>
+          <p>{definition.description}</p>
+          <em>{definition.benchmark(club)}</em>
+        </div>
+      )}
     </article>
+  );
+}
+
+function MetricMatrix({ summary }: { summary?: ClubSummary }) {
+  if (!summary) return <EmptyState title="No club selected" body="Choose a club to inspect its delivery numbers." />;
+
+  const rows = [
+    ["Proximity", `${summary.proximity} ft`],
+    ["Spin axis", `${summary.spinAxis} deg`],
+    ["Side carry", `${summary.sideCarry} yd`],
+    ["Face to path", `${summary.faceToPath} deg`],
+    ["Apex", `${summary.apex} ft`],
+    ["Descent", `${summary.descent} deg`],
+  ];
+
+  return (
+    <div className="metric-matrix">
+      {rows.map(([label, value]) => (
+        <div key={label}>
+          <span>{label}</span>
+          <strong>{value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function BenchmarkList({ club }: { club: string }) {
+  const target = CLUB_TARGETS[club] ?? CLUB_TARGETS["7-Iron"];
+  const rows = [
+    ["Carry", `${target.carry} yd`],
+    ["Ball speed", `${target.ballSpeed} mph`],
+    ["Club speed", `${target.clubSpeed} mph`],
+    ["Launch", `${target.launch} deg`],
+    ["Spin", `${target.spin} rpm`],
+    ["Descent", `${target.descent} deg`],
+  ];
+
+  return (
+    <div className="benchmark-list">
+      {rows.map(([label, value]) => (
+        <div key={label}>
+          <span>{label}</span>
+          <strong>{value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AccountGate({
+  connectAccount,
+  continueAsGuest,
+  syncStatus,
+}: {
+  connectAccount: () => void;
+  continueAsGuest: () => void;
+  syncStatus: string;
+}) {
+  return (
+    <div className="account-overlay">
+      <section className="account-modal">
+        <div>
+          <p className="eyebrow">Welcome to GolfIQ</p>
+          <h2>Save sessions or keep it temporary.</h2>
+          <span>{syncStatus}</span>
+        </div>
+        <div className="account-choice-grid">
+          <button className="account-choice primary-choice" onClick={connectAccount}>
+            <strong>Log in and save history</strong>
+            <span>Use your signed-in workspace account to keep previous simulator sessions.</span>
+          </button>
+          <button className="account-choice" onClick={continueAsGuest}>
+            <strong>Continue as guest</strong>
+            <span>Explore the dashboard without saving data after you leave.</span>
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 
