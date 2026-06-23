@@ -142,6 +142,14 @@ const DEMO_CSV = `club,proximity,carry,total,ballSpeed,clubSpeed,smash,apex,spin
 6-Iron,37.1,175.5,192.2,121.2,91.2,1.33,75.2,5511,-2,15.6,38.1,1.2,0.6,5.5,-3.2,4.0,4.1,4.1
 6-Iron,50.2,176.2,198.4,122.8,87.4,1.40,66.3,4992,-4,13.1,34.9,2.3,1.5,5.6,-4.2,5.3,5.2,5.2`;
 
+const SIMULATOR_SOURCES = [
+  { label: "Full Swing", logo: "/logos/full-swing.png", tone: "dark" },
+  { label: "TrackMan", logo: "/logos/trackman.svg", tone: "dark" },
+  { label: "Foresight GCQuad", logo: "/logos/foresight-sports.png", tone: "dark" },
+  { label: "SkyTrak", logo: "/logos/skytrak.png", tone: "light" },
+  { label: "FlightScope Mevo+", logo: "/logos/flightscope.png", tone: "dark" },
+];
+
 const METRIC_DEFINITIONS: Record<string, { title: string; description: string; benchmark: (club: string) => string }> = {
   quality: {
     title: "Performance index",
@@ -1407,10 +1415,13 @@ function ImportView({
         {importMode === "api" && (
           <div className="import-panel">
             <div className="connection-grid">
-              {["Full Swing", "TrackMan", "Foresight GCQuad", "SkyTrak", "Mevo+"].map((source) => (
-                <button className="source-tile" key={source}>
-                  <span>{source.slice(0, 2).toUpperCase()}</span>
-                  <strong>{source}</strong>
+              {SIMULATOR_SOURCES.map((source) => (
+                <button className={cls("source-tile", source.tone === "dark" && "dark-logo")} key={source.label}>
+                  <span className="source-logo">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img alt={`${source.label} logo`} src={source.logo} />
+                  </span>
+                  <strong>{source.label}</strong>
                 </button>
               ))}
             </div>
