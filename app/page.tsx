@@ -70,6 +70,12 @@ type ClubSummary = {
   quality: number;
 };
 
+type CoachMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+};
+
 const CLUB_TARGETS: Record<
   string,
   {
@@ -574,6 +580,57 @@ function cls(...classes: Array<string | false | undefined>) {
   return classes.filter(Boolean).join(" ");
 }
 
+function makeCoachMessage(role: CoachMessage["role"], content: string): CoachMessage {
+  return {
+    id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    role,
+    content,
+  };
+}
+
+function compactShot(shot: Shot) {
+  return {
+    club: shot.club,
+    carry: shot.carry,
+    total: shot.total,
+    ballSpeed: shot.ballSpeed,
+    clubSpeed: shot.clubSpeed,
+    smash: shot.smash,
+    launch: shot.launch,
+    spin: shot.spin,
+    spinAxis: shot.spinAxis,
+    faceAngle: shot.faceAngle,
+    clubPath: shot.clubPath,
+    faceToPath: shot.faceToPath,
+    sideCarry: shot.sideCarry,
+    sideTotal: shot.sideTotal,
+    offline: shot.offline,
+    shape: shot.shape,
+  };
+}
+
+function summarizeSessionForCoach(session: Session) {
+  const clubs = summarizeClubs([session]);
+  return {
+    title: session.title,
+    date: session.date,
+    source: session.source,
+    focus: session.focus,
+    shotCount: session.shots.length,
+    clubs: clubs.map((club) => ({
+      club: club.club,
+      shots: club.shots,
+      carry: club.carry,
+      dispersion: club.dispersion,
+      smash: club.smash,
+      launch: club.launch,
+      spin: club.spin,
+      faceToPath: club.faceToPath,
+      quality: club.quality,
+    })),
+  };
+}
+
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
   const [sessions, setSessions] = useState<Session[]>(BASE_SESSIONS);
@@ -760,7 +817,17 @@ export default function Home() {
 
         {activeTab === "clubs" && <ClubsView clubs={clubs} selectedClub={activeClub} setSelectedClub={setSelectedClub} />}
 
-        {activeTab === "coach" && <CoachView insights={insights} />}
+        {activeTab === "coach" && (
+          <CoachView
+            clubs={clubs}
+            insights={insights}
+            selectedClub={activeClub}
+            selectedClubShots={selectedClubShots}
+            selectedClubSummary={selectedClubSummary}
+            selectedSession={selectedSession}
+            sessions={sessions}
+          />
+        )}
 
         {activeTab === "practice" && <PracticeView insights={insights} />}
 
@@ -1073,11 +1140,171 @@ function ClubsView({ clubs, selectedClub, setSelectedClub }: { clubs: ClubSummar
   );
 }
 
-function CoachView({ insights }: { insights: Insight[] }) {
+function CoachView({
+  clubs,
+  insights,
+  selectedClub,
+  selectedClubShots,
+  selectedClubSummary,
+  selectedSession,
+  sessions,
+}: {
+  clubs: ClubSummary[];
+  insights: Insight[];
+  selectedClub: string;
+  selectedClubShots: Shot[];
+  selectedClubSummary?: ClubSummary;
+  selectedSession: Session;
+  sessions: Session[];
+}) {
+  const [coachInput, setCoachInput] = useState("");
+  const [coachStatus, setCoachStatus] = useState("Ready");
+  const [coachMessages, setCoachMessages] = useState<CoachMessage[]>([
+    makeCoachMessage(
+      "assistant",
+      "I’m MatRat AI. Pick a club or ask what to fix first, and I’ll turn the numbers into one clear swing priority, one drill, and one next-swing feel.",
+    ),
+  ]);
+
+  const quickPrompts = [
+    `What should I fix first with my ${selectedClub}?`,
+    "Explain my face-to-path in plain English.",
+    "Give me one drill for my next practice block.",
+    "Am I losing more distance or control?",
+  ];
+
+  const selectedSessionShots = selectedSession.shots
+    .filter((shot) => shot.club === selectedClub)
+    .slice(-18);
+  const contextShots = selectedSessionShots.length ? selectedSessionShots : selectedClubShots.slice(-18);
+
+  async function askCoach(questionOverride?: string) {
+    const question = (questionOverride ?? coachInput).trim();
+    if (!question) return;
+
+    const nextMessages = [...coachMessages, makeCoachMessage("user", question)];
+    setCoachMessages(nextMessages);
+    setCoachInput("");
+    setCoachStatus("Reading your session...");
+
+    const coachContext = {
+      selectedClub,
+      selectedClubSummary,
+      selectedSession: summarizeSessionForCoach(selectedSession),
+      recentSessions: sessions.slice(0, 5).map(summarizeSessionForCoach),
+      bagSummary: clubs,
+      activeFindings: insights.slice(0, 6),
+      recentShots: contextShots.map(compactShot),
+      coachPreferences: {
+        brand: "MatRat AI",
+        feedbackStyle: "plain English, focused, feel-based, no swing overhaul",
+        outputGoal: "one priority, one drill, one measurable target, one follow-up question when useful",
+      },
+    };
+
+    try {
+      const response = await fetch("/api/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question,
+          messages: nextMessages.slice(-6).map((message) => ({ role: message.role, content: message.content })),
+          context: coachContext,
+        }),
+      });
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(payload.error ?? "MatRat AI could not answer right now.");
+      }
+
+      setCoachMessages((current) => [
+        ...current,
+        makeCoachMessage("assistant", payload.answer ?? "MatRat AI did not return a readable answer."),
+      ]);
+      setCoachStatus(payload.mode === "setup" ? "API key needed" : "Answered");
+    } catch (error) {
+      setCoachMessages((current) => [
+        ...current,
+        makeCoachMessage("assistant", error instanceof Error ? error.message : "MatRat AI could not answer right now."),
+      ]);
+      setCoachStatus("Needs attention");
+    }
+  }
+
   return (
-    <section className="panel panel-wide">
-      <PanelHeader kicker="Coach engine" title="Prioritized swing and bag notes" meta={`${insights.length} active findings`} />
-      <InsightList insights={insights} />
+    <section className="coach-layout">
+      <article className="panel coach-chat-panel">
+        <PanelHeader kicker="MatRat AI coach" title={`${selectedClub} conversation`} meta={coachStatus} />
+
+        <div className="chat-transcript" aria-live="polite">
+          {coachMessages.map((message) => (
+            <div className={cls("chat-message", message.role)} key={message.id}>
+              <span>{message.role === "assistant" ? "MatRat AI" : "You"}</span>
+              <p>{message.content}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="quick-prompt-row" aria-label="Coach question shortcuts">
+          {quickPrompts.map((prompt) => (
+            <button className="quick-prompt" key={prompt} onClick={() => void askCoach(prompt)}>
+              {prompt}
+            </button>
+          ))}
+        </div>
+
+        <form
+          className="coach-composer"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void askCoach();
+          }}
+        >
+          <textarea
+            aria-label="Ask MatRat AI"
+            onChange={(event) => setCoachInput(event.target.value)}
+            placeholder={`Ask about your ${selectedClub} misses, distance gaps, or next drill`}
+            value={coachInput}
+          />
+          <button className="primary-action" type="submit">
+            Ask coach
+          </button>
+        </form>
+      </article>
+
+      <aside className="coach-side-panel">
+        <article className="panel">
+          <PanelHeader kicker="Context sent" title={selectedClub} meta={`${contextShots.length} recent shots`} />
+          {selectedClubSummary ? (
+            <div className="coach-context-grid">
+              <div>
+                <span>Carry</span>
+                <strong>{selectedClubSummary.carry} yd</strong>
+              </div>
+              <div>
+                <span>Smash</span>
+                <strong>{selectedClubSummary.smash.toFixed(2)}</strong>
+              </div>
+              <div>
+                <span>Face to path</span>
+                <strong>{selectedClubSummary.faceToPath}°</strong>
+              </div>
+              <div>
+                <span>Dispersion</span>
+                <strong>±{selectedClubSummary.dispersion} yd</strong>
+              </div>
+            </div>
+          ) : (
+            <EmptyState title="No club data" body="Choose a club with shots before asking MatRat AI." />
+          )}
+        </article>
+
+        <article className="panel">
+          <PanelHeader kicker="Active findings" title="What MatRat sees" meta={`${insights.length} flags`} />
+          <InsightList insights={insights.slice(0, 3)} compact />
+        </article>
+      </aside>
     </section>
   );
 }
