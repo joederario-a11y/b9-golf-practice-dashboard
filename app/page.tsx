@@ -1389,7 +1389,7 @@ function ImportView({
   importMessage: string;
   setCsvText: (value: string) => void;
 }) {
-  const [importMode, setImportMode] = useState<"api" | "file" | "photo">("file");
+  const [importMode, setImportMode] = useState<"api" | "file" | "photo">("api");
 
   return (
     <section className="import-grid">
