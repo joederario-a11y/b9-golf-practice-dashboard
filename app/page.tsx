@@ -1000,7 +1000,7 @@ export default function Home() {
           />
         )}
 
-        {activeTab === "clubs" && <ClubsView clubs={clubs} selectedClub={activeClub} setSelectedClub={setSelectedClub} />}
+        {activeTab === "clubs" && <ClubsView clubs={clubs} selectedClub={activeClub} />}
 
         {activeTab === "coach" && (
           <CoachView
@@ -1253,7 +1253,7 @@ function SessionsView({
   );
 }
 
-function ClubsView({ clubs, selectedClub, setSelectedClub }: { clubs: ClubSummary[]; selectedClub: string; setSelectedClub: (club: string) => void }) {
+function ClubsView({ clubs, selectedClub }: { clubs: ClubSummary[]; selectedClub: string }) {
   const [clubMetricKey, setClubMetricKey] = useState<ClubMetricKey>("total");
   const metric = getClubMetricConfig(clubMetricKey);
 
@@ -1261,31 +1261,9 @@ function ClubsView({ clubs, selectedClub, setSelectedClub }: { clubs: ClubSummar
     <div className="view-stack">
       <section className="control-strip">
         <div>
-          <p className="eyebrow">Club filter</p>
-          <h2>{metric.label} selected</h2>
-          <span>Compare your bag against amateur and professional benchmarks.</span>
-        </div>
-        <div className="club-filter-controls">
-          <label className="select-control">
-            <span>Data point</span>
-            <select value={clubMetricKey} onChange={(event) => setClubMetricKey(event.target.value as ClubMetricKey)}>
-              {CLUB_METRIC_OPTIONS.map((option) => (
-                <option key={option.key} value={option.key}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="select-control">
-            <span>Club</span>
-            <select value={selectedClub} onChange={(event) => setSelectedClub(event.target.value)}>
-              {clubs.map((club) => (
-                <option key={club.club} value={club.club}>
-                  {club.club}
-                </option>
-              ))}
-            </select>
-          </label>
+          <p className="eyebrow">Club comparison</p>
+          <h2>Bag benchmarks</h2>
+          <span>Choose a data point below to compare your clubs against amateur and professional benchmarks.</span>
         </div>
       </section>
 
@@ -1333,7 +1311,23 @@ function ClubsView({ clubs, selectedClub, setSelectedClub }: { clubs: ClubSummar
 
       <section className="club-comparison-grid">
         <article className="panel">
-          <PanelHeader kicker="Your data" title={`${metric.label} by club`} meta="Driver through wedges" />
+          <PanelHeader
+            action={
+              <label className="select-control metric-panel-select">
+                <span>Data point</span>
+                <select value={clubMetricKey} onChange={(event) => setClubMetricKey(event.target.value as ClubMetricKey)}>
+                  {CLUB_METRIC_OPTIONS.map((option) => (
+                    <option key={option.key} value={option.key}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            }
+            kicker="Your data"
+            title={`${metric.label} by club`}
+            meta="Driver through wedges"
+          />
           <ClubMetricUserTable clubs={clubs} metric={metric} />
         </article>
         <article className="panel">

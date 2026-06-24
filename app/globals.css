@@ -462,13 +462,6 @@ button {
   padding: 0 12px;
 }
 
-.club-filter-controls {
-  display: flex;
-  align-items: end;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
 .dashboard-grid,
 .practice-board,
 .import-grid,
@@ -497,6 +490,10 @@ button {
   gap: 18px;
   max-width: 1420px;
   margin: 0 auto;
+}
+
+.metric-panel-select {
+  min-width: 190px;
 }
 
 .split-view {
@@ -1617,11 +1614,6 @@ dd {
   }
 
   .control-strip {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .club-filter-controls {
     align-items: stretch;
     flex-direction: column;
   }
