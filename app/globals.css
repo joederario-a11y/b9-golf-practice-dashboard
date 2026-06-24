@@ -462,6 +462,13 @@ button {
   padding: 0 12px;
 }
 
+.club-filter-controls {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
 .dashboard-grid,
 .practice-board,
 .import-grid,
@@ -482,6 +489,14 @@ button {
 
 .dashboard-grid.comparison-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.club-comparison-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr) minmax(0, 0.9fr);
+  gap: 18px;
+  max-width: 1420px;
+  margin: 0 auto;
 }
 
 .split-view {
@@ -813,6 +828,85 @@ dd {
 .gap-row em.flagged,
 .warning-text {
   color: var(--coral);
+}
+
+.metric-table {
+  display: grid;
+  gap: 8px;
+}
+
+.metric-table-row {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr) 88px;
+  align-items: center;
+  gap: 10px;
+  min-height: 45px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 9px 10px;
+}
+
+.metric-table-head {
+  min-height: 34px;
+  background: var(--surface-soft);
+}
+
+.metric-table-row span {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.metric-table-head span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.metric-user-row > span:first-child {
+  font-weight: 900;
+}
+
+.metric-user-row > span:nth-child(2) {
+  display: grid;
+  gap: 7px;
+}
+
+.metric-user-row strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.metric-user-row i {
+  display: block;
+  height: 8px;
+  max-width: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--green), var(--blue));
+}
+
+.metric-delta {
+  text-align: right;
+}
+
+.metric-delta.positive {
+  color: var(--green);
+}
+
+.metric-delta.negative {
+  color: var(--coral);
+}
+
+.comparison-table .metric-table-row {
+  grid-template-columns: 72px repeat(3, minmax(0, 1fr));
+}
+
+.pro-comparison-table .metric-table-row {
+  grid-template-columns: 76px repeat(2, minmax(0, 1fr));
 }
 
 .trend-chart {
@@ -1452,6 +1546,7 @@ dd {
   .dashboard-grid,
   .dashboard-grid.two-up,
   .dashboard-grid.comparison-grid,
+  .club-comparison-grid,
   .split-view,
   .practice-board,
   .import-grid,
@@ -1522,6 +1617,11 @@ dd {
   }
 
   .control-strip {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .club-filter-controls {
     align-items: stretch;
     flex-direction: column;
   }
@@ -1617,13 +1717,17 @@ dd {
 
   .gap-row,
   .quality-row,
+  .metric-table-row,
+  .comparison-table .metric-table-row,
+  .pro-comparison-table .metric-table-row,
   .session-row {
     grid-template-columns: 1fr;
   }
 
   .row-metric,
   .gap-row em,
-  .quality-row strong {
+  .quality-row strong,
+  .metric-delta {
     text-align: left;
   }
 }

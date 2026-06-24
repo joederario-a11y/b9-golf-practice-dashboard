@@ -70,13 +70,25 @@ type ClubSummary = {
   quality: number;
 };
 
+type ClubMetricKey = "carry" | "total" | "spin" | "smash" | "ballSpeed" | "clubSpeed" | "launch" | "apex" | "descent";
+
+type ClubMetricConfig = {
+  key: ClubMetricKey;
+  label: string;
+  shortLabel: string;
+  unit: string;
+  decimals?: number;
+};
+
 type ProTourStats = {
   carry: number;
   total: number;
   ballSpeed: number;
   clubSpeed: number;
+  smash: number;
   launch: number;
   spin: number;
+  apex: number;
   descent: number;
 };
 
@@ -97,6 +109,18 @@ type CoachMessage = {
 const DEFAULT_FACILITY_NAME = "Back Nine Woodstock";
 const DEFAULT_IMPORT_DATE = "2026-06-24";
 const DEFAULT_SIMULATOR = "Full Swing";
+
+const CLUB_METRIC_OPTIONS: ClubMetricConfig[] = [
+  { key: "carry", label: "Carry", shortLabel: "Carry", unit: "yd", decimals: 1 },
+  { key: "total", label: "Total Distance", shortLabel: "Total", unit: "yd", decimals: 1 },
+  { key: "spin", label: "Spin", shortLabel: "Spin", unit: "rpm" },
+  { key: "smash", label: "Smash Factor", shortLabel: "Smash", unit: "", decimals: 2 },
+  { key: "ballSpeed", label: "Ball Speed", shortLabel: "Ball", unit: "mph", decimals: 1 },
+  { key: "clubSpeed", label: "Club Speed", shortLabel: "Club", unit: "mph", decimals: 1 },
+  { key: "launch", label: "Launch Angle", shortLabel: "Launch", unit: "deg", decimals: 1 },
+  { key: "apex", label: "Apex", shortLabel: "Apex", unit: "ft" },
+  { key: "descent", label: "Descent Angle", shortLabel: "Descent", unit: "deg", decimals: 1 },
+];
 
 const CLUB_TARGETS: Record<
   string,
@@ -132,52 +156,52 @@ const CLUB_TARGETS: Record<
 
 const PRO_REFERENCE_STATS: Record<string, { pga: ProTourStats; lpga: ProTourStats }> = {
   Driver: {
-    pga: { carry: 285, total: 303, ballSpeed: 175, clubSpeed: 117, launch: 11, spin: 2700, descent: 37 },
-    lpga: { carry: 221, total: 246, ballSpeed: 140, clubSpeed: 94, launch: 13, spin: 2600, descent: 34 },
+    pga: { carry: 285, total: 303, ballSpeed: 175, clubSpeed: 117, smash: 1.5, launch: 11, spin: 2700, apex: 100, descent: 37 },
+    lpga: { carry: 221, total: 246, ballSpeed: 140, clubSpeed: 94, smash: 1.49, launch: 13, spin: 2600, apex: 78, descent: 34 },
   },
   "3-Wood": {
-    pga: { carry: 243, total: 262, ballSpeed: 158, clubSpeed: 107, launch: 9, spin: 3650, descent: 39 },
-    lpga: { carry: 195, total: 218, ballSpeed: 132, clubSpeed: 90, launch: 11, spin: 3650, descent: 38 },
+    pga: { carry: 243, total: 262, ballSpeed: 158, clubSpeed: 107, smash: 1.48, launch: 9, spin: 3650, apex: 88, descent: 39 },
+    lpga: { carry: 195, total: 218, ballSpeed: 132, clubSpeed: 90, smash: 1.47, launch: 11, spin: 3650, apex: 72, descent: 38 },
   },
   "5-Wood": {
-    pga: { carry: 230, total: 247, ballSpeed: 152, clubSpeed: 103, launch: 10, spin: 4350, descent: 42 },
-    lpga: { carry: 185, total: 204, ballSpeed: 128, clubSpeed: 88, launch: 12, spin: 4300, descent: 40 },
+    pga: { carry: 230, total: 247, ballSpeed: 152, clubSpeed: 103, smash: 1.48, launch: 10, spin: 4350, apex: 86, descent: 42 },
+    lpga: { carry: 185, total: 204, ballSpeed: 128, clubSpeed: 88, smash: 1.45, launch: 12, spin: 4300, apex: 70, descent: 40 },
   },
   "5-Iron": {
-    pga: { carry: 194, total: 208, ballSpeed: 132, clubSpeed: 94, launch: 12, spin: 5360, descent: 45 },
-    lpga: { carry: 161, total: 173, ballSpeed: 104, clubSpeed: 79, launch: 15, spin: 4600, descent: 43 },
+    pga: { carry: 194, total: 208, ballSpeed: 132, clubSpeed: 94, smash: 1.4, launch: 12, spin: 5360, apex: 82, descent: 45 },
+    lpga: { carry: 161, total: 173, ballSpeed: 104, clubSpeed: 79, smash: 1.32, launch: 15, spin: 4600, apex: 67, descent: 43 },
   },
   "6-Iron": {
-    pga: { carry: 186, total: 198, ballSpeed: 127, clubSpeed: 92, launch: 14, spin: 6230, descent: 47 },
-    lpga: { carry: 152, total: 163, ballSpeed: 104, clubSpeed: 78, launch: 17, spin: 5600, descent: 45 },
+    pga: { carry: 186, total: 198, ballSpeed: 127, clubSpeed: 92, smash: 1.38, launch: 14, spin: 6230, apex: 83, descent: 47 },
+    lpga: { carry: 152, total: 163, ballSpeed: 104, clubSpeed: 78, smash: 1.33, launch: 17, spin: 5600, apex: 68, descent: 45 },
   },
   "7-Iron": {
-    pga: { carry: 176, total: 186, ballSpeed: 120, clubSpeed: 90, launch: 16, spin: 7100, descent: 50 },
-    lpga: { carry: 145, total: 153, ballSpeed: 96, clubSpeed: 76, launch: 19, spin: 6700, descent: 47 },
+    pga: { carry: 176, total: 186, ballSpeed: 120, clubSpeed: 90, smash: 1.33, launch: 16, spin: 7100, apex: 85, descent: 50 },
+    lpga: { carry: 145, total: 153, ballSpeed: 96, clubSpeed: 76, smash: 1.26, launch: 19, spin: 6700, apex: 70, descent: 47 },
   },
   "8-Iron": {
-    pga: { carry: 160, total: 169, ballSpeed: 115, clubSpeed: 87, launch: 18, spin: 8000, descent: 51 },
-    lpga: { carry: 130, total: 137, ballSpeed: 92, clubSpeed: 74, launch: 21, spin: 7500, descent: 49 },
+    pga: { carry: 160, total: 169, ballSpeed: 115, clubSpeed: 87, smash: 1.32, launch: 18, spin: 8000, apex: 83, descent: 51 },
+    lpga: { carry: 130, total: 137, ballSpeed: 92, clubSpeed: 74, smash: 1.24, launch: 21, spin: 7500, apex: 66, descent: 49 },
   },
   "9-Iron": {
-    pga: { carry: 148, total: 156, ballSpeed: 109, clubSpeed: 85, launch: 20, spin: 8650, descent: 52 },
-    lpga: { carry: 119, total: 125, ballSpeed: 86, clubSpeed: 72, launch: 23, spin: 8100, descent: 50 },
+    pga: { carry: 148, total: 156, ballSpeed: 109, clubSpeed: 85, smash: 1.28, launch: 20, spin: 8650, apex: 80, descent: 52 },
+    lpga: { carry: 119, total: 125, ballSpeed: 86, clubSpeed: 72, smash: 1.19, launch: 23, spin: 8100, apex: 60, descent: 50 },
   },
   PW: {
-    pga: { carry: 136, total: 142, ballSpeed: 102, clubSpeed: 83, launch: 24, spin: 9300, descent: 54 },
-    lpga: { carry: 107, total: 112, ballSpeed: 80, clubSpeed: 70, launch: 26, spin: 8600, descent: 52 },
+    pga: { carry: 136, total: 142, ballSpeed: 102, clubSpeed: 83, smash: 1.23, launch: 24, spin: 9300, apex: 74, descent: 54 },
+    lpga: { carry: 107, total: 112, ballSpeed: 80, clubSpeed: 70, smash: 1.14, launch: 26, spin: 8600, apex: 56, descent: 52 },
   },
   GW: {
-    pga: { carry: 123, total: 128, ballSpeed: 96, clubSpeed: 79, launch: 27, spin: 9800, descent: 55 },
-    lpga: { carry: 95, total: 99, ballSpeed: 74, clubSpeed: 66, launch: 28, spin: 9000, descent: 53 },
+    pga: { carry: 123, total: 128, ballSpeed: 96, clubSpeed: 79, smash: 1.22, launch: 27, spin: 9800, apex: 69, descent: 55 },
+    lpga: { carry: 95, total: 99, ballSpeed: 74, clubSpeed: 66, smash: 1.12, launch: 28, spin: 9000, apex: 51, descent: 53 },
   },
   SW: {
-    pga: { carry: 115, total: 119, ballSpeed: 90, clubSpeed: 76, launch: 29, spin: 10300, descent: 56 },
-    lpga: { carry: 82, total: 86, ballSpeed: 68, clubSpeed: 62, launch: 31, spin: 9400, descent: 54 },
+    pga: { carry: 115, total: 119, ballSpeed: 90, clubSpeed: 76, smash: 1.18, launch: 29, spin: 10300, apex: 63, descent: 56 },
+    lpga: { carry: 82, total: 86, ballSpeed: 68, clubSpeed: 62, smash: 1.1, launch: 31, spin: 9400, apex: 45, descent: 54 },
   },
   LW: {
-    pga: { carry: 95, total: 98, ballSpeed: 78, clubSpeed: 67, launch: 32, spin: 10500, descent: 58 },
-    lpga: { carry: 65, total: 68, ballSpeed: 58, clubSpeed: 55, launch: 34, spin: 9800, descent: 56 },
+    pga: { carry: 95, total: 98, ballSpeed: 78, clubSpeed: 67, smash: 1.16, launch: 32, spin: 10500, apex: 52, descent: 58 },
+    lpga: { carry: 65, total: 68, ballSpeed: 58, clubSpeed: 55, smash: 1.05, launch: 34, spin: 9800, apex: 38, descent: 56 },
   },
 };
 
@@ -462,6 +486,55 @@ function formatDate(value: string) {
 
 function formatFullDate(value: string) {
   return new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric" }).format(new Date(`${value}T12:00:00`));
+}
+
+function getClubMetricConfig(metricKey: ClubMetricKey) {
+  return CLUB_METRIC_OPTIONS.find((metric) => metric.key === metricKey) ?? CLUB_METRIC_OPTIONS[1];
+}
+
+function formatClubMetricValue(value: number, metric: ClubMetricConfig) {
+  const rounded = metric.decimals !== undefined ? round(value, metric.decimals).toFixed(metric.decimals) : Math.round(value).toString();
+  return metric.unit ? `${rounded} ${metric.unit}` : rounded;
+}
+
+function getClubMetricValue(club: ClubSummary, metricKey: ClubMetricKey) {
+  return club[metricKey];
+}
+
+function getReferenceMetricValue(stats: ProTourStats, metricKey: ClubMetricKey) {
+  return stats[metricKey];
+}
+
+function getAmateurMetricValue(club: string, metricKey: ClubMetricKey, tier: "low" | "mid" | "high") {
+  const target = CLUB_TARGETS[club] ?? CLUB_TARGETS["7-Iron"];
+  const base = target[metricKey];
+  const powerMultipliers = {
+    low: 1.03,
+    mid: 0.9,
+    high: 0.76,
+  };
+
+  if (metricKey === "smash") {
+    const adjustments = { low: 0.02, mid: -0.01, high: -0.05 };
+    return Math.max(1, Math.min(1.5, target.smash + adjustments[tier]));
+  }
+
+  if (metricKey === "spin") {
+    const spinMultipliers = { low: 1, mid: 0.96, high: 0.9 };
+    return base * spinMultipliers[tier];
+  }
+
+  if (metricKey === "launch") {
+    const launchAdjustments = { low: 0, mid: 1, high: 2 };
+    return base + launchAdjustments[tier];
+  }
+
+  if (metricKey === "descent") {
+    const descentAdjustments = { low: 1, mid: 0, high: -3 };
+    return base + descentAdjustments[tier];
+  }
+
+  return base * powerMultipliers[tier];
 }
 
 function getTodayDateString() {
@@ -1181,24 +1254,39 @@ function SessionsView({
 }
 
 function ClubsView({ clubs, selectedClub, setSelectedClub }: { clubs: ClubSummary[]; selectedClub: string; setSelectedClub: (club: string) => void }) {
+  const [clubMetricKey, setClubMetricKey] = useState<ClubMetricKey>("total");
+  const metric = getClubMetricConfig(clubMetricKey);
+
   return (
     <div className="view-stack">
       <section className="control-strip">
         <div>
           <p className="eyebrow">Club filter</p>
-          <h2>{selectedClub} selected</h2>
-          <span>Choose a club to keep the dashboard benchmarks in sync.</span>
+          <h2>{metric.label} selected</h2>
+          <span>Compare your bag against amateur and professional benchmarks.</span>
         </div>
-        <label className="select-control">
-          <span>Club</span>
-          <select value={selectedClub} onChange={(event) => setSelectedClub(event.target.value)}>
-            {clubs.map((club) => (
-              <option key={club.club} value={club.club}>
-                {club.club}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="club-filter-controls">
+          <label className="select-control">
+            <span>Data point</span>
+            <select value={clubMetricKey} onChange={(event) => setClubMetricKey(event.target.value as ClubMetricKey)}>
+              {CLUB_METRIC_OPTIONS.map((option) => (
+                <option key={option.key} value={option.key}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="select-control">
+            <span>Club</span>
+            <select value={selectedClub} onChange={(event) => setSelectedClub(event.target.value)}>
+              {clubs.map((club) => (
+                <option key={club.club} value={club.club}>
+                  {club.club}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
       </section>
 
       <section className="panel">
@@ -1243,16 +1331,100 @@ function ClubsView({ clubs, selectedClub, setSelectedClub }: { clubs: ClubSummar
         </div>
       </section>
 
-      <section className="dashboard-grid two-up">
+      <section className="club-comparison-grid">
         <article className="panel">
-          <PanelHeader kicker="Carry ladder" title="Yardage spacing" meta="Driver through wedges" />
-          <GapLadder clubs={clubs} extended />
+          <PanelHeader kicker="Your data" title={`${metric.label} by club`} meta="Driver through wedges" />
+          <ClubMetricUserTable clubs={clubs} metric={metric} />
         </article>
         <article className="panel">
-          <PanelHeader kicker="Quality" title="Strike and control" meta="Composite score" />
-          <QualityBars clubs={clubs} />
+          <PanelHeader kicker="Typical amateur stats" title="Handicap benchmarks" meta="Low, mid, and high handicap" />
+          <AmateurMetricTable clubs={clubs} metric={metric} />
+        </article>
+        <article className="panel">
+          <PanelHeader kicker="Professional stats" title="Tour benchmarks" meta="PGA + LPGA reference" />
+          <ProfessionalMetricTable clubs={clubs} metric={metric} />
         </article>
       </section>
+    </div>
+  );
+}
+
+function ClubMetricUserTable({ clubs, metric }: { clubs: ClubSummary[]; metric: ClubMetricConfig }) {
+  const maxValue = Math.max(...clubs.map((club) => getClubMetricValue(club, metric.key)), 1);
+
+  return (
+    <div className="metric-table">
+      <div className="metric-table-row metric-table-head">
+        <span>Club</span>
+        <span>Your {metric.shortLabel}</span>
+        <span>Vs mid HCP</span>
+      </div>
+      {clubs.map((club) => {
+        const value = getClubMetricValue(club, metric.key);
+        const midBenchmark = getAmateurMetricValue(club.club, metric.key, "mid");
+        const delta = value - midBenchmark;
+        const deltaLabel = `${delta >= 0 ? "+" : ""}${formatClubMetricValue(delta, metric)}`;
+
+        return (
+          <div className="metric-table-row metric-user-row" key={club.club}>
+            <span>{club.club}</span>
+            <span>
+              <strong>{formatClubMetricValue(value, metric)}</strong>
+              <i style={{ width: `${Math.max(8, (value / maxValue) * 100)}%` }} />
+            </span>
+            <span className={cls("metric-delta", delta >= 0 ? "positive" : "negative")}>{deltaLabel}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function AmateurMetricTable({ clubs, metric }: { clubs: ClubSummary[]; metric: ClubMetricConfig }) {
+  const tiers: Array<{ key: "low" | "mid" | "high"; label: string }> = [
+    { key: "low", label: "0-5" },
+    { key: "mid", label: "6-15" },
+    { key: "high", label: "16+" },
+  ];
+
+  return (
+    <div className="metric-table comparison-table">
+      <div className="metric-table-row metric-table-head">
+        <span>Club</span>
+        {tiers.map((tier) => (
+          <span key={tier.key}>{tier.label}</span>
+        ))}
+      </div>
+      {clubs.map((club) => (
+        <div className="metric-table-row" key={club.club}>
+          <span>{club.club}</span>
+          {tiers.map((tier) => (
+            <span key={tier.key}>{formatClubMetricValue(getAmateurMetricValue(club.club, metric.key, tier.key), metric)}</span>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ProfessionalMetricTable({ clubs, metric }: { clubs: ClubSummary[]; metric: ClubMetricConfig }) {
+  return (
+    <div className="metric-table comparison-table pro-comparison-table">
+      <div className="metric-table-row metric-table-head">
+        <span>Club</span>
+        <span>PGA</span>
+        <span>LPGA</span>
+      </div>
+      {clubs.map((club) => {
+        const reference = PRO_REFERENCE_STATS[club.club] ?? PRO_REFERENCE_STATS["7-Iron"];
+        return (
+          <div className="metric-table-row" key={club.club}>
+            <span>{club.club}</span>
+            <span>{formatClubMetricValue(getReferenceMetricValue(reference.pga, metric.key), metric)}</span>
+            <span>{formatClubMetricValue(getReferenceMetricValue(reference.lpga, metric.key), metric)}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
