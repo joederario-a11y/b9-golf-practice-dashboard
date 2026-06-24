@@ -80,11 +80,23 @@ type ProTourStats = {
   descent: number;
 };
 
+type LastImport = {
+  date: string;
+  facilityName: string;
+  simulator: string;
+  submissionType: "API feed" | "CSV / Excel" | "Photo";
+  shots: Shot[];
+};
+
 type CoachMessage = {
   id: string;
   role: "user" | "assistant";
   content: string;
 };
+
+const DEFAULT_FACILITY_NAME = "Back Nine Woodstock";
+const DEFAULT_IMPORT_DATE = "2026-06-24";
+const DEFAULT_SIMULATOR = "Full Swing";
 
 const CLUB_TARGETS: Record<
   string,
@@ -448,6 +460,25 @@ function formatDate(value: string) {
   return new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date(`${value}T12:00:00`));
 }
 
+function formatFullDate(value: string) {
+  return new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric" }).format(new Date(`${value}T12:00:00`));
+}
+
+function getTodayDateString() {
+  const today = new Date();
+  return new Date(today.getTime() - today.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+}
+
+function makeLastImport(submissionType: LastImport["submissionType"], shots: Shot[], date = getTodayDateString()): LastImport {
+  return {
+    date,
+    facilityName: DEFAULT_FACILITY_NAME,
+    simulator: DEFAULT_SIMULATOR,
+    submissionType,
+    shots,
+  };
+}
+
 function getSeverityScore(severity: Insight["severity"]) {
   return severity === "high" ? 3 : severity === "medium" ? 2 : 1;
 }
@@ -633,13 +664,19 @@ function parseCsv(text: string): Shot[] {
   });
 }
 
-function buildImportedSession(shots: Shot[]): Session {
-  const today = "2026-06-23";
+function buildImportedSession(shots: Shot[], submissionType: LastImport["submissionType"]): Session {
+  const source =
+    submissionType === "API feed"
+      ? `${DEFAULT_SIMULATOR} API`
+      : submissionType === "Photo"
+        ? `${DEFAULT_SIMULATOR} Photo Scan`
+        : "CSV Upload";
+
   return {
     id: `import-${Date.now()}`,
-    title: "Imported sim session",
-    date: today,
-    source: "CSV Upload",
+    title: `${DEFAULT_SIMULATOR} import`,
+    date: getTodayDateString(),
+    source,
     focus: "New data",
     shots,
   };
@@ -708,6 +745,7 @@ export default function Home() {
   const [csvText, setCsvText] = useState(DEMO_CSV);
   const [importMessage, setImportMessage] = useState("Demo CSV loaded");
   const [accountMode, setAccountMode] = useState<AccountMode>("pending");
+  const [lastImport, setLastImport] = useState<LastImport>(() => makeLastImport("Photo", parseCsv(DEMO_CSV), DEFAULT_IMPORT_DATE));
   const [userName, setUserName] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState("Choose how you want to use Free Range Golf.");
 
@@ -784,19 +822,20 @@ export default function Home() {
     setSyncStatus("Guest mode: session changes stay in this browser tab.");
   }
 
-  function importCsv() {
+  function importCsv(submissionType: LastImport["submissionType"] = "CSV / Excel") {
     const shots = parseCsv(csvText);
     if (!shots.length) {
       setImportMessage("No rows detected");
       return;
     }
-    const nextSession = buildImportedSession(shots);
+    const nextSession = buildImportedSession(shots, submissionType);
     const nextSessions = [nextSession, ...sessions];
     setSessions(nextSessions);
     setSelectedSessionId(nextSession.id);
     setSelectedClub(shots[0]?.club ?? selectedClub);
     setActiveTab("dashboard");
-    setImportMessage(`${shots.length} shots imported`);
+    setLastImport(makeLastImport(submissionType, shots, nextSession.date));
+    setImportMessage(`${shots.length} shots imported from ${submissionType}`);
     void saveUserSessions(nextSessions);
   }
 
@@ -909,6 +948,7 @@ export default function Home() {
             csvText={csvText}
             importCsv={importCsv}
             importMessage={importMessage}
+            lastImport={lastImport}
             setCsvText={setCsvText}
           />
         )}
@@ -1451,11 +1491,13 @@ function ImportView({
   csvText,
   importCsv,
   importMessage,
+  lastImport,
   setCsvText,
 }: {
   csvText: string;
-  importCsv: () => void;
+  importCsv: (submissionType?: LastImport["submissionType"]) => void;
   importMessage: string;
+  lastImport: LastImport;
   setCsvText: (value: string) => void;
 }) {
   const [importMode, setImportMode] = useState<"api" | "file" | "photo">("api");
@@ -1509,7 +1551,7 @@ function ImportView({
             />
             <div className="button-row">
               <button className="secondary-action" onClick={() => setCsvText(DEMO_CSV)}>Load Full Swing demo rows</button>
-              <button className="primary-action" onClick={importCsv}>
+              <button className="primary-action" onClick={() => importCsv("CSV / Excel")}>
                 <span>⇧</span>
                 Analyze rows
               </button>
@@ -1525,17 +1567,59 @@ function ImportView({
               <span>Upload shot-history or shot-dispersion screenshots. The current Full Swing sample maps proximity, carry, total, ball speed, club speed, smash, apex, spin, spin axis, launch, descent, face angle, club path, face-to-path, side carry, and side total.</span>
             </div>
             <div className="button-row">
-              <button className="primary-action" onClick={importCsv}>Use Full Swing sample</button>
+              <button className="primary-action" onClick={() => importCsv("Photo")}>Use Full Swing sample</button>
             </div>
           </div>
         )}
       </div>
 
-      <div className="panel">
-        <PanelHeader kicker="Mapped fields" title="Full Swing data included" meta="From your photos" />
-        <BenchmarkList club="6-Iron" />
-      </div>
+      <LastImportPanel lastImport={lastImport} />
     </section>
+  );
+}
+
+function LastImportPanel({ lastImport }: { lastImport: LastImport }) {
+  const detailRows = [
+    ["Date", formatFullDate(lastImport.date)],
+    ["Facility Name", lastImport.facilityName],
+    ["Sim", lastImport.simulator],
+    ["Submission type", lastImport.submissionType],
+  ];
+  const averageRows = [
+    ["Shots", `${lastImport.shots.length}`],
+    ["Carry", `${round(averageMetric(lastImport.shots, "carry"))} yd`],
+    ["Total", `${round(averageMetric(lastImport.shots, "total"))} yd`],
+    ["Ball speed", `${round(averageMetric(lastImport.shots, "ballSpeed"))} mph`],
+    ["Club speed", `${round(averageMetric(lastImport.shots, "clubSpeed"), 1)} mph`],
+    ["Smash", averageMetric(lastImport.shots, "smash").toFixed(2)],
+    ["Launch", `${round(averageMetric(lastImport.shots, "launch"), 1)} deg`],
+    ["Spin", `${Math.round(averageMetric(lastImport.shots, "spin"))} rpm`],
+    ["Descent", `${round(averageMetric(lastImport.shots, "descent"), 1)} deg`],
+  ];
+
+  return (
+    <div className="panel import-summary-panel">
+      <PanelHeader kicker="Last import" title={lastImport.facilityName} meta={`${lastImport.simulator} · ${lastImport.shots.length} shots`} />
+      <dl className="import-detail-list">
+        {detailRows.map(([label, value]) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+      <div className="import-average-heading">
+        <span>Average stats</span>
+      </div>
+      <div className="benchmark-list import-average-list">
+        {averageRows.map(([label, value]) => (
+          <div key={label}>
+            <span>{label}</span>
+            <strong>{value}</strong>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
