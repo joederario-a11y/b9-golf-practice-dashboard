@@ -106,9 +106,67 @@ type CoachMessage = {
   content: string;
 };
 
+type OnboardingQuestionId =
+  | "ageRange"
+  | "handedness"
+  | "gameProfile"
+  | "simulatorUse"
+  | "goals"
+  | "frustrations"
+  | "practiceRhythm";
+
+type OnboardingOption = {
+  value: string;
+  label: string;
+  detail?: string;
+};
+
+type OnboardingQuestion = {
+  id: OnboardingQuestionId;
+  type: "single" | "multi";
+  display: "bubbles" | "cards" | "chips" | "slider";
+  title: string;
+  helper: string;
+  options: OnboardingOption[];
+  maxSelections?: number;
+};
+
+type OnboardingAnswers = Partial<Record<OnboardingQuestionId, string | string[]>>;
+
+type UserPracticeProfile = {
+  ageRange?: string;
+  handedness?: string;
+  skillLevel: string;
+  handicap: string;
+  simExperience: string;
+  simulatorGoals: string[];
+  goals: string[];
+  frustrations: string[];
+  practiceStyle: string[];
+  timeAvailable: string;
+  frequency: string;
+  experienceStyle: string[];
+  path: "Beginner" | "Casual" | "Competitive" | "Junior";
+  completedAt: string;
+};
+
+type PracticeRecommendations = {
+  pathTitle: string;
+  summary: string;
+  focusAreas: string[];
+  drills: string[];
+  simulatorModes: string[];
+  lessonRecommendation: string;
+  trainingPlan: string;
+  priorities: string[];
+  suggestions: string[];
+};
+
 const DEFAULT_FACILITY_NAME = "Back Nine Woodstock";
 const DEFAULT_IMPORT_DATE = "2026-06-24";
 const DEFAULT_SIMULATOR = "Full Swing";
+const PRACTICE_PROFILE_STORAGE_KEY = "free-range-golf.practice-profile.v1";
+const ONBOARDING_DRAFT_STORAGE_KEY = "free-range-golf.onboarding-draft.v1";
 
 const CLUB_METRIC_OPTIONS: ClubMetricConfig[] = [
   { key: "carry", label: "Carry", shortLabel: "Carry", unit: "yd", decimals: 1 },
@@ -227,6 +285,135 @@ const NAV_ITEMS: { id: Tab; label: string; icon: string }[] = [
   { id: "coach", label: "Coach", icon: "✦" },
   { id: "practice", label: "Practice", icon: "◎" },
   { id: "import", label: "Import", icon: "⇧" },
+];
+
+const GAME_PROFILE_MAP: Record<string, { skillLevel: string; handicap: string }> = {
+  new: { skillLevel: "Brand new", handicap: "I don't know" },
+  beginner: { skillLevel: "Beginner", handicap: "25+" },
+  casual: { skillLevel: "Casual golfer", handicap: "16-24" },
+  weekend: { skillLevel: "Weekend golfer", handicap: "10-15" },
+  competitive: { skillLevel: "Competitive amateur", handicap: "5-9" },
+  junior: { skillLevel: "Junior player", handicap: "I don't know" },
+  low: { skillLevel: "Low handicap", handicap: "0-4" },
+  scratch: { skillLevel: "Scratch or better", handicap: "Plus handicap" },
+};
+
+const ONBOARDING_QUESTIONS: OnboardingQuestion[] = [
+  {
+    id: "ageRange",
+    type: "single",
+    display: "chips",
+    title: "What age range should we tune this for?",
+    helper: "This helps shape lesson pacing, challenge style, and junior-safe recommendations.",
+    options: ["Under 13", "13-17", "18-29", "30-44", "45-59", "60+"].map((label) => ({ value: label, label })),
+  },
+  {
+    id: "handedness",
+    type: "single",
+    display: "bubbles",
+    title: "Which side do you play from?",
+    helper: "Coach notes and ball-flight language will match your setup.",
+    options: [
+      { value: "Right-handed", label: "Right-handed" },
+      { value: "Left-handed", label: "Left-handed" },
+    ],
+  },
+  {
+    id: "gameProfile",
+    type: "single",
+    display: "cards",
+    title: "How would you describe your game today?",
+    helper: "Pick the closest fit. We will refine it as your simulator sessions come in.",
+    options: [
+      { value: "new", label: "Brand new", detail: "Still learning the basics" },
+      { value: "beginner", label: "Beginner", detail: "Roughly 25+ handicap" },
+      { value: "casual", label: "Casual golfer", detail: "Roughly 16-24 handicap" },
+      { value: "weekend", label: "Weekend golfer", detail: "Roughly 10-15 handicap" },
+      { value: "competitive", label: "Competitive amateur", detail: "Roughly 5-9 handicap" },
+      { value: "junior", label: "Junior player", detail: "Building skill and confidence" },
+      { value: "low", label: "Low handicap", detail: "Roughly 0-4 handicap" },
+      { value: "scratch", label: "Scratch or better", detail: "Plus or tournament-level goals" },
+    ],
+  },
+  {
+    id: "simulatorUse",
+    type: "multi",
+    display: "cards",
+    title: "What do you want from the simulator?",
+    helper: "Choose a few reasons you step onto the mat.",
+    maxSelections: 4,
+    options: [
+      { value: "New to simulators", label: "New to simulators", detail: "Keep data simple and useful" },
+      { value: "Practice", label: "Practice", detail: "Build better reps" },
+      { value: "Lessons", label: "Lessons", detail: "Coach-guided improvement" },
+      { value: "Virtual courses", label: "Virtual courses", detail: "Play and learn strategy" },
+      { value: "Track distances", label: "Track distances", detail: "Know your real yardages" },
+      { value: "Swing data", label: "Swing data", detail: "Club path, face, launch, spin" },
+      { value: "Compete with friends", label: "Compete with friends", detail: "Games, leagues, pressure reps" },
+      { value: "Junior development", label: "Junior development", detail: "Fun progress and milestones" },
+    ],
+  },
+  {
+    id: "goals",
+    type: "multi",
+    display: "chips",
+    title: "What do you want to improve first?",
+    helper: "Select up to five. Your coach plan will start with the highest-leverage areas.",
+    maxSelections: 5,
+    options: [
+      "Driver distance",
+      "Driver accuracy",
+      "Iron consistency",
+      "Wedge control",
+      "Putting",
+      "Short game",
+      "Ball striking",
+      "Shot shape",
+      "Tempo",
+      "Club path",
+      "Face angle",
+      "Contact quality",
+      "Course management",
+      "Confidence",
+    ].map((label) => ({ value: label, label })),
+  },
+  {
+    id: "frustrations",
+    type: "single",
+    display: "chips",
+    title: "What is the miss that annoys you most?",
+    helper: "One honest answer is enough. The drills will stay focused.",
+    options: [
+      "Slicing",
+      "Hooking",
+      "Fat shots",
+      "Thin shots",
+      "Inconsistent contact",
+      "Lack of distance",
+      "Poor wedge distance control",
+      "Three-putting",
+      "Not knowing what to practice",
+      "I just want to get better",
+    ].map((label) => ({ value: label, label })),
+  },
+  {
+    id: "practiceRhythm",
+    type: "multi",
+    display: "slider",
+    title: "What kind of practice will you actually do?",
+    helper: "Keep this realistic. A plan you enjoy beats a perfect plan you skip.",
+    maxSelections: 4,
+    options: [
+      { value: "15-minute tuneups", label: "15-minute tuneups", detail: "Fast, simple reps" },
+      { value: "30-minute structured sessions", label: "30-minute structure", detail: "Warmup, block, finish" },
+      { value: "60-minute work blocks", label: "60-minute blocks", detail: "Full focused practice" },
+      { value: "2-3 times per week", label: "2-3 times/week", detail: "Steady progress rhythm" },
+      { value: "Games and challenges", label: "Games/challenges", detail: "Make practice feel alive" },
+      { value: "Coach-guided lessons", label: "Coach-guided", detail: "Clear next step every time" },
+      { value: "Data-driven training", label: "Data-driven", detail: "Use numbers without overthinking" },
+      { value: "Competitive/social play", label: "Competitive/social", detail: "Pressure, leagues, friends" },
+    ],
+  },
 ];
 
 const DEMO_CSV = `club,proximity,carry,total,ballSpeed,clubSpeed,smash,apex,spin,spinAxis,launch,descent,horizontalAngle,faceAngle,clubPath,faceToPath,sideCarry,sideTotal,offline
@@ -810,6 +997,231 @@ function summarizeSessionForCoach(session: Session) {
   };
 }
 
+function readStoredPracticeProfile() {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const stored = window.localStorage.getItem(PRACTICE_PROFILE_STORAGE_KEY);
+    return stored ? (JSON.parse(stored) as UserPracticeProfile) : null;
+  } catch {
+    return null;
+  }
+}
+
+function readStoredOnboardingAnswers() {
+  if (typeof window === "undefined") return {};
+
+  try {
+    const stored = window.localStorage.getItem(ONBOARDING_DRAFT_STORAGE_KEY);
+    return stored ? (JSON.parse(stored) as OnboardingAnswers) : {};
+  } catch {
+    return {};
+  }
+}
+
+function storeOnboardingAnswers(answers: OnboardingAnswers) {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.setItem(ONBOARDING_DRAFT_STORAGE_KEY, JSON.stringify(answers));
+  } catch {
+    // The flow remains usable even if local draft storage is blocked.
+  }
+}
+
+function clearOnboardingDraft() {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.removeItem(ONBOARDING_DRAFT_STORAGE_KEY);
+  } catch {
+    // No action needed.
+  }
+}
+
+function storePracticeProfile(profile: UserPracticeProfile) {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.setItem(PRACTICE_PROFILE_STORAGE_KEY, JSON.stringify(profile));
+  } catch {
+    // Local storage can fail in private or locked-down browser contexts.
+  }
+}
+
+function asArray(value: string | string[] | undefined) {
+  if (!value) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+function inferSimExperience(simulatorGoals: string[]) {
+  if (simulatorGoals.includes("New to simulators")) return "Never used one";
+  if (simulatorGoals.includes("Swing data")) return "Comfortable";
+  if (simulatorGoals.includes("Compete with friends")) return "Use them often";
+  return simulatorGoals.length ? "Tried it once or twice" : "Not specified";
+}
+
+function inferTimeAvailable(practiceRhythm: string[]) {
+  if (practiceRhythm.includes("60-minute work blocks")) return "60 minutes";
+  if (practiceRhythm.includes("30-minute structured sessions")) return "30 minutes";
+  if (practiceRhythm.includes("15-minute tuneups")) return "15 minutes";
+  return "45 minutes";
+}
+
+function inferFrequency(practiceRhythm: string[]) {
+  if (practiceRhythm.includes("2-3 times per week")) return "2-3 times per week";
+  if (practiceRhythm.includes("60-minute work blocks")) return "Once a week";
+  return "Just when I can";
+}
+
+function inferPracticeStyle(practiceRhythm: string[]) {
+  const styles = new Set<string>();
+  if (practiceRhythm.includes("15-minute tuneups")) styles.add("Quick drills");
+  if (practiceRhythm.includes("30-minute structured sessions") || practiceRhythm.includes("60-minute work blocks")) styles.add("Structured plans");
+  if (practiceRhythm.includes("Games and challenges")) styles.add("Games/challenges");
+  if (practiceRhythm.includes("Coach-guided lessons")) styles.add("Coach-guided sessions");
+  if (practiceRhythm.includes("Data-driven training")) styles.add("Data-focused practice");
+  if (practiceRhythm.includes("Competitive/social play")) styles.add("Competitive practice");
+
+  return Array.from(styles).length ? Array.from(styles) : ["Structured plans"];
+}
+
+function inferExperienceStyle(practiceRhythm: string[], simulatorGoals: string[]) {
+  const styles = new Set<string>();
+  if (practiceRhythm.includes("Data-driven training") || simulatorGoals.includes("Swing data")) styles.add("Data-driven training");
+  if (practiceRhythm.includes("Games and challenges")) styles.add("Fun and casual");
+  if (practiceRhythm.includes("Competitive/social play") || simulatorGoals.includes("Compete with friends")) styles.add("Competitive challenges");
+  if (simulatorGoals.includes("Junior development")) styles.add("Junior development");
+  if (practiceRhythm.includes("Coach-guided lessons") || simulatorGoals.includes("Lessons")) styles.add("Lesson-based improvement");
+  if (!styles.size) styles.add("Serious improvement");
+
+  return Array.from(styles);
+}
+
+function getPracticePath(profile: Omit<UserPracticeProfile, "path">): UserPracticeProfile["path"] {
+  if (profile.ageRange === "Under 13" || profile.ageRange === "13-17" || profile.skillLevel === "Junior player") {
+    return "Junior";
+  }
+
+  if (
+    profile.skillLevel === "Brand new" ||
+    profile.skillLevel === "Beginner" ||
+    profile.handicap === "I don't know" ||
+    profile.handicap === "25+" ||
+    profile.simExperience === "Never used one"
+  ) {
+    return "Beginner";
+  }
+
+  if (
+    profile.skillLevel === "Competitive amateur" ||
+    profile.skillLevel === "Low handicap" ||
+    profile.skillLevel === "Scratch or better" ||
+    profile.handicap === "0-4" ||
+    profile.handicap === "Plus handicap"
+  ) {
+    return "Competitive";
+  }
+
+  return "Casual";
+}
+
+function buildUserPracticeProfile(answers: OnboardingAnswers): UserPracticeProfile {
+  const gameProfile = typeof answers.gameProfile === "string" ? answers.gameProfile : "casual";
+  const game = GAME_PROFILE_MAP[gameProfile] ?? GAME_PROFILE_MAP.casual;
+  const simulatorGoals = asArray(answers.simulatorUse);
+  const practiceRhythm = asArray(answers.practiceRhythm);
+  const profileBase = {
+    ageRange: typeof answers.ageRange === "string" ? answers.ageRange : undefined,
+    handedness: typeof answers.handedness === "string" ? answers.handedness : undefined,
+    skillLevel: game.skillLevel,
+    handicap: game.handicap,
+    simExperience: inferSimExperience(simulatorGoals),
+    simulatorGoals,
+    goals: asArray(answers.goals),
+    frustrations: asArray(answers.frustrations),
+    practiceStyle: inferPracticeStyle(practiceRhythm),
+    timeAvailable: inferTimeAvailable(practiceRhythm),
+    frequency: inferFrequency(practiceRhythm),
+    experienceStyle: inferExperienceStyle(practiceRhythm, simulatorGoals),
+    completedAt: new Date().toISOString(),
+  };
+
+  return {
+    ...profileBase,
+    path: getPracticePath(profileBase),
+  };
+}
+
+function buildPracticeRecommendations(profile: UserPracticeProfile): PracticeRecommendations {
+  const wantsDriverAccuracy = profile.goals.includes("Driver accuracy") || profile.frustrations.includes("Slicing");
+  const wantsWedges = profile.goals.includes("Wedge control") || profile.frustrations.includes("Poor wedge distance control");
+  const wantsData = profile.experienceStyle.includes("Data-driven training") || profile.simulatorGoals.includes("Swing data");
+
+  if (profile.path === "Junior") {
+    return {
+      pathTitle: "Junior growth path",
+      summary: "Short, energetic sessions with clear wins, skill games, and progress parents can understand.",
+      focusAreas: ["Contact quality", "Start line", "Confidence", "Distance mapping"],
+      drills: ["Five-ball contact challenge", "Fairway gate game", "Wedge landing-zone ladder"],
+      simulatorModes: ["Closest-to-pin", "Target challenge", "Junior skills combine"],
+      lessonRecommendation: "Start with a short junior evaluation and a parent-friendly progress check.",
+      trainingPlan: "Two 30-minute sessions per week: warmup game, one skill block, one fun scoring challenge.",
+      priorities: ["Keep swings athletic", "Reward solid contact", "Track simple milestones"],
+      suggestions: ["Junior league invite", "Parent progress recap", "Gamified badges"],
+    };
+  }
+
+  if (profile.path === "Beginner") {
+    return {
+      pathTitle: "Beginner confidence path",
+      summary: "Make the simulator less noisy, build better contact, and learn your first reliable yardages.",
+      focusAreas: ["Contact quality", "Basic start line", "Simple carry numbers", "Setup consistency"],
+      drills: ["Half-swing contact map", "Seven-ball start-line gate", "Three-club distance baseline"],
+      simulatorModes: ["Basic range session", "Short approach challenge", "Intro distance mapping"],
+      lessonRecommendation: "Book an intro lesson to set grip, posture, alignment, and a simple practice routine.",
+      trainingPlan: `${profile.timeAvailable} per session focused on one contact drill, one distance drill, and one confidence finish.`,
+      priorities: ["Find center contact first", "Keep face/path language simple", "Build a no-guessing practice habit"],
+      suggestions: ["Simulator orientation", "Beginner practice card", "Coach check-in after three sessions"],
+    };
+  }
+
+  if (profile.path === "Competitive") {
+    return {
+      pathTitle: "Performance path",
+      summary: "Use dispersion, wedge windows, and scoring tests to find tournament-level gains.",
+      focusAreas: wantsData ? ["Dispersion", "Face-to-path", "Wedge matrix", "Shot shaping"] : ["Shot shaping", "Wedge matrix", "Start line", "Scoring pressure"],
+      drills: ["Nine-window shot-shape block", "Wedge matrix calibration", "Driver dispersion combine"],
+      simulatorModes: ["Combine test", "Strokes-gained practice", "Randomized target ladder"],
+      lessonRecommendation: "Schedule a metrics review to turn path, face, launch, and spin into one scoring priority.",
+      trainingPlan: `${profile.frequency}: one technical block, one random practice block, and one scored combine.`,
+      priorities: ["Tighten misses", "Pressure-test yardages", "Separate technique from scoring practice"],
+      suggestions: ["Advanced league flight", "Monthly combine leaderboard", "Tournament prep session"],
+    };
+  }
+
+  return {
+    pathTitle: "Weekend improvement path",
+    summary: "A practical plan for better misses, clearer yardages, and less guessing between sessions.",
+    focusAreas: [
+      wantsDriverAccuracy ? "Driver accuracy" : "Ball striking",
+      wantsWedges ? "Wedge control" : "Iron consistency",
+      "Carry ladder",
+      "Practice structure",
+    ],
+    drills: [
+      wantsDriverAccuracy ? "Driver start-line gate" : "Impact spray contact block",
+      wantsWedges ? "Three-distance wedge ladder" : "Iron carry ladder",
+      "Ten-ball fairway or green challenge",
+    ],
+    simulatorModes: ["Distance mapping", "Target challenge", "Virtual course decision practice"],
+    lessonRecommendation: "Use one coaching session to confirm the root cause of the main miss before adding drills.",
+    trainingPlan: `${profile.timeAvailable} per session with a warmup, one skill block, one game, and a short recap.`,
+    priorities: ["Know your stock carry", "Reduce the big miss", "Make practice repeatable"],
+    suggestions: ["Casual league night", "Monthly distance refresh", "Optional coach tune-up"],
+  };
+}
+
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
   const [sessions, setSessions] = useState<Session[]>(BASE_SESSIONS);
@@ -818,6 +1230,8 @@ export default function Home() {
   const [csvText, setCsvText] = useState(DEMO_CSV);
   const [importMessage, setImportMessage] = useState("Demo CSV loaded");
   const [accountMode, setAccountMode] = useState<AccountMode>("pending");
+  const [practiceProfile, setPracticeProfile] = useState<UserPracticeProfile | null>(() => readStoredPracticeProfile());
+  const [showOnboarding, setShowOnboarding] = useState(() => !readStoredPracticeProfile());
   const [lastImport, setLastImport] = useState<LastImport>(() => makeLastImport("Photo", parseCsv(DEMO_CSV), DEFAULT_IMPORT_DATE));
   const [userName, setUserName] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState("Choose how you want to use Free Range Golf.");
@@ -857,6 +1271,41 @@ export default function Home() {
     }
   }
 
+  async function saveUserPracticeProfile(profile: UserPracticeProfile) {
+    try {
+      const response = await fetch("/api/profile", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ profile }),
+      });
+
+      if (!response.ok) {
+        setSyncStatus("Practice profile saved locally. Sign in later to attach it.");
+        return false;
+      }
+
+      setSyncStatus("Practice profile saved to your account.");
+      return true;
+    } catch {
+      setSyncStatus("Practice profile saved locally. Account sync is unavailable right now.");
+      return false;
+    }
+  }
+
+  async function loadUserPracticeProfile() {
+    try {
+      const response = await fetch("/api/profile");
+      if (!response.ok) return;
+      const payload = await response.json();
+      if (payload.profile) {
+        setPracticeProfile(payload.profile);
+        storePracticeProfile(payload.profile);
+      }
+    } catch {
+      // The dashboard can still run without a saved profile.
+    }
+  }
+
   async function connectAccount() {
     setSyncStatus("Checking your account...");
     try {
@@ -866,7 +1315,7 @@ export default function Home() {
       if (payload.mode !== "user") {
         setAccountMode("guest");
         setSyncStatus("Using guest mode. Sign-in headers were not available.");
-        return;
+        return false;
       }
 
       const savedSessions = Array.isArray(payload.sessions) && payload.sessions.length ? payload.sessions : sessions;
@@ -884,15 +1333,36 @@ export default function Home() {
           body: JSON.stringify({ sessions }),
         });
       }
+
+      await loadUserPracticeProfile();
+      return true;
     } catch {
       setAccountMode("guest");
       setSyncStatus("Using guest mode. Saved history is unavailable right now.");
+      return false;
     }
   }
 
   function continueAsGuest() {
     setAccountMode("guest");
     setSyncStatus("Guest mode: session changes stay in this browser tab.");
+  }
+
+  async function finishOnboarding(profile: UserPracticeProfile, mode: "account" | "guest") {
+    setPracticeProfile(profile);
+    storePracticeProfile(profile);
+    clearOnboardingDraft();
+    setShowOnboarding(false);
+
+    if (mode === "guest") {
+      continueAsGuest();
+      return;
+    }
+
+    const signedIn = await connectAccount();
+    if (signedIn) {
+      void saveUserPracticeProfile(profile);
+    }
   }
 
   function importCsv(submissionType: LastImport["submissionType"] = "CSV / Excel") {
@@ -910,6 +1380,16 @@ export default function Home() {
     setLastImport(makeLastImport(submissionType, shots, nextSession.date));
     setImportMessage(`${shots.length} shots imported from ${submissionType}`);
     void saveUserSessions(nextSessions);
+  }
+
+  if (showOnboarding) {
+    return (
+      <OnboardingFlow
+        initialProfile={practiceProfile}
+        onContinueAsGuest={(profile) => void finishOnboarding(profile, "guest")}
+        onRegister={(profile) => void finishOnboarding(profile, "account")}
+      />
+    );
   }
 
   return (
@@ -2027,12 +2507,252 @@ function ProStatsList({ club }: { club: string }) {
   );
 }
 
+function answersFromPracticeProfile(profile: UserPracticeProfile): OnboardingAnswers {
+  const gameProfile = Object.entries(GAME_PROFILE_MAP).find(
+    ([, value]) => value.skillLevel === profile.skillLevel && value.handicap === profile.handicap,
+  )?.[0];
+
+  return {
+    ageRange: profile.ageRange,
+    handedness: profile.handedness,
+    gameProfile,
+    simulatorUse: profile.simulatorGoals,
+    goals: profile.goals,
+    frustrations: profile.frustrations[0],
+  };
+}
+
+function OnboardingFlow({
+  initialProfile,
+  onContinueAsGuest,
+  onRegister,
+}: {
+  initialProfile: UserPracticeProfile | null;
+  onContinueAsGuest: (profile: UserPracticeProfile) => void;
+  onRegister: (profile: UserPracticeProfile) => void;
+}) {
+  const [step, setStep] = useState(0);
+  const [answers, setAnswers] = useState<OnboardingAnswers>(() => {
+    const draft = readStoredOnboardingAnswers();
+    return Object.keys(draft).length ? draft : initialProfile ? answersFromPracticeProfile(initialProfile) : {};
+  });
+  const isFinalStep = step >= ONBOARDING_QUESTIONS.length;
+  const currentQuestion = ONBOARDING_QUESTIONS[step];
+  const progress = Math.min(100, Math.round((step / ONBOARDING_QUESTIONS.length) * 100));
+  const userPracticeProfile = buildUserPracticeProfile(answers);
+  const recommendations = buildPracticeRecommendations(userPracticeProfile);
+  const currentAnswer = currentQuestion ? answers[currentQuestion.id] : undefined;
+  const selectedValues = asArray(currentAnswer);
+  const canContinue = !currentQuestion || selectedValues.length > 0;
+
+  function updateAnswer(question: OnboardingQuestion, value: string) {
+    let nextValue: string | string[];
+
+    if (question.type === "single") {
+      nextValue = value;
+    } else {
+      const currentValues = asArray(answers[question.id]);
+      const isSelected = currentValues.includes(value);
+      if (!isSelected && question.maxSelections && currentValues.length >= question.maxSelections) {
+        nextValue = currentValues;
+      } else {
+        nextValue = isSelected ? currentValues.filter((item) => item !== value) : [...currentValues, value];
+      }
+    }
+
+    const nextAnswers = { ...answers, [question.id]: nextValue };
+    setAnswers(nextAnswers);
+    storeOnboardingAnswers(nextAnswers);
+  }
+
+  function goNext() {
+    if (!currentQuestion || !canContinue) return;
+    setStep((value) => Math.min(value + 1, ONBOARDING_QUESTIONS.length));
+  }
+
+  function skipQuestion() {
+    if (!currentQuestion) return;
+    const nextAnswers = { ...answers };
+    delete nextAnswers[currentQuestion.id];
+    setAnswers(nextAnswers);
+    storeOnboardingAnswers(nextAnswers);
+    setStep((value) => Math.min(value + 1, ONBOARDING_QUESTIONS.length));
+  }
+
+  if (isFinalStep) {
+    const profileRows = [
+      ["Level", userPracticeProfile.skillLevel],
+      ["Handicap", userPracticeProfile.handicap],
+      ["Time", userPracticeProfile.timeAvailable],
+      ["Rhythm", userPracticeProfile.frequency],
+    ];
+
+    return (
+      <main className="onboarding-shell">
+        <section className="onboarding-card final">
+          <header className="onboarding-brand">
+            <div className="onboarding-logo">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img alt="Free Range Golf logo" src="/logos/free-range-golf.png" />
+            </div>
+            <div>
+              <span>Free Range Golf</span>
+              <strong>Practice profile ready</strong>
+            </div>
+          </header>
+
+          <div className="onboarding-final-hero">
+            <p className="eyebrow">Personalized path</p>
+            <h1>{recommendations.pathTitle}</h1>
+            <p>{recommendations.summary}</p>
+          </div>
+
+          <div className="onboarding-summary-grid">
+            <article>
+              <span>Focus areas</span>
+              <div className="summary-chip-row">
+                {recommendations.focusAreas.map((item) => (
+                  <strong key={item}>{item}</strong>
+                ))}
+              </div>
+            </article>
+            <article>
+              <span>Starter drills</span>
+              <ul>
+                {recommendations.drills.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </article>
+            <article>
+              <span>Simulator modes</span>
+              <ul>
+                {recommendations.simulatorModes.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </article>
+            <article>
+              <span>Training plan</span>
+              <p>{recommendations.trainingPlan}</p>
+            </article>
+            <article>
+              <span>Lesson recommendation</span>
+              <p>{recommendations.lessonRecommendation}</p>
+            </article>
+            <article>
+              <span>Next priorities</span>
+              <ul>
+                {recommendations.priorities.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </article>
+            <article>
+              <span>Optional suggestions</span>
+              <ul>
+                {recommendations.suggestions.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </article>
+          </div>
+
+          <div className="onboarding-profile-strip">
+            {profileRows.map(([label, value]) => (
+              <div key={label}>
+                <span>{label}</span>
+                <strong>{value}</strong>
+              </div>
+            ))}
+          </div>
+
+          <div className="onboarding-actions final-actions">
+            <button className="secondary-action" onClick={() => setStep(ONBOARDING_QUESTIONS.length - 1)}>
+              Back
+            </button>
+            <button className="primary-action" onClick={() => onRegister(userPracticeProfile)}>
+              Create account
+            </button>
+            <button className="text-button" onClick={() => onContinueAsGuest(userPracticeProfile)}>
+              Continue as guest
+            </button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="onboarding-shell">
+      <section className="onboarding-card">
+        <header className="onboarding-brand">
+          <div className="onboarding-logo">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img alt="Free Range Golf logo" src="/logos/free-range-golf.png" />
+          </div>
+          <div>
+            <span>Free Range Golf</span>
+            <strong>Personalized practice setup</strong>
+          </div>
+        </header>
+
+        <div className="onboarding-progress" aria-label="Onboarding progress">
+          <span style={{ width: `${progress}%` }} />
+        </div>
+
+        <div className="onboarding-question">
+          <span>
+            Question {step + 1} of {ONBOARDING_QUESTIONS.length}
+          </span>
+          <h1>{currentQuestion.title}</h1>
+          <p>{currentQuestion.helper}</p>
+        </div>
+
+        <div className={cls("onboarding-options", currentQuestion.display)}>
+          {currentQuestion.options.map((option) => {
+            const selected = selectedValues.includes(option.value);
+            return (
+              <button
+                className={cls("onboarding-option", selected && "selected")}
+                key={option.value}
+                onClick={() => updateAnswer(currentQuestion, option.value)}
+              >
+                <strong>{option.label}</strong>
+                {option.detail && <span>{option.detail}</span>}
+              </button>
+            );
+          })}
+        </div>
+
+        {currentQuestion.maxSelections && currentQuestion.type === "multi" && (
+          <p className="onboarding-selection-note">
+            {selectedValues.length}/{currentQuestion.maxSelections} selected
+          </p>
+        )}
+
+        <div className="onboarding-actions">
+          <button className="secondary-action" disabled={step === 0} onClick={() => setStep((value) => Math.max(0, value - 1))}>
+            Back
+          </button>
+          <button className="text-button" onClick={skipQuestion}>
+            Skip
+          </button>
+          <button className="primary-action" disabled={!canContinue} onClick={goNext}>
+            Continue
+          </button>
+        </div>
+      </section>
+    </main>
+  );
+}
+
 function AccountGate({
   connectAccount,
   continueAsGuest,
   syncStatus,
 }: {
-  connectAccount: () => void;
+  connectAccount: () => void | Promise<boolean>;
   continueAsGuest: () => void;
   syncStatus: string;
 }) {
