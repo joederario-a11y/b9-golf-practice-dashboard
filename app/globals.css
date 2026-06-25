@@ -329,6 +329,28 @@ button {
   outline: 3px solid rgba(23, 114, 69, 0.22);
 }
 
+.kpi-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.kpi-title svg {
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(31, 43, 55, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  color: currentColor;
+  fill: none;
+  padding: 6px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.2;
+}
+
 .kpi span {
   color: var(--muted);
   font-size: 12px;

@@ -1808,7 +1808,10 @@ function Kpi({
 
   return (
     <article className={cls("kpi", tone)} tabIndex={0}>
-      <span>{label}</span>
+      <span className="kpi-title">
+        <KpiGraphic metricKey={metricKey} />
+        <span>{label}</span>
+      </span>
       <strong>
         {value}
         <small>{unit}</small>
@@ -1822,6 +1825,117 @@ function Kpi({
       )}
     </article>
   );
+}
+
+function KpiGraphic({ metricKey }: { metricKey: string }) {
+  switch (metricKey) {
+    case "quality":
+      return (
+        <svg aria-hidden="true" viewBox="0 0 32 32">
+          <path d="M16 4l9 3v7c0 6.2-3.6 10.6-9 14-5.4-3.4-9-7.8-9-14V7l9-3z" />
+          <path d="M11 16l3.2 3.2L21.5 12" />
+        </svg>
+      );
+    case "carry":
+      return (
+        <svg aria-hidden="true" viewBox="0 0 32 32">
+          <path d="M5 24c4.7-10.8 12-16 22-16" />
+          <path d="M22 7h5v5" />
+          <circle cx="6" cy="24" r="2" />
+        </svg>
+      );
+    case "dispersion":
+      return (
+        <svg aria-hidden="true" viewBox="0 0 32 32">
+          <circle cx="16" cy="16" r="9" />
+          <circle cx="16" cy="16" r="3" />
+          <path d="M5 16h6M21 16h6M16 5v6M16 21v6" />
+          <circle cx="9" cy="21" r="1.5" />
+          <circle cx="23" cy="12" r="1.5" />
+        </svg>
+      );
+    case "smash":
+      return (
+        <svg aria-hidden="true" viewBox="0 0 32 32">
+          <circle cx="16" cy="16" r="4" />
+          <path d="M16 4v6M16 22v6M4 16h6M22 16h6M7.5 7.5l4.2 4.2M20.3 20.3l4.2 4.2M24.5 7.5l-4.2 4.2M11.7 20.3l-4.2 4.2" />
+        </svg>
+      );
+    case "ballSpeed":
+      return (
+        <svg aria-hidden="true" viewBox="0 0 32 32">
+          <path d="M4 11h10M3 16h12M6 21h8" />
+          <circle cx="22" cy="16" r="6" />
+          <path d="M20 12c2 1.4 3.3 3.7 3.6 7" />
+        </svg>
+      );
+    case "clubSpeed":
+      return (
+        <svg aria-hidden="true" viewBox="0 0 32 32">
+          <path d="M20 4c-1.2 7.3-4.8 13.4-11 18" />
+          <path d="M7 23l5 5 3-3-5-5-3 3z" />
+          <path d="M20 4c4.8 3.8 6.4 9 4.8 15" />
+        </svg>
+      );
+    case "total":
+      return (
+        <svg aria-hidden="true" viewBox="0 0 32 32">
+          <path d="M5 23h22" />
+          <path d="M8 23V10l9-3v8l-9-3" />
+          <path d="M14 18h9l-3-3M23 18l-3 3" />
+        </svg>
+      );
+    case "apex":
+      return (
+        <svg aria-hidden="true" viewBox="0 0 32 32">
+          <path d="M5 24c4.8-12 9.5-18 14-18s6.8 6 8 18" />
+          <path d="M16 9v12" />
+          <path d="M12 13l4-4 4 4" />
+        </svg>
+      );
+    case "spin":
+      return (
+        <svg aria-hidden="true" viewBox="0 0 32 32">
+          <path d="M23.5 9.5A9 9 0 0 0 7.8 14" />
+          <path d="M22 5v6h6" />
+          <path d="M8.5 22.5A9 9 0 0 0 24.2 18" />
+          <path d="M10 27v-6H4" />
+        </svg>
+      );
+    case "launch":
+      return (
+        <svg aria-hidden="true" viewBox="0 0 32 32">
+          <path d="M6 25h20" />
+          <path d="M8 23l14-14" />
+          <path d="M16 9h6v6" />
+          <path d="M9 18c4 0 7 2 9 6" />
+        </svg>
+      );
+    case "descent":
+      return (
+        <svg aria-hidden="true" viewBox="0 0 32 32">
+          <path d="M6 25h20" />
+          <path d="M8 8c8 2 13.7 7.4 17 16" />
+          <path d="M22 18l3 6-6-2" />
+        </svg>
+      );
+    case "faceToPath":
+      return (
+        <svg aria-hidden="true" viewBox="0 0 32 32">
+          <path d="M6 23c5.5-7.8 11.8-12.4 20-14" />
+          <path d="M8 9l16 14" />
+          <path d="M20 8l6 1-4 4" />
+          <path d="M20 23h4v4" />
+        </svg>
+      );
+    default:
+      return (
+        <svg aria-hidden="true" viewBox="0 0 32 32">
+          <path d="M6 22l7-7 5 4 8-10" />
+          <path d="M21 9h5v5" />
+        </svg>
+      );
+  }
 }
 
 function MetricMatrix({ summary }: { summary?: ClubSummary }) {
