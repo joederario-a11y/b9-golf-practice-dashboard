@@ -2578,6 +2578,65 @@ button:disabled {
   font-weight: 900;
 }
 
+.login-mode-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+  padding: 5px;
+}
+
+.login-mode-switch button {
+  min-height: 42px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 900;
+}
+
+.login-mode-switch button.active {
+  border-color: rgba(53, 242, 122, 0.4);
+  background: rgba(53, 242, 122, 0.13);
+  color: var(--green);
+}
+
+.login-debug-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px;
+  border: 1px solid rgba(53, 242, 122, 0.28);
+  border-radius: 8px;
+  background: rgba(53, 242, 122, 0.08);
+  padding: 12px;
+}
+
+.login-debug-card div {
+  display: grid;
+  gap: 4px;
+}
+
+.login-debug-card strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.login-debug-card span,
+.login-inline-action {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.login-inline-action {
+  justify-self: start;
+}
+
 .video-file-picker {
   display: grid;
   min-height: 104px;

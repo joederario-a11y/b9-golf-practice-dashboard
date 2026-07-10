@@ -21,6 +21,12 @@ function appUrl(request: Request, path: string) {
   return `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
+function canExposeLocalLoginUrl(request: Request) {
+  const runtime = getPlatformEnvironment();
+  const hostname = new URL(request.url).hostname;
+  return runtime.DEV_AUTH_ENABLED === "true" || hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+}
+
 export async function requestLoginEmail(request: Request, email: string, redirectPath = "/?tab=videos") {
   const normalizedEmail = email.trim().toLowerCase();
   const database = getRequiredDatabase();
@@ -41,7 +47,8 @@ export async function requestLoginEmail(request: Request, email: string, redirec
   if (!user) {
     return {
       status: "Not found" as const,
-      publicMessage: "If that email has access, a login link will arrive shortly.",
+      needsRegistration: true,
+      publicMessage: "No account was found for that email. Create a new account or ask your coach for an invite.",
     };
   }
 
@@ -54,11 +61,14 @@ export async function requestLoginEmail(request: Request, email: string, redirec
   const loginUrl = appUrl(request, `/?login=${encodeURIComponent(token)}${redirectPath.includes("tab=") ? "" : "&tab=videos"}`);
   const runtime = getPlatformEnvironment();
   if (!runtime.RESEND_API_KEY || !runtime.VIDEO_EMAIL_FROM) {
+    const localLoginAvailable = canExposeLocalLoginUrl(request);
     return {
-      status: "Failed" as const,
-      debugLoginUrl: runtime.DEV_AUTH_ENABLED === "true" ? loginUrl : undefined,
+      status: localLoginAvailable ? "Local link ready" as const : "Failed" as const,
+      debugLoginUrl: localLoginAvailable ? loginUrl : undefined,
       failureReason: "Email delivery is not configured. Add RESEND_API_KEY and VIDEO_EMAIL_FROM.",
-      publicMessage: "Email delivery is not configured yet.",
+      publicMessage: localLoginAvailable
+        ? "Email is not configured locally. Use the local test login link below."
+        : "Email delivery is not configured yet.",
     };
   }
 

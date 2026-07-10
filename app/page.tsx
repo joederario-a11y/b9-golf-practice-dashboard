@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 
 type Tab = "dashboard" | "sessions" | "clubs" | "videos" | "coach" | "practice" | "import";
 type AccountMode = "pending" | "user" | "guest";
+type LoginModalMode = "login" | "register";
 
 type Shot = {
   id: string;
@@ -2319,6 +2320,7 @@ export default function Home() {
   const [accountUser, setAccountUser] = useState<AccountUser | null>(null);
   const [devAuthEnabled, setDevAuthEnabled] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
+  const [loginModalMode, setLoginModalMode] = useState<LoginModalMode>("login");
   const [syncStatus, setSyncStatus] = useState("Choose how you want to use Free Range Golf.");
 
   const clubs = useMemo(() => summarizeClubs(sessions), [sessions]);
@@ -2527,7 +2529,10 @@ export default function Home() {
       if (payload.mode !== "user" || accountPayload.mode !== "user") {
         setAccountMode("guest");
         setSyncStatus("Use an email login link to open your private account.");
-        if (options.promptForEmail) setShowLoginModal(true);
+        if (options.promptForEmail) {
+          setLoginModalMode("login");
+          setShowLoginModal(true);
+        }
         return false;
       }
 
@@ -2566,7 +2571,10 @@ export default function Home() {
     } catch {
       setAccountMode("guest");
       setSyncStatus("Using guest mode. Saved history is unavailable right now.");
-      if (options.promptForEmail) setShowLoginModal(true);
+      if (options.promptForEmail) {
+        setLoginModalMode("login");
+        setShowLoginModal(true);
+      }
       return false;
     }
   }
@@ -2710,7 +2718,13 @@ export default function Home() {
               <strong>{accountMode === "user" ? userName : syncStatus}</strong>
             </div>
             {accountMode !== "user" && (
-              <button className="secondary-action" onClick={() => void connectAccount({ promptForEmail: true })}>
+              <button
+                className="secondary-action"
+                onClick={() => {
+                  setLoginModalMode("login");
+                  void connectAccount({ promptForEmail: true });
+                }}
+              >
                 Log in
               </button>
             )}
@@ -2807,14 +2821,22 @@ export default function Home() {
 
       {accountMode === "pending" && (
         <AccountGate
-          connectAccount={() => connectAccount({ promptForEmail: true })}
+          connectAccount={() => {
+            setLoginModalMode("login");
+            return connectAccount({ promptForEmail: true });
+          }}
           continueAsGuest={continueAsGuest}
+          createAccount={() => {
+            setLoginModalMode("register");
+            setShowLoginModal(true);
+          }}
           syncStatus={syncStatus}
         />
       )}
 
       {showLoginModal && (
         <LoginRequestModal
+          initialMode={loginModalMode}
           onClose={() => setShowLoginModal(false)}
           onStatus={setSyncStatus}
         />
@@ -6085,36 +6107,57 @@ function OnboardingFlow({
 }
 
 function LoginRequestModal({
+  initialMode,
   onClose,
   onStatus,
 }: {
+  initialMode: LoginModalMode;
   onClose: () => void;
   onStatus: (message: string) => void;
 }) {
+  const [mode, setMode] = useState<LoginModalMode>(initialMode);
   const [email, setEmail] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [state, setState] = useState<"idle" | "sending">("idle");
-  const [message, setMessage] = useState("Enter the email connected to your Free Range Golf account.");
+  const [message, setMessage] = useState(
+    initialMode === "register"
+      ? "Create your account, then open it with a secure email link."
+      : "Enter the email connected to your Free Range Golf account.",
+  );
   const [debugLoginUrl, setDebugLoginUrl] = useState("");
+
+  function changeMode(nextMode: LoginModalMode) {
+    setMode(nextMode);
+    setDebugLoginUrl("");
+    setMessage(
+      nextMode === "register"
+        ? "Create your account, then open it with a secure email link."
+        : "Enter the email connected to your Free Range Golf account.",
+    );
+  }
 
   async function requestLogin(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setState("sending");
     setDebugLoginUrl("");
     try {
-      const response = await fetch("/api/auth/request", {
+      const response = await fetch(mode === "register" ? "/api/auth/register" : "/api/auth/request", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, redirectPath: "/?tab=videos" }),
+        body: JSON.stringify({ email, firstName, lastName, redirectPath: "/?tab=videos" }),
       });
       const payload = await response.json().catch(() => ({})) as {
         debugLoginUrl?: string;
         error?: string;
+        needsRegistration?: boolean;
         publicMessage?: string;
       };
       const nextMessage = payload.publicMessage ?? payload.error ?? "Check your email for a secure login link.";
       setMessage(nextMessage);
       onStatus(nextMessage);
       if (payload.debugLoginUrl) setDebugLoginUrl(payload.debugLoginUrl);
+      if (payload.needsRegistration) setMode("register");
     } catch {
       setMessage("The login email could not be sent right now.");
       onStatus("The login email could not be sent right now.");
@@ -6129,10 +6172,42 @@ function LoginRequestModal({
         <div className="video-modal-header">
           <div>
             <p className="eyebrow">Secure login</p>
-            <h2>Email me a login link</h2>
+            <h2>{mode === "register" ? "Create your account" : "Email me a login link"}</h2>
           </div>
           <button aria-label="Close login dialog" className="icon-button" onClick={onClose} type="button">×</button>
         </div>
+        <div className="login-mode-switch" aria-label="Account access options">
+          <button className={mode === "login" ? "active" : ""} onClick={() => changeMode("login")} type="button">
+            Sign in
+          </button>
+          <button className={mode === "register" ? "active" : ""} onClick={() => changeMode("register")} type="button">
+            New user
+          </button>
+        </div>
+        {mode === "register" && (
+          <div className="video-form-grid">
+            <label>
+              <span>First name</span>
+              <input
+                onChange={(event) => setFirstName(event.target.value)}
+                placeholder="Joe"
+                required
+                type="text"
+                value={firstName}
+              />
+            </label>
+            <label>
+              <span>Last name</span>
+              <input
+                onChange={(event) => setLastName(event.target.value)}
+                placeholder="Derario"
+                required
+                type="text"
+                value={lastName}
+              />
+            </label>
+          </div>
+        )}
         <label className="video-form-wide">
           <span>Email</span>
           <input
@@ -6146,16 +6221,25 @@ function LoginRequestModal({
         </label>
         <p className="muted-copy">{message}</p>
         {debugLoginUrl && (
-          <a className="secondary-action" href={debugLoginUrl}>
-            Open local test login
-          </a>
+          <div className="login-debug-card">
+            <div>
+              <strong>Local test link ready</strong>
+              <span>This appears because email delivery is not configured on this local copy.</span>
+            </div>
+            <a className="secondary-action" href={debugLoginUrl}>
+              Open secure link
+            </a>
+          </div>
         )}
+        <button className="text-button login-inline-action" onClick={() => changeMode(mode === "login" ? "register" : "login")} type="button">
+          {mode === "login" ? "New here? Create an account" : "Already have an account? Sign in"}
+        </button>
         <div className="video-modal-actions">
           <span />
           <div className="button-row">
             <button className="secondary-action" onClick={onClose} type="button">Cancel</button>
             <button className="primary-action" disabled={state === "sending"} type="submit">
-              {state === "sending" ? "Sending..." : "Send Login Link"}
+              {state === "sending" ? "Sending..." : mode === "register" ? "Create Account" : "Send Login Link"}
             </button>
           </div>
         </div>
@@ -6167,10 +6251,12 @@ function LoginRequestModal({
 function AccountGate({
   connectAccount,
   continueAsGuest,
+  createAccount,
   syncStatus,
 }: {
   connectAccount: () => void | Promise<boolean>;
   continueAsGuest: () => void;
+  createAccount: () => void;
   syncStatus: string;
 }) {
   return (
@@ -6185,6 +6271,10 @@ function AccountGate({
           <button className="account-choice primary-choice" onClick={connectAccount}>
             <strong>Log in and save history</strong>
             <span>Use your signed-in workspace account to keep previous simulator sessions.</span>
+          </button>
+          <button className="account-choice" onClick={createAccount}>
+            <strong>Create a new account</strong>
+            <span>Register with your email, then open your private video library from a secure link.</span>
           </button>
           <button className="account-choice" onClick={continueAsGuest}>
             <strong>Continue as guest</strong>
