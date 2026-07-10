@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 type Tab = "dashboard" | "sessions" | "clubs" | "videos" | "coach" | "practice" | "import";
 type AccountMode = "pending" | "user" | "guest";
 type LoginModalMode = "login" | "register";
+type RegisterAccountType = "player" | "coach";
 
 type Shot = {
   id: string;
@@ -2579,12 +2580,6 @@ export default function Home() {
     }
   }
 
-  function continueAsGuest() {
-    setAccountMode("guest");
-    setAccountUser(null);
-    setSyncStatus("Guest mode: session changes are saved in this browser.");
-  }
-
   function changeWorkspaceRole(role: VideoViewerRole) {
     setWorkspaceRole(role);
     if (role === "user") setVideoLibraryMemberId("current-user");
@@ -2597,21 +2592,15 @@ export default function Home() {
     );
   }
 
-  async function finishOnboarding(profile: UserPracticeProfile, mode: "account" | "guest") {
+  function finishOnboarding(profile: UserPracticeProfile) {
     setPracticeProfile(profile);
     storePracticeProfile(profile);
     clearOnboardingDraft();
     setShowOnboarding(false);
-
-    if (mode === "guest") {
-      continueAsGuest();
-      return;
-    }
-
-    const signedIn = await connectAccount();
-    if (signedIn) {
-      void saveUserPracticeProfile(profile);
-    }
+    setAccountMode((current) => current === "pending" ? "guest" : current);
+    setLoginModalMode("register");
+    setShowLoginModal(true);
+    setSyncStatus("Create your account to save your practice profile.");
   }
 
   function importShots(
@@ -2657,8 +2646,7 @@ export default function Home() {
     return (
       <OnboardingFlow
         initialProfile={practiceProfile}
-        onContinueAsGuest={(profile) => void finishOnboarding(profile, "guest")}
-        onRegister={(profile) => void finishOnboarding(profile, "account")}
+        onRegister={finishOnboarding}
       />
     );
   }
@@ -2825,7 +2813,6 @@ export default function Home() {
             setLoginModalMode("login");
             return connectAccount({ promptForEmail: true });
           }}
-          continueAsGuest={continueAsGuest}
           createAccount={() => {
             setLoginModalMode("register");
             setShowLoginModal(true);
@@ -5848,11 +5835,9 @@ function answersFromPracticeProfile(profile: UserPracticeProfile): OnboardingAns
 
 function OnboardingFlow({
   initialProfile,
-  onContinueAsGuest,
   onRegister,
 }: {
   initialProfile: UserPracticeProfile | null;
-  onContinueAsGuest: (profile: UserPracticeProfile) => void;
   onRegister: (profile: UserPracticeProfile) => void;
 }) {
   const [step, setStep] = useState(0);
@@ -5914,15 +5899,6 @@ function OnboardingFlow({
 
   function goNext() {
     if (!currentQuestion || !canContinue) return;
-    setStep((value) => Math.min(value + 1, ONBOARDING_QUESTIONS.length));
-  }
-
-  function skipQuestion() {
-    if (!currentQuestion) return;
-    const nextAnswers = { ...answers };
-    delete nextAnswers[currentQuestion.id];
-    setAnswers(nextAnswers);
-    storeOnboardingAnswers(nextAnswers);
     setStep((value) => Math.min(value + 1, ONBOARDING_QUESTIONS.length));
   }
 
@@ -6021,9 +5997,6 @@ function OnboardingFlow({
             <button className="primary-action" onClick={() => onRegister(userPracticeProfile)}>
               Create account
             </button>
-            <button className="text-button" onClick={() => onContinueAsGuest(userPracticeProfile)}>
-              Continue as guest
-            </button>
           </div>
         </section>
       </main>
@@ -6094,9 +6067,6 @@ function OnboardingFlow({
           <button className="secondary-action" disabled={step === 0} onClick={() => setStep((value) => Math.max(0, value - 1))}>
             Back
           </button>
-          <button className="text-button" onClick={skipQuestion}>
-            Skip
-          </button>
           <button className="primary-action" disabled={!canContinue} onClick={goNext}>
             Continue
           </button>
@@ -6119,6 +6089,7 @@ function LoginRequestModal({
   const [email, setEmail] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
+  const [accountType, setAccountType] = useState<RegisterAccountType>("player");
   const [state, setState] = useState<"idle" | "sending">("idle");
   const [message, setMessage] = useState(
     initialMode === "register"
@@ -6145,7 +6116,7 @@ function LoginRequestModal({
       const response = await fetch(mode === "register" ? "/api/auth/register" : "/api/auth/request", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, firstName, lastName, redirectPath: "/?tab=videos" }),
+        body: JSON.stringify({ accountType, email, firstName, lastName, redirectPath: "/?tab=videos" }),
       });
       const payload = await response.json().catch(() => ({})) as {
         debugLoginUrl?: string;
@@ -6185,28 +6156,48 @@ function LoginRequestModal({
           </button>
         </div>
         {mode === "register" && (
-          <div className="video-form-grid">
-            <label>
-              <span>First name</span>
-              <input
-                onChange={(event) => setFirstName(event.target.value)}
-                placeholder="Joe"
-                required
-                type="text"
-                value={firstName}
-              />
-            </label>
-            <label>
-              <span>Last name</span>
-              <input
-                onChange={(event) => setLastName(event.target.value)}
-                placeholder="Derario"
-                required
-                type="text"
-                value={lastName}
-              />
-            </label>
-          </div>
+          <>
+            <div className="account-type-switch" aria-label="Choose account type">
+              <button
+                className={accountType === "player" ? "active" : ""}
+                onClick={() => setAccountType("player")}
+                type="button"
+              >
+                <strong>Player</strong>
+                <span>Watch lesson videos and track your practice.</span>
+              </button>
+              <button
+                className={accountType === "coach" ? "active" : ""}
+                onClick={() => setAccountType("coach")}
+                type="button"
+              >
+                <strong>Coach</strong>
+                <span>Upload videos and manage assigned players.</span>
+              </button>
+            </div>
+            <div className="video-form-grid">
+              <label>
+                <span>First name</span>
+                <input
+                  onChange={(event) => setFirstName(event.target.value)}
+                  placeholder="Joe"
+                  required
+                  type="text"
+                  value={firstName}
+                />
+              </label>
+              <label>
+                <span>Last name</span>
+                <input
+                  onChange={(event) => setLastName(event.target.value)}
+                  placeholder="Derario"
+                  required
+                  type="text"
+                  value={lastName}
+                />
+              </label>
+            </div>
+          </>
         )}
         <label className="video-form-wide">
           <span>Email</span>
@@ -6250,12 +6241,10 @@ function LoginRequestModal({
 
 function AccountGate({
   connectAccount,
-  continueAsGuest,
   createAccount,
   syncStatus,
 }: {
   connectAccount: () => void | Promise<boolean>;
-  continueAsGuest: () => void;
   createAccount: () => void;
   syncStatus: string;
 }) {
@@ -6264,21 +6253,17 @@ function AccountGate({
       <section className="account-modal">
         <div>
           <p className="eyebrow">Welcome to Free Range Golf</p>
-          <h2>Save sessions or keep it temporary.</h2>
+          <h2>Create your account or sign in.</h2>
           <span>{syncStatus}</span>
         </div>
         <div className="account-choice-grid">
           <button className="account-choice primary-choice" onClick={connectAccount}>
-            <strong>Log in and save history</strong>
-            <span>Use your signed-in workspace account to keep previous simulator sessions.</span>
+            <strong>Sign in</strong>
+            <span>Open your saved video library and simulator history.</span>
           </button>
           <button className="account-choice" onClick={createAccount}>
             <strong>Create a new account</strong>
             <span>Register with your email, then open your private video library from a secure link.</span>
-          </button>
-          <button className="account-choice" onClick={continueAsGuest}>
-            <strong>Continue as guest</strong>
-            <span>Explore the dashboard without saving data after you leave.</span>
           </button>
         </div>
       </section>

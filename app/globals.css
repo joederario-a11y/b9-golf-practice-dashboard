@@ -2605,6 +2605,44 @@ button:disabled {
   color: var(--green);
 }
 
+.account-type-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.account-type-switch button {
+  display: grid;
+  min-height: 96px;
+  align-content: start;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  padding: 13px;
+  text-align: left;
+}
+
+.account-type-switch button.active {
+  border-color: rgba(53, 242, 122, 0.5);
+  background: rgba(53, 242, 122, 0.12);
+}
+
+.account-type-switch strong {
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.account-type-switch span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .login-debug-card {
   display: flex;
   align-items: center;
@@ -3898,6 +3936,7 @@ button:disabled {
   }
 
   .account-choice-grid,
+  .account-type-switch,
   .metric-matrix,
   .benchmark-list,
   .coach-context-grid {
