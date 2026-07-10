@@ -1,5 +1,8 @@
-import { env } from "cloudflare:workers";
-import { headers } from "next/headers";
+import {
+  getIdentity,
+  getRequiredDatabase,
+  responseFromError,
+} from "@/lib/server/platform";
 
 type PracticeProfilePayload = {
   profile?: unknown;
@@ -9,22 +12,8 @@ function toErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unexpected error";
 }
 
-async function getIdentity() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedName = requestHeaders.get("oai-authenticated-user-full-name");
-  const displayName =
-    encodedName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedName)
-      : email;
-
-  return email ? { email, displayName } : null;
-}
-
 async function ensureSchema() {
-  const d1 = env.DB;
+  const d1 = getRequiredDatabase();
   await d1
     .prepare(
       `CREATE TABLE IF NOT EXISTS golf_practice_profiles (
@@ -46,7 +35,7 @@ export async function GET() {
     }
 
     await ensureSchema();
-    const row = await env.DB
+    const row = await getRequiredDatabase()
       .prepare(
         "SELECT profile_json, updated_at FROM golf_practice_profiles WHERE user_email = ?",
       )
@@ -77,7 +66,7 @@ export async function POST(request: Request) {
     }
 
     await ensureSchema();
-    await env.DB
+    await getRequiredDatabase()
       .prepare(
         `INSERT INTO golf_practice_profiles (
           user_email,
@@ -97,6 +86,6 @@ export async function POST(request: Request) {
 
     return Response.json({ ok: true, user: identity });
   } catch (error) {
-    return Response.json({ error: toErrorMessage(error) }, { status: 500 });
+    return responseFromError(error);
   }
 }

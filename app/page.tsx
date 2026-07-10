@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-type Tab = "dashboard" | "sessions" | "clubs" | "coach" | "practice" | "import";
+type Tab = "dashboard" | "sessions" | "clubs" | "videos" | "coach" | "practice" | "import";
 type AccountMode = "pending" | "user" | "guest";
 
 type Shot = {
@@ -27,6 +27,8 @@ type Shot = {
   faceToPath?: number;
   sideCarry?: number;
   sideTotal?: number;
+  curve?: number;
+  detectedMetrics?: NumericShotMetric[];
 };
 
 type Session = {
@@ -35,6 +37,7 @@ type Session = {
   date: string;
   source: string;
   focus: string;
+  location?: string;
   shots: Shot[];
 };
 
@@ -67,6 +70,8 @@ type ClubSummary = {
   spinAxis: number;
   faceToPath: number;
   sideCarry: number;
+  horizontalAngle: number;
+  curve: number;
   quality: number;
 };
 
@@ -94,11 +99,56 @@ type ProTourStats = {
 
 type LastImport = {
   date: string;
-  facilityName: string;
+  location: string;
   simulator: string;
   submissionType: "API feed" | "CSV / Excel" | "Photo";
   shots: Shot[];
 };
+
+type PhotoImportMetadata = {
+  location?: string;
+  capturedAt?: string;
+  latitude?: number;
+  longitude?: number;
+};
+
+type NumericShotMetric =
+  | "carry"
+  | "total"
+  | "ballSpeed"
+  | "clubSpeed"
+  | "smash"
+  | "launch"
+  | "spin"
+  | "offline"
+  | "proximity"
+  | "apex"
+  | "spinAxis"
+  | "descent"
+  | "horizontalAngle"
+  | "faceAngle"
+  | "clubPath"
+  | "faceToPath"
+  | "sideCarry"
+  | "sideTotal"
+  | "curve";
+
+type PhotoScanResult =
+  | {
+      id: string;
+      fileName: string;
+      status: "ready";
+      simulator: string;
+      shot: Shot;
+      confidence: number;
+      metadata: PhotoImportMetadata;
+    }
+  | {
+      id: string;
+      fileName: string;
+      status: "error";
+      message: string;
+    };
 
 type CoachMessage = {
   id: string;
@@ -106,14 +156,145 @@ type CoachMessage = {
   content: string;
 };
 
+type VideoUploader = "User" | "Coach" | "Admin";
+type VideoType =
+  | "Lesson Recap"
+  | "Swing Review"
+  | "Practice Session"
+  | "Drill"
+  | "Drill Explanation"
+  | "Practice Assignment"
+  | "Coach Feedback"
+  | "Before / After"
+  | "User Upload"
+  | "Other";
+type VideoSwingType = "Driver" | "Iron" | "Wedge" | "Putting" | "Chipping" | "Bunker" | "Other";
+type VideoFocusArea =
+  | "Driver"
+  | "Irons"
+  | "Wedges"
+  | "Putting"
+  | "Chipping"
+  | "Bunker"
+  | "Setup"
+  | "Grip"
+  | "Tempo"
+  | "Club Path"
+  | "Face Control"
+  | "Distance Control"
+  | "Shot Shape"
+  | "Other";
+type VideoVisibility = "User only" | "Coach + User" | "Admin only";
+type VideoStatus = "New" | "Reviewed" | "Coach Feedback";
+type VideoViewerRole = "user" | "coach" | "admin";
+type VideoPublicationStatus = "Draft" | "Published" | "Archived";
+type VideoEmailStatus = "Not sent" | "Sent" | "Failed";
+
+type CoachMember = {
+  id: string;
+  name: string;
+  firstName?: string;
+  lastName?: string;
+  email: string;
+  phone: string;
+  skillLevel?: string;
+  notes?: string;
+  inviteStatus?: string;
+  createdAt?: string;
+  videoCount?: number;
+  lastVideoAt?: string;
+  membershipType?: string;
+  membershipStatus?: "Active" | "Paused";
+  recentLessonDate?: string;
+  coachIds?: string[];
+};
+
+type AccountUser = {
+  id: string;
+  displayName: string;
+  email: string;
+  role: "admin" | "coach" | "member";
+  firstName: string;
+  lastName: string;
+};
+
+type VideoEmailNotificationLog = {
+  id: string;
+  emailTo: string;
+  emailSubject: string;
+  status: "sent" | "failed";
+  sentAt: string;
+  failureReason?: string;
+};
+
+type VideoLibraryRecord = {
+  id: string;
+  ownerId: string;
+  title: string;
+  description: string;
+  uploadedAt: string;
+  uploadedBy: VideoUploader;
+  type: VideoType;
+  tags: string[];
+  sessionId?: string;
+  club?: string;
+  swingType?: VideoSwingType;
+  visibility: VideoVisibility;
+  duration: number;
+  status: VideoStatus;
+  coachNotes: string;
+  coachNotesPrivate: boolean;
+  userNotes: string;
+  fileName: string;
+  fileSize?: number;
+  mimeType: string;
+  objectUrl?: string;
+  thumbnailObjectUrl?: string;
+  uploadStatus?: string;
+  uploadedByRole?: string;
+  memberName?: string;
+  memberEmail?: string;
+  coachId?: string;
+  coachName?: string;
+  lessonDate?: string;
+  focusArea?: VideoFocusArea;
+  publicationStatus?: VideoPublicationStatus;
+  isViewedByMember?: boolean;
+  viewedAt?: string;
+  emailStatus?: VideoEmailStatus;
+  emailSentAt?: string;
+  emailFailureReason?: string;
+  lessonSummary?: string;
+  workedOn?: string;
+  keyIssue?: string;
+  improvement?: string;
+  practiceAssignment?: string;
+  recommendedDrill?: string;
+  memberFacingNotes?: string;
+  coachPrivateNotes?: string;
+  notificationLog?: VideoEmailNotificationLog[];
+  updatedAt?: string;
+};
+
+type VideoLibraryItem = VideoLibraryRecord & {
+  objectUrl: string;
+  thumbnailObjectUrl?: string;
+};
+
 type OnboardingQuestionId =
   | "ageRange"
   | "handedness"
-  | "gameProfile"
-  | "simulatorUse"
+  | "skillLevel"
+  | "handicap"
+  | "simExperience"
+  | "simulatorGoals"
   | "goals"
   | "frustrations"
-  | "practiceRhythm";
+  | "practiceStyle"
+  | "timeAvailable"
+  | "frequency"
+  | "experienceStyle"
+  | "coachNotes";
 
 type OnboardingOption = {
   value: string;
@@ -123,12 +304,13 @@ type OnboardingOption = {
 
 type OnboardingQuestion = {
   id: OnboardingQuestionId;
-  type: "single" | "multi";
-  display: "bubbles" | "cards" | "chips" | "slider";
+  type: "single" | "multi" | "text";
+  display: "bubbles" | "cards" | "chips" | "slider" | "input";
   title: string;
   helper: string;
   options: OnboardingOption[];
   maxSelections?: number;
+  placeholder?: string;
 };
 
 type OnboardingAnswers = Partial<Record<OnboardingQuestionId, string | string[]>>;
@@ -146,6 +328,7 @@ type UserPracticeProfile = {
   timeAvailable: string;
   frequency: string;
   experienceStyle: string[];
+  coachNotes?: string;
   path: "Beginner" | "Casual" | "Competitive" | "Junior";
   completedAt: string;
 };
@@ -165,8 +348,11 @@ type PracticeRecommendations = {
 const DEFAULT_FACILITY_NAME = "Back Nine Woodstock";
 const DEFAULT_IMPORT_DATE = "2026-06-24";
 const DEFAULT_SIMULATOR = "Full Swing";
+const LOCATION_UNAVAILABLE = "NA";
 const PRACTICE_PROFILE_STORAGE_KEY = "free-range-golf.practice-profile.v1";
 const ONBOARDING_DRAFT_STORAGE_KEY = "free-range-golf.onboarding-draft.v1";
+const SESSIONS_STORAGE_KEY = "free-range-golf.sessions.v1";
+const LAST_IMPORT_STORAGE_KEY = "free-range-golf.last-import.v1";
 
 const CLUB_METRIC_OPTIONS: ClubMetricConfig[] = [
   { key: "carry", label: "Carry", shortLabel: "Carry", unit: "yd", decimals: 1 },
@@ -282,9 +468,50 @@ const NAV_ITEMS: { id: Tab; label: string; icon: string }[] = [
   { id: "dashboard", label: "Dashboard", icon: "⌁" },
   { id: "sessions", label: "Sessions", icon: "◫" },
   { id: "clubs", label: "Clubs", icon: "▥" },
+  { id: "videos", label: "Videos", icon: "▶" },
   { id: "coach", label: "Coach", icon: "✦" },
   { id: "practice", label: "Practice", icon: "◎" },
   { id: "import", label: "Import", icon: "⇧" },
+];
+
+const PAGE_DESCRIPTIONS: Record<Tab, string> = {
+  dashboard: "Performance signals, shot patterns, and the next priority in one view.",
+  sessions: "Review simulator work, dispersion, and club delivery session by session.",
+  clubs: "Understand carry windows, gapping, and quality across the bag.",
+  videos: "Keep lesson recaps, swing reviews, and practice feedback together.",
+  coach: "Turn performance data into focused guidance and deliver lesson follow-up.",
+  practice: "Build the next practice block around the misses that matter most.",
+  import: "Bring in simulator files or photos and convert them into usable session data.",
+};
+
+const VIDEO_TYPES: VideoType[] = [
+  "Lesson Recap",
+  "Swing Review",
+  "Practice Session",
+  "Drill",
+  "Drill Explanation",
+  "Practice Assignment",
+  "Coach Feedback",
+  "Before / After",
+  "User Upload",
+  "Other",
+];
+const VIDEO_SWING_TYPES: VideoSwingType[] = ["Driver", "Iron", "Wedge", "Putting", "Chipping", "Bunker", "Other"];
+const VIDEO_FOCUS_AREAS: VideoFocusArea[] = [
+  "Driver",
+  "Irons",
+  "Wedges",
+  "Putting",
+  "Chipping",
+  "Bunker",
+  "Setup",
+  "Grip",
+  "Tempo",
+  "Club Path",
+  "Face Control",
+  "Distance Control",
+  "Shot Shape",
+  "Other",
 ];
 
 const GAME_PROFILE_MAP: Record<string, { skillLevel: string; handicap: string }> = {
@@ -294,6 +521,7 @@ const GAME_PROFILE_MAP: Record<string, { skillLevel: string; handicap: string }>
   weekend: { skillLevel: "Weekend golfer", handicap: "10-15" },
   competitive: { skillLevel: "Competitive amateur", handicap: "5-9" },
   junior: { skillLevel: "Junior player", handicap: "I don't know" },
+  college: { skillLevel: "High school/college player", handicap: "0-4" },
   low: { skillLevel: "Low handicap", handicap: "0-4" },
   scratch: { skillLevel: "Scratch or better", handicap: "Plus handicap" },
 };
@@ -319,37 +547,68 @@ const ONBOARDING_QUESTIONS: OnboardingQuestion[] = [
     ],
   },
   {
-    id: "gameProfile",
+    id: "skillLevel",
     type: "single",
     display: "cards",
     title: "How would you describe your game today?",
-    helper: "Pick the closest fit. We will refine it as your simulator sessions come in.",
+    helper: "Pick the closest fit. Your plan can evolve once simulator sessions start coming in.",
     options: [
-      { value: "new", label: "Brand new", detail: "Still learning the basics" },
-      { value: "beginner", label: "Beginner", detail: "Roughly 25+ handicap" },
-      { value: "casual", label: "Casual golfer", detail: "Roughly 16-24 handicap" },
-      { value: "weekend", label: "Weekend golfer", detail: "Roughly 10-15 handicap" },
-      { value: "competitive", label: "Competitive amateur", detail: "Roughly 5-9 handicap" },
-      { value: "junior", label: "Junior player", detail: "Building skill and confidence" },
-      { value: "low", label: "Low handicap", detail: "Roughly 0-4 handicap" },
-      { value: "scratch", label: "Scratch or better", detail: "Plus or tournament-level goals" },
+      { value: "Brand new", label: "Brand new", detail: "Still learning the basics" },
+      { value: "Beginner", label: "Beginner", detail: "Building a reliable setup and swing" },
+      { value: "Casual golfer", label: "Casual golfer", detail: "Play for fun and want clearer practice" },
+      { value: "Weekend golfer", label: "Weekend golfer", detail: "Play regularly and want fewer big misses" },
+      { value: "Competitive amateur", label: "Competitive amateur", detail: "Practice with scoring goals" },
+      { value: "Junior player", label: "Junior player", detail: "Building skill and confidence" },
+      { value: "High school/college player", label: "High school/college player", detail: "Training for team or tournament play" },
+      { value: "Low handicap", label: "Low handicap", detail: "Fine-tuning scoring windows" },
+      { value: "Scratch or better", label: "Scratch or better", detail: "Plus or tournament-level goals" },
     ],
   },
   {
-    id: "simulatorUse",
+    id: "handicap",
+    type: "single",
+    display: "slider",
+    title: "What is your approximate handicap?",
+    helper: "A rough range is plenty. If you do not track it, we will start with fundamentals.",
+    options: [
+      "I don't know",
+      "25+",
+      "16-24",
+      "10-15",
+      "5-9",
+      "0-4",
+      "Plus handicap",
+    ].map((label) => ({ value: label, label })),
+  },
+  {
+    id: "simExperience",
+    type: "single",
+    display: "slider",
+    title: "How familiar are you with golf simulators?",
+    helper: "This controls how much data language the coach uses at first.",
+    options: [
+      "Never used one",
+      "Tried it once or twice",
+      "Comfortable",
+      "Use them often",
+      "Advanced user",
+    ].map((label) => ({ value: label, label })),
+  },
+  {
+    id: "simulatorGoals",
     type: "multi",
     display: "cards",
-    title: "What do you want from the simulator?",
+    title: "What do you want to use the simulator for?",
     helper: "Choose a few reasons you step onto the mat.",
     maxSelections: 4,
     options: [
-      { value: "New to simulators", label: "New to simulators", detail: "Keep data simple and useful" },
       { value: "Practice", label: "Practice", detail: "Build better reps" },
       { value: "Lessons", label: "Lessons", detail: "Coach-guided improvement" },
-      { value: "Virtual courses", label: "Virtual courses", detail: "Play and learn strategy" },
+      { value: "Play virtual courses", label: "Play virtual courses", detail: "Work on strategy while playing" },
       { value: "Track distances", label: "Track distances", detail: "Know your real yardages" },
-      { value: "Swing data", label: "Swing data", detail: "Club path, face, launch, spin" },
-      { value: "Compete with friends", label: "Compete with friends", detail: "Games, leagues, pressure reps" },
+      { value: "Work on swing data", label: "Work on swing data", detail: "Club path, face, launch, spin" },
+      { value: "Compete with friends", label: "Compete with friends", detail: "Games and pressure reps" },
+      { value: "League play", label: "League play", detail: "Social or competitive events" },
       { value: "Junior development", label: "Junior development", detail: "Fun progress and milestones" },
     ],
   },
@@ -379,10 +638,11 @@ const ONBOARDING_QUESTIONS: OnboardingQuestion[] = [
   },
   {
     id: "frustrations",
-    type: "single",
+    type: "multi",
     display: "chips",
-    title: "What is the miss that annoys you most?",
-    helper: "One honest answer is enough. The drills will stay focused.",
+    title: "Which frustrations should your plan account for?",
+    helper: "Pick up to three. The first practice path will stay focused on these.",
+    maxSelections: 3,
     options: [
       "Slicing",
       "Hooking",
@@ -397,22 +657,64 @@ const ONBOARDING_QUESTIONS: OnboardingQuestion[] = [
     ].map((label) => ({ value: label, label })),
   },
   {
-    id: "practiceRhythm",
+    id: "practiceStyle",
     type: "multi",
-    display: "slider",
-    title: "What kind of practice will you actually do?",
-    helper: "Keep this realistic. A plan you enjoy beats a perfect plan you skip.",
-    maxSelections: 4,
+    display: "chips",
+    title: "How do you prefer to practice?",
+    helper: "Choose the style that feels easiest to repeat.",
+    maxSelections: 3,
     options: [
-      { value: "15-minute tuneups", label: "15-minute tuneups", detail: "Fast, simple reps" },
-      { value: "30-minute structured sessions", label: "30-minute structure", detail: "Warmup, block, finish" },
-      { value: "60-minute work blocks", label: "60-minute blocks", detail: "Full focused practice" },
-      { value: "2-3 times per week", label: "2-3 times/week", detail: "Steady progress rhythm" },
-      { value: "Games and challenges", label: "Games/challenges", detail: "Make practice feel alive" },
-      { value: "Coach-guided lessons", label: "Coach-guided", detail: "Clear next step every time" },
-      { value: "Data-driven training", label: "Data-driven", detail: "Use numbers without overthinking" },
-      { value: "Competitive/social play", label: "Competitive/social", detail: "Pressure, leagues, friends" },
+      "Quick drills",
+      "Structured plans",
+      "Data-focused practice",
+      "Games/challenges",
+      "Coach-guided sessions",
+      "Solo practice",
+      "Competitive practice",
+    ].map((label) => ({ value: label, label })),
+  },
+  {
+    id: "timeAvailable",
+    type: "single",
+    display: "slider",
+    title: "How much time do you usually have?",
+    helper: "This keeps the practice plan realistic instead of heroic.",
+    options: ["15 minutes", "30 minutes", "45 minutes", "60 minutes", "90+ minutes"].map((label) => ({ value: label, label })),
+  },
+  {
+    id: "frequency",
+    type: "single",
+    display: "bubbles",
+    title: "How often do you want to practice?",
+    helper: "Your plan will use this cadence for drills, check-ins, and progress goals.",
+    options: ["Once a week", "2-3 times per week", "4+ times per week", "Just when I can"].map((label) => ({ value: label, label })),
+  },
+  {
+    id: "experienceStyle",
+    type: "multi",
+    display: "cards",
+    title: "What type of experience do you want?",
+    helper: "This tunes the vibe of coaching, challenges, and recommendations.",
+    maxSelections: 3,
+    options: [
+      { value: "Serious improvement", label: "Serious improvement", detail: "Clear work blocks and measurable gains" },
+      { value: "Fun and casual", label: "Fun and casual", detail: "Games, variety, and low pressure" },
+      { value: "Junior development", label: "Junior development", detail: "Short challenges and visible progress" },
+      { value: "Data-driven training", label: "Data-driven training", detail: "Numbers that guide each session" },
+      { value: "Competitive challenges", label: "Competitive challenges", detail: "Pressure tests and leaderboards" },
+      { value: "Social golf", label: "Social golf", detail: "Friends, leagues, and events" },
+      { value: "Lesson-based improvement", label: "Lesson-based improvement", detail: "Coach checkpoints and homework" },
+      { value: "Full game rebuild", label: "Full game rebuild", detail: "A structured reset from setup to scoring" },
     ],
+  },
+  {
+    id: "coachNotes",
+    type: "text",
+    display: "input",
+    title: "Anything else your coach should know?",
+    helper: "Optional. Add an injury note, upcoming event, favorite club, or a specific goal in your own words.",
+    options: [],
+    placeholder: "Example: I have a member-guest in August and want my driver to stay in play.",
   },
 ];
 
@@ -654,17 +956,37 @@ function average(values: number[]) {
 }
 
 function standardDeviation(values: number[]) {
+  if (!values.length) return Number.NaN;
   if (values.length < 2) return 0;
   const mean = average(values);
   return Math.sqrt(average(values.map((value) => (value - mean) ** 2)));
 }
 
-function averageMetric(shots: Shot[], key: keyof Shot) {
-  return average(
-    shots
-      .map((shot) => shot[key])
-      .filter((value): value is number => typeof value === "number" && Number.isFinite(value)),
-  );
+function hasShotMetric(shot: Shot, key: NumericShotMetric) {
+  const value = shot[key];
+  if (typeof value !== "number" || !Number.isFinite(value)) return false;
+  return !shot.detectedMetrics || shot.detectedMetrics.includes(key);
+}
+
+function getShotMetric(shot: Shot, key: NumericShotMetric) {
+  return hasShotMetric(shot, key) ? shot[key] : undefined;
+}
+
+function metricValues(shots: Shot[], key: NumericShotMetric) {
+  return shots
+    .map((shot) => getShotMetric(shot, key))
+    .filter((value): value is number => typeof value === "number");
+}
+
+function averageMetric(shots: Shot[], key: NumericShotMetric) {
+  const values = metricValues(shots, key);
+  return values.length ? average(values) : Number.NaN;
+}
+
+function formatAvailableMetric(value: number, unit = "", digits = 1) {
+  if (!Number.isFinite(value)) return "NA";
+  const formatted = digits === 0 ? Math.round(value).toString() : round(value, digits).toFixed(digits);
+  return unit ? `${formatted} ${unit}` : formatted;
 }
 
 function formatDate(value: string) {
@@ -680,6 +1002,7 @@ function getClubMetricConfig(metricKey: ClubMetricKey) {
 }
 
 function formatClubMetricValue(value: number, metric: ClubMetricConfig) {
+  if (!Number.isFinite(value)) return "NA";
   const rounded = metric.decimals !== undefined ? round(value, metric.decimals).toFixed(metric.decimals) : Math.round(value).toString();
   return metric.unit ? `${rounded} ${metric.unit}` : rounded;
 }
@@ -693,7 +1016,8 @@ function getReferenceMetricValue(stats: ProTourStats, metricKey: ClubMetricKey) 
 }
 
 function getAmateurMetricValue(club: string, metricKey: ClubMetricKey, tier: "low" | "mid" | "high") {
-  const target = CLUB_TARGETS[club] ?? CLUB_TARGETS["7-Iron"];
+  const target = CLUB_TARGETS[club];
+  if (!target) return Number.NaN;
   const base = target[metricKey];
   const powerMultipliers = {
     low: 1.03,
@@ -729,11 +1053,17 @@ function getTodayDateString() {
   return new Date(today.getTime() - today.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
 }
 
-function makeLastImport(submissionType: LastImport["submissionType"], shots: Shot[], date = getTodayDateString()): LastImport {
+function makeLastImport(
+  submissionType: LastImport["submissionType"],
+  shots: Shot[],
+  date = getTodayDateString(),
+  simulator = DEFAULT_SIMULATOR,
+  location = LOCATION_UNAVAILABLE,
+): LastImport {
   return {
     date,
-    facilityName: DEFAULT_FACILITY_NAME,
-    simulator: DEFAULT_SIMULATOR,
+    location,
+    simulator,
     submissionType,
     shots,
   };
@@ -749,27 +1079,37 @@ function summarizeClubs(sessions: Session[]): ClubSummary[] {
     shotsByClub.set(shot.club, [...(shotsByClub.get(shot.club) ?? []), shot]);
   });
 
-  return CLUB_ORDER.filter((club) => shotsByClub.has(club)).map((club) => {
+  const orderedClubs = [
+    ...CLUB_ORDER.filter((club) => shotsByClub.has(club)),
+    ...Array.from(shotsByClub.keys()).filter((club) => !CLUB_ORDER.includes(club)),
+  ];
+
+  return orderedClubs.map((club) => {
     const shots = shotsByClub.get(club) ?? [];
     const target = CLUB_TARGETS[club];
-    const carry = average(shots.map((shot) => shot.carry));
-    const dispersion = standardDeviation(shots.map((shot) => shot.offline));
-    const smash = average(shots.map((shot) => shot.smash));
-    const launch = average(shots.map((shot) => shot.launch));
-    const spin = average(shots.map((shot) => shot.spin));
-    const total = average(shots.map((shot) => shot.total));
-    const ballSpeed = average(shots.map((shot) => shot.ballSpeed));
-    const clubSpeed = average(shots.map((shot) => shot.clubSpeed));
+    const carry = averageMetric(shots, "carry");
+    const dispersion = standardDeviation(metricValues(shots, "offline"));
+    const smash = averageMetric(shots, "smash");
+    const launch = averageMetric(shots, "launch");
+    const spin = averageMetric(shots, "spin");
+    const total = averageMetric(shots, "total");
+    const ballSpeed = averageMetric(shots, "ballSpeed");
+    const clubSpeed = averageMetric(shots, "clubSpeed");
     const proximity = averageMetric(shots, "proximity");
     const apex = averageMetric(shots, "apex");
     const descent = averageMetric(shots, "descent");
     const spinAxis = averageMetric(shots, "spinAxis");
     const faceToPath = averageMetric(shots, "faceToPath");
     const sideCarry = averageMetric(shots, "sideCarry");
-    const strikeScore = Math.max(0, 100 - Math.abs((target?.smash ?? 1.4) - smash) * 450);
-    const dispersionScore = Math.max(0, 100 - dispersion * 3.4);
-    const launchScore = Math.max(0, 100 - Math.abs((target?.launch ?? launch) - launch) * 7);
-    const curveScore = Math.max(0, 100 - Math.abs(faceToPath) * 7);
+    const horizontalAngle = averageMetric(shots, "horizontalAngle");
+    const curve = averageMetric(shots, "curve");
+    const qualityScores = [
+      Number.isFinite(smash) && target ? Math.max(0, 100 - Math.abs(target.smash - smash) * 450) : Number.NaN,
+      Number.isFinite(dispersion) ? Math.max(0, 100 - dispersion * 3.4) : Number.NaN,
+      Number.isFinite(launch) && target ? Math.max(0, 100 - Math.abs(target.launch - launch) * 7) : Number.NaN,
+      Number.isFinite(faceToPath) ? Math.max(0, 100 - Math.abs(faceToPath) * 7) : Number.NaN,
+    ].filter(Number.isFinite);
+    const quality = qualityScores.length >= 2 ? Math.round(average(qualityScores)) : Number.NaN;
 
     return {
       club,
@@ -788,7 +1128,9 @@ function summarizeClubs(sessions: Session[]): ClubSummary[] {
       spinAxis: round(spinAxis),
       faceToPath: round(faceToPath),
       sideCarry: round(sideCarry),
-      quality: Math.round(average([strikeScore, dispersionScore, launchScore, curveScore])),
+      horizontalAngle: round(horizontalAngle),
+      curve: round(curve),
+      quality,
     };
   });
 }
@@ -800,7 +1142,7 @@ function computeInsights(clubs: ClubSummary[], sessions: Session[]): Insight[] {
     const target = CLUB_TARGETS[club.club];
     if (!target) return;
 
-    if (club.dispersion > 15) {
+    if (Number.isFinite(club.dispersion) && club.dispersion > 15) {
       insights.push({
         id: `${club.club}-dispersion`,
         title: "Start-line spread is costing playable misses",
@@ -814,7 +1156,7 @@ function computeInsights(clubs: ClubSummary[], sessions: Session[]): Insight[] {
       });
     }
 
-    if (club.smash < target.smash - 0.035) {
+    if (Number.isFinite(club.smash) && club.smash < target.smash - 0.035) {
       insights.push({
         id: `${club.club}-strike`,
         title: "Energy transfer is leaking through strike quality",
@@ -828,7 +1170,7 @@ function computeInsights(clubs: ClubSummary[], sessions: Session[]): Insight[] {
       });
     }
 
-    if (club.launch < target.launch - 1.4) {
+    if (Number.isFinite(club.launch) && club.launch < target.launch - 1.4) {
       insights.push({
         id: `${club.club}-launch`,
         title: "Launch window is too low for reliable carry",
@@ -842,7 +1184,7 @@ function computeInsights(clubs: ClubSummary[], sessions: Session[]): Insight[] {
       });
     }
 
-    if (club.spin > target.spin * 1.14) {
+    if (Number.isFinite(club.spin) && club.spin > target.spin * 1.14) {
       insights.push({
         id: `${club.club}-spin`,
         title: "Spin is creating extra curvature and ballooning",
@@ -859,15 +1201,17 @@ function computeInsights(clubs: ClubSummary[], sessions: Session[]): Insight[] {
 
   const recent = sessions.slice(0, 2).flatMap((session) => session.shots);
   const older = sessions.slice(2).flatMap((session) => session.shots);
-  if (recent.length && older.length && average(recent.map((shot) => shot.smash)) < average(older.map((shot) => shot.smash)) - 0.015) {
+  const recentSmash = averageMetric(recent, "smash");
+  const olderSmash = averageMetric(older, "smash");
+  if (Number.isFinite(recentSmash) && Number.isFinite(olderSmash) && recentSmash < olderSmash - 0.015) {
     insights.push({
       id: "trend-smash",
       title: "Recent strike trend is drifting down",
       club: "All clubs",
       severity: "high",
       metric: "Recent smash",
-      value: average(recent.map((shot) => shot.smash)).toFixed(2),
-      target: average(older.map((shot) => shot.smash)).toFixed(2),
+      value: recentSmash.toFixed(2),
+      target: olderSmash.toFixed(2),
       evidence: "The last two sessions are less efficient than the prior baseline.",
       action: "Start next session with 12 half-speed swings before full-speed work.",
     });
@@ -876,68 +1220,515 @@ function computeInsights(clubs: ClubSummary[], sessions: Session[]): Insight[] {
   return insights.sort((a, b) => getSeverityScore(b.severity) - getSeverityScore(a.severity)).slice(0, 7);
 }
 
-function parseCsv(text: string): Shot[] {
-  const rows = text.trim().split(/\r?\n/).filter(Boolean);
-  if (rows.length < 2) return [];
-  const normalize = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-  const headers = rows[0].split(",").map((header) => normalize(header));
-  const read = (cells: string[], names: string[], fallback = 0) => {
-    const index = names.map(normalize).map((name) => headers.indexOf(name)).find((match) => match >= 0);
-    if (index === undefined || index < 0) return fallback;
-    const parsed = Number(cells[index]);
-    return Number.isFinite(parsed) ? parsed : fallback;
+function parseCsvRows(text: string) {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    const nextCharacter = text[index + 1];
+
+    if (character === '"' && quoted && nextCharacter === '"') {
+      cell += '"';
+      index += 1;
+    } else if (character === '"') {
+      quoted = !quoted;
+    } else if (character === "," && !quoted) {
+      row.push(cell.trim());
+      cell = "";
+    } else if ((character === "\n" || character === "\r") && !quoted) {
+      if (character === "\r" && nextCharacter === "\n") index += 1;
+      row.push(cell.trim());
+      if (row.some(Boolean)) rows.push(row);
+      row = [];
+      cell = "";
+    } else {
+      cell += character;
+    }
+  }
+
+  row.push(cell.trim());
+  if (row.some(Boolean)) rows.push(row);
+  return rows;
+}
+
+function normalizeDataLabel(value: string) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function normalizeClubName(value: string) {
+  const normalized = normalizeDataLabel(value);
+  const aliases: Record<string, string> = {
+    driver: "Driver",
+    "1wood": "Driver",
+    "1w": "Driver",
+    "3wood": "3-Wood",
+    "3w": "3-Wood",
+    "5wood": "5-Wood",
+    "5w": "5-Wood",
+    "5iron": "5-Iron",
+    "5i": "5-Iron",
+    "6iron": "6-Iron",
+    "6i": "6-Iron",
+    "7iron": "7-Iron",
+    "7i": "7-Iron",
+    "8iron": "8-Iron",
+    "8i": "8-Iron",
+    "9iron": "9-Iron",
+    "9i": "9-Iron",
+    pitchingwedge: "PW",
+    pw: "PW",
+    gapwedge: "GW",
+    approachwedge: "GW",
+    gw: "GW",
+    aw: "GW",
+    sandwedge: "SW",
+    sw: "SW",
+    lobwedge: "LW",
+    lw: "LW",
   };
+  return aliases[normalized] ?? (value.trim() || "Unknown Club");
+}
 
-  return rows.slice(1).map((row, index) => {
-    const cells = row.split(",").map((cell) => cell.trim());
-    const clubIndex = headers.indexOf("club");
-    const club = clubIndex >= 0 ? cells[clubIndex] || "7-Iron" : "7-Iron";
-    const target = CLUB_TARGETS[club] ?? CLUB_TARGETS["7-Iron"];
-    const clubSpeed = read(cells, ["clubSpeed", "club speed", "club speed mph"], target.clubSpeed);
-    const ballSpeed = read(cells, ["ballSpeed", "ball speed", "ball speed mph"], target.ballSpeed);
-    const sideTotal = read(cells, ["sideTotal", "side total", "side total yards"], 0);
-    const offline = read(cells, ["offline", "side", "side total", "side total yards"], sideTotal);
+function getClubDisplayName(club: string) {
+  return {
+    PW: "Pitching Wedge",
+    GW: "Gap Wedge",
+    SW: "Sand Wedge",
+    LW: "Lob Wedge",
+  }[club] ?? club;
+}
 
-    return {
+function parseDirectionalNumber(value: string) {
+  const match = value.replace(/,/g, "").match(/[-+]?\d+(?:\.\d+)?/);
+  if (!match) return undefined;
+  const parsed = Number(match[0]);
+  if (!Number.isFinite(parsed)) return undefined;
+  if (/\bL\b/i.test(value.trim()) || /L$/i.test(value.trim())) return -Math.abs(parsed);
+  if (/\bR\b/i.test(value.trim()) || /R$/i.test(value.trim())) return Math.abs(parsed);
+  return parsed;
+}
+
+function parseCurveFeet(value: string) {
+  const feetMatch = value.match(/(\d+(?:\.\d+)?)\s*'/);
+  if (!feetMatch) return parseDirectionalNumber(value);
+  const inchesMatch = value.match(/'\s*(\d+(?:\.\d+)?)\s*"?/);
+  const feet = Number(feetMatch[1]);
+  const inches = inchesMatch ? Number(inchesMatch[1]) : 0;
+  const distance = feet + inches / 12;
+  return /L/i.test(value) ? -distance : /R/i.test(value) ? distance : distance;
+}
+
+function parseCsv(text: string): Shot[] {
+  const rows = parseCsvRows(text);
+  if (rows.length < 2) return [];
+  const headers = rows[0].map(normalizeDataLabel);
+  const findIndex = (names: string[]) =>
+    names.map(normalizeDataLabel).map((name) => headers.indexOf(name)).find((match) => match >= 0) ?? -1;
+  const readCell = (cells: string[], names: string[]) => {
+    const index = findIndex(names);
+    return index >= 0 ? cells[index]?.trim() ?? "" : "";
+  };
+  const readNumber = (cells: string[], names: string[]) => parseDirectionalNumber(readCell(cells, names));
+
+  return rows.slice(1).flatMap((cells, index) => {
+    const clubValue = readCell(cells, ["club", "club name"]);
+    const club = normalizeClubName(clubValue || "Unknown Club");
+    const values: Partial<Record<NumericShotMetric, number>> = {
+      carry: readNumber(cells, ["carry", "carry yards", "carry yds", "carry distance"]),
+      total: readNumber(cells, ["total", "total yards", "total yds", "total distance"]),
+      ballSpeed: readNumber(cells, ["ball speed", "ball speed mph", "ball velocity"]),
+      clubSpeed: readNumber(cells, ["club speed", "club speed mph", "clubhead speed", "club head speed"]),
+      smash: readNumber(cells, ["smash", "smash factor"]),
+      launch: readNumber(cells, ["launch", "launch angle", "launch angle deg"]),
+      spin: readNumber(cells, ["spin", "spin rate", "spin rate rpm"]),
+      offline: readNumber(cells, ["offline", "offline yards", "distance offline"]),
+      proximity: readNumber(cells, ["proximity", "proximity feet", "distance to pin"]),
+      apex: readNumber(cells, ["apex", "apex feet", "height", "height ft", "max height"]),
+      spinAxis: readNumber(cells, ["spin axis", "spin axis deg"]),
+      descent: readNumber(cells, ["descent", "descent angle", "descent angle deg", "landing angle"]),
+      horizontalAngle: readNumber(cells, ["horizontal angle", "horizontal angle deg", "launch direction"]),
+      faceAngle: readNumber(cells, ["face angle", "face angle deg"]),
+      clubPath: readNumber(cells, ["club path", "club path deg"]),
+      faceToPath: readNumber(cells, ["face to path", "face-to-path", "face to path deg"]),
+      sideCarry: readNumber(cells, ["side carry", "side carry yards", "side carry yds"]),
+      sideTotal: readNumber(cells, ["side total", "side total yards", "side total yds"]),
+    };
+    const curveCell = readCell(cells, ["curve", "curve feet", "curve ft"]);
+    const curve = curveCell ? parseCurveFeet(curveCell) : undefined;
+    if (curve !== undefined) values.curve = curve;
+
+    const detectedMetrics = Object.entries(values)
+      .filter((entry): entry is [NumericShotMetric, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]))
+      .map(([key]) => key);
+    if (!detectedMetrics.length) return [];
+
+    const metric = (key: NumericShotMetric) => values[key] ?? 0;
+    const offline = metric("offline");
+    return [{
       id: `csv-${Date.now()}-${index}`,
       club,
-      carry: read(cells, ["carry", "carry yards"], target.carry),
-      total: read(cells, ["total", "total yards"], read(cells, ["carry", "carry yards"], target.carry) * 1.04),
-      ballSpeed,
-      clubSpeed,
-      smash: read(cells, ["smash", "smash factor"], ballSpeed / clubSpeed),
-      launch: read(cells, ["launch", "launch angle"], target.launch),
-      spin: Math.round(read(cells, ["spin", "spin rate", "spin rate rpm"], target.spin)),
+      carry: metric("carry"),
+      total: metric("total"),
+      ballSpeed: metric("ballSpeed"),
+      clubSpeed: metric("clubSpeed"),
+      smash: metric("smash"),
+      launch: metric("launch"),
+      spin: Math.round(metric("spin")),
       offline,
-      proximity: read(cells, ["proximity", "proximity feet"], target.proximity),
-      apex: read(cells, ["apex", "apex feet"], target.apex),
-      spinAxis: read(cells, ["spinAxis", "spin axis"], 0),
-      descent: read(cells, ["descent", "descent angle"], target.descent),
-      horizontalAngle: read(cells, ["horizontalAngle", "horiz angle", "horizontal angle"], 0),
-      faceAngle: read(cells, ["faceAngle", "face angle"], 0),
-      clubPath: read(cells, ["clubPath", "club path"], 0),
-      faceToPath: read(cells, ["faceToPath", "face to path"], 0),
-      sideCarry: read(cells, ["sideCarry", "side carry", "side carry yards"], offline),
-      sideTotal: sideTotal || offline,
-      shape: offline < -12 ? "Draw" : offline > 12 ? "Fade" : "Straight",
-    };
+      proximity: metric("proximity"),
+      apex: metric("apex"),
+      spinAxis: metric("spinAxis"),
+      descent: metric("descent"),
+      horizontalAngle: metric("horizontalAngle"),
+      faceAngle: metric("faceAngle"),
+      clubPath: metric("clubPath"),
+      faceToPath: metric("faceToPath"),
+      sideCarry: metric("sideCarry"),
+      sideTotal: metric("sideTotal"),
+      curve: metric("curve"),
+      shape: "Not recorded",
+      detectedMetrics,
+    }];
   });
 }
 
-function buildImportedSession(shots: Shot[], submissionType: LastImport["submissionType"]): Session {
+const PHOTO_METRIC_SPECS: Array<{
+  key: NumericShotMetric;
+  label: string;
+  aliases: string[];
+  min: number;
+  max: number;
+  exclude?: string[];
+}> = [
+  { key: "ballSpeed", label: "Ball speed", aliases: ["ball speed"], min: 20, max: 250 },
+  { key: "clubSpeed", label: "Club speed", aliases: ["club speed", "clubhead speed", "club head speed"], min: 15, max: 180 },
+  { key: "smash", label: "Smash", aliases: ["smash factor", "smash"], min: 0.5, max: 2 },
+  { key: "carry", label: "Carry", aliases: ["carry distance", "carry"], min: 10, max: 400, exclude: ["side carry"] },
+  { key: "total", label: "Total", aliases: ["total distance", "total"], min: 10, max: 450, exclude: ["side total"] },
+  { key: "launch", label: "Launch", aliases: ["launch angle", "launch"], min: -10, max: 70 },
+  { key: "spin", label: "Spin", aliases: ["spin rate", "back spin", "backspin"], min: 100, max: 16000, exclude: ["spin axis"] },
+  { key: "apex", label: "Apex", aliases: ["apex height", "max height", "height", "apex"], min: 0, max: 300 },
+  { key: "descent", label: "Descent", aliases: ["descent angle", "landing angle", "descent"], min: 0, max: 90 },
+  { key: "spinAxis", label: "Spin axis", aliases: ["spin axis"], min: -90, max: 90 },
+  { key: "faceAngle", label: "Face angle", aliases: ["face angle"], min: -45, max: 45 },
+  { key: "clubPath", label: "Club path", aliases: ["club path"], min: -45, max: 45 },
+  { key: "faceToPath", label: "Face to path", aliases: ["face to path", "face-to-path"], min: -45, max: 45 },
+  { key: "horizontalAngle", label: "Launch direction", aliases: ["launch direction", "horizontal angle", "horiz angle"], min: -45, max: 45 },
+  { key: "sideCarry", label: "Side carry", aliases: ["side carry"], min: -200, max: 200 },
+  { key: "sideTotal", label: "Side total", aliases: ["side total"], min: -200, max: 200 },
+  { key: "offline", label: "Offline", aliases: ["offline", "from pin"], min: -200, max: 200 },
+  { key: "proximity", label: "Proximity", aliases: ["proximity", "distance to pin"], min: 0, max: 1000 },
+  { key: "curve", label: "Curve", aliases: ["curve"], min: -300, max: 300 },
+];
+
+const PHOTO_METRIC_LABELS = Object.fromEntries(
+  PHOTO_METRIC_SPECS.map((metric) => [metric.key, metric.label]),
+) as Record<NumericShotMetric, string>;
+
+function normalizeOcrText(value: string) {
+  return value.toLowerCase().replace(/[|]/g, "i").replace(/[^a-z0-9+-]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function includesOcrLabel(value: string, aliases: string[]) {
+  const normalized = normalizeOcrText(value);
+  return aliases.some((alias) => normalized.includes(normalizeOcrText(alias)));
+}
+
+function hasAnyOcrMetricLabel(value: string) {
+  return PHOTO_METRIC_SPECS.some((metric) => includesOcrLabel(value, metric.aliases));
+}
+
+function readOcrNumber(value: string, min: number, max: number) {
+  const cleaned = value.replace(/(\d),(?=\d{3}\b)/g, "$1");
+  const matches = cleaned.match(/[-+]?\d+(?:[.,]\d+)?/g) ?? [];
+
+  for (const match of matches) {
+    const parsed = Number(match.replace(",", "."));
+    if (!Number.isFinite(parsed) || parsed < min || parsed > max) continue;
+    const compact = cleaned.replace(/\s+/g, "");
+    const directionMatch = compact.match(new RegExp(`${match.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[°º]?(L|R)`, "i"));
+    if (directionMatch?.[1]?.toUpperCase() === "L") return -Math.abs(parsed);
+    if (directionMatch?.[1]?.toUpperCase() === "R") return Math.abs(parsed);
+    return parsed;
+  }
+
+  return undefined;
+}
+
+function findPhotoMetric(lines: string[], metric: (typeof PHOTO_METRIC_SPECS)[number]) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!includesOcrLabel(line, metric.aliases)) continue;
+    if (metric.exclude?.some((label) => includesOcrLabel(line, [label]))) continue;
+
+    const sameLineValue = readOcrNumber(line, metric.min, metric.max);
+    if (sameLineValue !== undefined) return sameLineValue;
+
+    for (let offset = 1; offset <= 2; offset += 1) {
+      const nearbyLine = lines[index + offset];
+      if (!nearbyLine || hasAnyOcrMetricLabel(nearbyLine)) break;
+      const nearbyValue = readOcrNumber(nearbyLine, metric.min, metric.max);
+      if (nearbyValue !== undefined) return nearbyValue;
+    }
+  }
+
+  return undefined;
+}
+
+function parsePhotoAverageRow(tsv?: string) {
+  if (!tsv) return {};
+  const words = tsv.split(/\r?\n/).slice(1).flatMap((line) => {
+    const columns = line.split("\t");
+    if (columns[0] !== "5" || !columns[11]?.trim()) return [];
+    return [{
+      left: Number(columns[6]),
+      top: Number(columns[7]),
+      width: Number(columns[8]),
+      height: Number(columns[9]),
+      text: columns[11].trim(),
+    }];
+  });
+  const averageLabel = words.find((word) => normalizeDataLabel(word.text) === "avg");
+  if (!averageLabel) return {};
+
+  const averageY = averageLabel.top + averageLabel.height / 2;
+  const rowWords = words.filter((word) =>
+    Math.abs(word.top + word.height / 2 - averageY) <= Math.max(22, averageLabel.height * 2),
+  );
+  const headerWords = words.filter((word) => word.top < averageLabel.top && word.top > averageLabel.top - 130);
+  const carryHeader = headerWords.find((word) => normalizeDataLabel(word.text).includes("carry"));
+  const totalHeader = headerWords.find((word) => normalizeDataLabel(word.text).includes("total"));
+  if (!carryHeader || !totalHeader) return {};
+
+  const findColumnValue = (targetX: number, min: number, max: number) => {
+    const candidates = rowWords
+      .map((word) => ({
+        distance: Math.abs(word.left + word.width / 2 - targetX),
+        value: readOcrNumber(word.text, min, max),
+      }))
+      .filter((candidate): candidate is { distance: number; value: number } => candidate.value !== undefined)
+      .sort((a, b) => a.distance - b.distance);
+    return candidates[0]?.distance <= 72 ? candidates[0].value : undefined;
+  };
+  const carryX = carryHeader.left + carryHeader.width / 2;
+  const totalX = totalHeader.left + totalHeader.width / 2;
+  const columnStep = Math.max(100, totalX - carryX);
+  const parsed: Partial<Record<NumericShotMetric, number>> = {
+    carry: findColumnValue(carryX, 10, 400),
+    total: findColumnValue(totalX, 10, 450),
+    ballSpeed: findColumnValue(totalX + columnStep * 1.15, 20, 250),
+    launch: findColumnValue(totalX + columnStep * 2.05, -10, 70),
+    apex: findColumnValue(totalX + columnStep * 3.85, 0, 300),
+    horizontalAngle: findColumnValue(totalX + columnStep * 4.8, -45, 45),
+  };
+  const directionalWords = rowWords.filter((word) => /[LR]\b/i.test(word.text));
+  const curveWord = directionalWords.find((word) => word.left > totalX + columnStep * 2.3 && word.left < totalX + columnStep * 3.7);
+  if (curveWord) parsed.curve = parseCurveFeet(curveWord.text);
+
+  return Object.fromEntries(
+    Object.entries(parsed).filter((entry): entry is [NumericShotMetric, number] =>
+      typeof entry[1] === "number" && Number.isFinite(entry[1]),
+    ),
+  ) as Partial<Record<NumericShotMetric, number>>;
+}
+
+function detectPhotoClub(text: string) {
+  const normalized = normalizeOcrText(text);
+  const clubPatterns: Array<[string, RegExp]> = [
+    ["Driver", /\b(driver|1 wood|1w)\b/],
+    ["3-Wood", /\b(3 wood|3w)\b/],
+    ["5-Wood", /\b(5 wood|5w)\b/],
+    ["5-Iron", /\b(5 iron|5i)\b/],
+    ["6-Iron", /\b(6 iron|6i)\b/],
+    ["7-Iron", /\b(7 iron|7i)\b/],
+    ["8-Iron", /\b(8 iron|8i)\b/],
+    ["9-Iron", /\b(9 iron|9i)\b/],
+    ["PW", /\b(pitching wedge|pw)\b/],
+    ["GW", /\b(gap wedge|approach wedge|gw|aw)\b/],
+    ["SW", /\b(sand wedge|sw)\b/],
+    ["LW", /\b(lob wedge|lw)\b/],
+  ];
+
+  return clubPatterns.find(([, pattern]) => pattern.test(normalized))?.[0] ?? "Unknown Club";
+}
+
+function detectPhotoSimulator(text: string, fileName: string) {
+  const normalized = normalizeOcrText(`${text} ${fileName}`);
+  if (normalized.includes("trackman")) return "TrackMan";
+  if (normalized.includes("full swing")) return "Full Swing";
+  if (normalized.includes("foresight") || normalized.includes("gcquad") || normalized.includes("gc quad")) return "GCQuad";
+  if (normalized.includes("skytrak") || normalized.includes("sky trak")) return "SkyTrak";
+  if (normalized.includes("mevo")) return "Mevo+";
+  return "Simulator photo";
+}
+
+function formatPhotoMetric(metric: NumericShotMetric, value: number | undefined) {
+  if (value === undefined) return "Not found";
+  if (metric === "ballSpeed" || metric === "clubSpeed") return `${value} mph`;
+  if (["carry", "total", "offline", "sideCarry", "sideTotal"].includes(metric)) return `${value} yd`;
+  if (metric === "proximity") return `${value} ft`;
+  if (metric === "curve") return `${value} ft`;
+  if (metric === "spin") return `${Math.round(value)} rpm`;
+  if (["launch", "spinAxis", "descent", "horizontalAngle", "faceAngle", "clubPath", "faceToPath"].includes(metric)) {
+    return `${value} deg`;
+  }
+  return `${value}`;
+}
+
+function formatPhotoCapturedAt(value: unknown) {
+  if (typeof value === "string") {
+    const dateParts = value.match(/^(\d{4})[:/-](\d{2})[:/-](\d{2})/);
+    if (dateParts) return `${dateParts[1]}-${dateParts[2]}-${dateParts[3]}`;
+  }
+
+  const date = value instanceof Date ? value : typeof value === "string" || typeof value === "number" ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return undefined;
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getPhotoMetadataText(metadata: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = metadata[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+async function readPhotoMetadata(file: File): Promise<PhotoImportMetadata> {
+  try {
+    const exifr = (await import("exifr")).default;
+    const [coordinates, rawMetadata] = await Promise.all([
+      exifr.gps(file).catch(() => undefined),
+      exifr.parse(file, {
+        ifd0: { pick: ["ModifyDate"] },
+        exif: { pick: ["DateTimeOriginal", "CreateDate"] },
+        gps: false,
+        xmp: true,
+        iptc: true,
+        mergeOutput: true,
+      }).catch(() => undefined),
+    ]);
+    const metadata =
+      rawMetadata && typeof rawMetadata === "object" ? (rawMetadata as Record<string, unknown>) : {};
+    const placeParts = [
+      getPhotoMetadataText(metadata, ["SubLocation", "Sublocation", "Location"]),
+      getPhotoMetadataText(metadata, ["City"]),
+      getPhotoMetadataText(metadata, ["ProvinceState", "State"]),
+      getPhotoMetadataText(metadata, ["CountryPrimaryLocationName", "Country"]),
+    ].filter((value): value is string => Boolean(value));
+    const distinctPlaceParts = placeParts.filter(
+      (value, index) => placeParts.findIndex((item) => item.toLowerCase() === value.toLowerCase()) === index,
+    );
+    const latitude = coordinates?.latitude;
+    const longitude = coordinates?.longitude;
+    const hasCoordinates =
+      typeof latitude === "number" &&
+      Number.isFinite(latitude) &&
+      typeof longitude === "number" &&
+      Number.isFinite(longitude);
+    const coordinateLocation = hasCoordinates ? `${latitude.toFixed(5)}, ${longitude.toFixed(5)}` : undefined;
+
+    return {
+      location: distinctPlaceParts.length ? distinctPlaceParts.join(", ") : coordinateLocation,
+      capturedAt: formatPhotoCapturedAt(
+        metadata.DateTimeOriginal ?? metadata.CreateDate ?? metadata.DateCreated ?? metadata.ModifyDate,
+      ),
+      latitude: hasCoordinates ? latitude : undefined,
+      longitude: hasCoordinates ? longitude : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function parsePhotoOcr(text: string, fileName: string, fileIndex: number, tsv?: string) {
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const parsedMetrics: Partial<Record<NumericShotMetric, number>> = parsePhotoAverageRow(tsv);
+
+  PHOTO_METRIC_SPECS.forEach((metric) => {
+    const value = findPhotoMetric(lines, metric);
+    if (value !== undefined) parsedMetrics[metric.key] = value;
+  });
+
+  const detectedMetrics = Object.keys(parsedMetrics) as NumericShotMetric[];
+  const coreMetrics = detectedMetrics.filter((metric) =>
+    ["carry", "total", "ballSpeed", "clubSpeed", "smash", "launch", "spin"].includes(metric),
+  );
+  if (coreMetrics.length < 2) {
+    throw new Error("Only one or no shot metrics were readable. Try a sharper image cropped around the data.");
+  }
+
+  const club = detectPhotoClub(text);
+  const ballSpeed = parsedMetrics.ballSpeed ?? 0;
+  const clubSpeed = parsedMetrics.clubSpeed ?? 0;
+  const derivedSmash = parsedMetrics.smash ?? (
+    parsedMetrics.ballSpeed && parsedMetrics.clubSpeed ? parsedMetrics.ballSpeed / parsedMetrics.clubSpeed : undefined
+  );
+  if (derivedSmash !== undefined && !detectedMetrics.includes("smash")) detectedMetrics.push("smash");
+  const offline = parsedMetrics.offline ?? parsedMetrics.sideTotal ?? parsedMetrics.sideCarry ?? 0;
+
+  const shot: Shot = {
+    id: `photo-${Date.now()}-${fileIndex}`,
+    club,
+    carry: round(parsedMetrics.carry ?? 0, 1),
+    total: round(parsedMetrics.total ?? 0, 1),
+    ballSpeed: round(ballSpeed, 1),
+    clubSpeed: round(clubSpeed, 1),
+    smash: round(derivedSmash ?? 0, 2),
+    launch: parsedMetrics.launch ?? 0,
+    spin: Math.round(parsedMetrics.spin ?? 0),
+    offline,
+    proximity: parsedMetrics.proximity ?? 0,
+    apex: parsedMetrics.apex ?? 0,
+    spinAxis: parsedMetrics.spinAxis ?? 0,
+    descent: parsedMetrics.descent ?? 0,
+    horizontalAngle: parsedMetrics.horizontalAngle ?? 0,
+    faceAngle: parsedMetrics.faceAngle ?? 0,
+    clubPath: parsedMetrics.clubPath ?? 0,
+    faceToPath: parsedMetrics.faceToPath ?? 0,
+    sideCarry: parsedMetrics.sideCarry ?? offline,
+    sideTotal: parsedMetrics.sideTotal ?? offline,
+    curve: parsedMetrics.curve ?? 0,
+    shape: detectedMetrics.some((metric) => ["offline", "sideTotal", "sideCarry"].includes(metric))
+      ? offline < -12 ? "Draw" : offline > 12 ? "Fade" : "Straight"
+      : "Not recorded",
+    detectedMetrics,
+  };
+
+  return {
+    shot,
+    simulator: detectPhotoSimulator(text, fileName),
+  };
+}
+
+function buildImportedSession(
+  shots: Shot[],
+  submissionType: LastImport["submissionType"],
+  simulator = DEFAULT_SIMULATOR,
+  metadata: PhotoImportMetadata = {},
+): Session {
+  const clubNames = Array.from(new Set(shots.map((shot) => shot.club)));
+  const subject = clubNames.length === 1 ? getClubDisplayName(clubNames[0]) : `${clubNames.length}-club`;
   const source =
     submissionType === "API feed"
-      ? `${DEFAULT_SIMULATOR} API`
+      ? `${simulator} API`
       : submissionType === "Photo"
-        ? `${DEFAULT_SIMULATOR} Photo Scan`
+        ? `${simulator} Photo Scan`
         : "CSV Upload";
 
   return {
     id: `import-${Date.now()}`,
-    title: `${DEFAULT_SIMULATOR} import`,
-    date: getTodayDateString(),
+    title: `${subject} ${submissionType === "Photo" ? "photo" : submissionType === "API feed" ? "API" : "CSV"} import`,
+    date: metadata.capturedAt ?? getTodayDateString(),
     source,
     focus: "New data",
+    location: metadata.location ?? LOCATION_UNAVAILABLE,
     shots,
   };
 }
@@ -957,42 +1748,45 @@ function makeCoachMessage(role: CoachMessage["role"], content: string): CoachMes
 function compactShot(shot: Shot) {
   return {
     club: shot.club,
-    carry: shot.carry,
-    total: shot.total,
-    ballSpeed: shot.ballSpeed,
-    clubSpeed: shot.clubSpeed,
-    smash: shot.smash,
-    launch: shot.launch,
-    spin: shot.spin,
-    spinAxis: shot.spinAxis,
-    faceAngle: shot.faceAngle,
-    clubPath: shot.clubPath,
-    faceToPath: shot.faceToPath,
-    sideCarry: shot.sideCarry,
-    sideTotal: shot.sideTotal,
-    offline: shot.offline,
+    carry: getShotMetric(shot, "carry"),
+    total: getShotMetric(shot, "total"),
+    ballSpeed: getShotMetric(shot, "ballSpeed"),
+    clubSpeed: getShotMetric(shot, "clubSpeed"),
+    smash: getShotMetric(shot, "smash"),
+    launch: getShotMetric(shot, "launch"),
+    spin: getShotMetric(shot, "spin"),
+    spinAxis: getShotMetric(shot, "spinAxis"),
+    faceAngle: getShotMetric(shot, "faceAngle"),
+    clubPath: getShotMetric(shot, "clubPath"),
+    faceToPath: getShotMetric(shot, "faceToPath"),
+    sideCarry: getShotMetric(shot, "sideCarry"),
+    sideTotal: getShotMetric(shot, "sideTotal"),
+    offline: getShotMetric(shot, "offline"),
+    curve: getShotMetric(shot, "curve"),
     shape: shot.shape,
   };
 }
 
 function summarizeSessionForCoach(session: Session) {
   const clubs = summarizeClubs([session]);
+  const available = (value: number) => Number.isFinite(value) ? value : null;
   return {
     title: session.title,
     date: session.date,
     source: session.source,
+    location: session.location ?? LOCATION_UNAVAILABLE,
     focus: session.focus,
     shotCount: session.shots.length,
     clubs: clubs.map((club) => ({
       club: club.club,
       shots: club.shots,
-      carry: club.carry,
-      dispersion: club.dispersion,
-      smash: club.smash,
-      launch: club.launch,
-      spin: club.spin,
-      faceToPath: club.faceToPath,
-      quality: club.quality,
+      carry: available(club.carry),
+      dispersion: available(club.dispersion),
+      smash: available(club.smash),
+      launch: available(club.launch),
+      spin: available(club.spin),
+      faceToPath: available(club.faceToPath),
+      quality: available(club.quality),
     })),
   };
 }
@@ -1005,6 +1799,81 @@ function readStoredPracticeProfile() {
     return stored ? (JSON.parse(stored) as UserPracticeProfile) : null;
   } catch {
     return null;
+  }
+}
+
+function parseStoredSessions(value: string | null) {
+  if (!value) return null;
+
+  try {
+    const stored = JSON.parse(value);
+    if (!Array.isArray(stored) || !stored.length) return null;
+    return (stored as Session[]).map((session) => ({
+      ...session,
+      location:
+        session.location ??
+        (session.id.startsWith("import-") || session.source.includes("Upload") || session.source.includes("Photo Scan")
+          ? LOCATION_UNAVAILABLE
+          : undefined),
+    }));
+  } catch {
+    return null;
+  }
+}
+
+function parseStoredLastImport(value: string | null): LastImport | null {
+  if (!value) return null;
+
+  try {
+    const stored = JSON.parse(value) as Partial<LastImport>;
+    if (!Array.isArray(stored.shots) || !stored.shots.length) return null;
+
+    const submissionType =
+      stored.submissionType === "API feed" || stored.submissionType === "CSV / Excel" || stored.submissionType === "Photo"
+        ? stored.submissionType
+        : "CSV / Excel";
+
+    return {
+      date: typeof stored.date === "string" ? stored.date : getTodayDateString(),
+      location:
+        typeof stored.location === "string" && stored.location.trim()
+          ? stored.location
+          : LOCATION_UNAVAILABLE,
+      simulator: typeof stored.simulator === "string" && stored.simulator.trim() ? stored.simulator : DEFAULT_SIMULATOR,
+      submissionType,
+      shots: stored.shots as Shot[],
+    };
+  } catch {
+    return null;
+  }
+}
+
+function readStoredSessions() {
+  if (typeof window === "undefined") return null;
+  try {
+    return parseStoredSessions(window.localStorage.getItem(SESSIONS_STORAGE_KEY));
+  } catch {
+    return null;
+  }
+}
+
+function readStoredLastImport() {
+  if (typeof window === "undefined") return null;
+  try {
+    return parseStoredLastImport(window.localStorage.getItem(LAST_IMPORT_STORAGE_KEY));
+  } catch {
+    return null;
+  }
+}
+
+function storeImportState(sessions: Session[], lastImport: LastImport) {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(sessions));
+    window.localStorage.setItem(LAST_IMPORT_STORAGE_KEY, JSON.stringify(lastImport));
+  } catch {
+    // Imports still work in the active tab when browser storage is unavailable.
   }
 }
 
@@ -1049,14 +1918,188 @@ function storePracticeProfile(profile: UserPracticeProfile) {
   }
 }
 
+async function readVideoLibrary(memberId?: string) {
+  const query = memberId ? `?memberId=${encodeURIComponent(memberId)}` : "";
+  const response = await fetch(`/api/videos${query}`, { cache: "no-store" });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error ?? "Saved videos could not be loaded.");
+  }
+  return (payload.videos ?? []) as VideoLibraryRecord[];
+}
+
+function videoPatchPayload(video: VideoLibraryRecord) {
+  return {
+    videoId: video.id,
+    memberId: video.ownerId,
+    title: video.title,
+    description: video.description,
+    coachNotes: video.coachNotes,
+    coachPrivateNotes: video.coachPrivateNotes,
+    userNotes: video.userNotes,
+    videoType: video.type,
+    focusArea: video.focusArea ?? null,
+    swingType: video.swingType ?? null,
+    club: video.club ?? null,
+    tags: video.tags,
+    sessionId: video.sessionId ?? null,
+    duration: video.duration,
+    lessonDate: video.lessonDate ?? null,
+    publicationStatus: video.publicationStatus,
+    reviewStatus: video.status,
+    lessonSummary: video.lessonSummary,
+    workedOn: video.workedOn,
+    keyIssue: video.keyIssue,
+    improvement: video.improvement,
+    practiceAssignment: video.practiceAssignment,
+    recommendedDrill: video.recommendedDrill,
+    memberFacingNotes: video.memberFacingNotes,
+  };
+}
+
+async function saveVideoRecord(video: VideoLibraryRecord) {
+  const response = await fetch("/api/videos", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(videoPatchPayload(video)),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error ?? "The video could not be saved.");
+  }
+  return payload.video as VideoLibraryRecord;
+}
+
+async function deleteVideoRecord(videoId: string) {
+  const response = await fetch(`/api/videos?videoId=${encodeURIComponent(videoId)}`, {
+    method: "DELETE",
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error ?? "The video could not be removed.");
+  }
+}
+
+async function createVideoRecord(
+  metadata: Record<string, unknown>,
+  videoFile: File,
+) {
+  const response = await fetch("/api/videos", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...metadata,
+      fileName: videoFile.name,
+      fileSize: videoFile.size,
+      mimeType: videoFile.type,
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.video) {
+    throw new Error(payload.error ?? "The video upload could not be started.");
+  }
+  return payload.video as VideoLibraryRecord;
+}
+
+function uploadVideoAsset(
+  videoId: string,
+  file: File,
+  asset: "video" | "thumbnail",
+  onProgress: (progress: number) => void,
+) {
+  return new Promise<void>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open(
+      "PUT",
+      `/api/videos?videoId=${encodeURIComponent(videoId)}&asset=${asset}`,
+    );
+    request.setRequestHeader("Content-Type", file.type);
+    request.setRequestHeader("X-File-Name", encodeURIComponent(file.name));
+    request.setRequestHeader("X-File-Size", String(file.size));
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        onProgress(Math.round((event.loaded / event.total) * 100));
+      }
+    };
+    request.onerror = () => reject(new Error("The upload connection was interrupted."));
+    request.onload = () => {
+      let payload: { error?: string } = {};
+      try {
+        payload = JSON.parse(request.responseText) as { error?: string };
+      } catch {
+        // A non-JSON response is handled by the status check below.
+      }
+      if (request.status >= 200 && request.status < 300) {
+        onProgress(100);
+        resolve();
+      } else {
+        reject(new Error(payload.error ?? "The video file could not be stored."));
+      }
+    };
+    request.send(file);
+  });
+}
+
+async function finalizeVideoRecord(
+  videoId: string,
+  patch: Record<string, unknown>,
+) {
+  const response = await fetch("/api/videos", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ videoId, ...patch }),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.video) {
+    throw new Error(payload.error ?? "The video could not be published.");
+  }
+  return payload.video as VideoLibraryRecord;
+}
+
+function stripVideoObjectUrl(video: VideoLibraryItem): VideoLibraryRecord {
+  return { ...video };
+}
+
+function createVideoLibraryItem(record: VideoLibraryRecord): VideoLibraryItem {
+  return {
+    ...record,
+    objectUrl: record.objectUrl ?? "",
+    thumbnailObjectUrl: record.thumbnailObjectUrl,
+  };
+}
+
+function getVideoPublicationStatus(video: VideoLibraryRecord): VideoPublicationStatus {
+  return video.publicationStatus ?? "Published";
+}
+
+function readVideoDuration(file: File) {
+  return new Promise<number>((resolve) => {
+    const objectUrl = URL.createObjectURL(file);
+    const media = document.createElement("video");
+    const finish = (duration: number) => {
+      URL.revokeObjectURL(objectUrl);
+      media.removeAttribute("src");
+      resolve(Number.isFinite(duration) ? duration : 0);
+    };
+    media.preload = "metadata";
+    media.onloadedmetadata = () => finish(media.duration);
+    media.onerror = () => finish(0);
+    media.src = objectUrl;
+  });
+}
+
 function asArray(value: string | string[] | undefined) {
   if (!value) return [];
   return Array.isArray(value) ? value : [value];
 }
 
+function asStringAnswer(value: string | string[] | undefined, fallback: string) {
+  return typeof value === "string" && value.trim() ? value : fallback;
+}
+
 function inferSimExperience(simulatorGoals: string[]) {
   if (simulatorGoals.includes("New to simulators")) return "Never used one";
-  if (simulatorGoals.includes("Swing data")) return "Comfortable";
+  if (simulatorGoals.includes("Swing data") || simulatorGoals.includes("Work on swing data")) return "Comfortable";
   if (simulatorGoals.includes("Compete with friends")) return "Use them often";
   return simulatorGoals.length ? "Tried it once or twice" : "Not specified";
 }
@@ -1115,8 +2158,10 @@ function getPracticePath(profile: Omit<UserPracticeProfile, "path">): UserPracti
 
   if (
     profile.skillLevel === "Competitive amateur" ||
+    profile.skillLevel === "High school/college player" ||
     profile.skillLevel === "Low handicap" ||
     profile.skillLevel === "Scratch or better" ||
+    profile.handicap === "5-9" ||
     profile.handicap === "0-4" ||
     profile.handicap === "Plus handicap"
   ) {
@@ -1127,23 +2172,32 @@ function getPracticePath(profile: Omit<UserPracticeProfile, "path">): UserPracti
 }
 
 function buildUserPracticeProfile(answers: OnboardingAnswers): UserPracticeProfile {
-  const gameProfile = typeof answers.gameProfile === "string" ? answers.gameProfile : "casual";
-  const game = GAME_PROFILE_MAP[gameProfile] ?? GAME_PROFILE_MAP.casual;
-  const simulatorGoals = asArray(answers.simulatorUse);
-  const practiceRhythm = asArray(answers.practiceRhythm);
+  const rawAnswers = answers as OnboardingAnswers & {
+    gameProfile?: string | string[];
+    simulatorUse?: string | string[];
+    practiceRhythm?: string | string[];
+  };
+  const gameProfile = typeof rawAnswers.gameProfile === "string" ? rawAnswers.gameProfile : undefined;
+  const game = gameProfile ? GAME_PROFILE_MAP[gameProfile] : undefined;
+  const simulatorGoals = asArray(rawAnswers.simulatorGoals ?? rawAnswers.simulatorUse);
+  const practiceRhythm = asArray(rawAnswers.practiceRhythm);
+  const practiceStyle = asArray(rawAnswers.practiceStyle);
+  const experienceStyle = asArray(rawAnswers.experienceStyle);
+  const coachNotes = typeof rawAnswers.coachNotes === "string" ? rawAnswers.coachNotes.trim() : "";
   const profileBase = {
     ageRange: typeof answers.ageRange === "string" ? answers.ageRange : undefined,
     handedness: typeof answers.handedness === "string" ? answers.handedness : undefined,
-    skillLevel: game.skillLevel,
-    handicap: game.handicap,
-    simExperience: inferSimExperience(simulatorGoals),
+    skillLevel: asStringAnswer(rawAnswers.skillLevel, game?.skillLevel ?? "Casual golfer"),
+    handicap: asStringAnswer(rawAnswers.handicap, game?.handicap ?? "I don't know"),
+    simExperience: asStringAnswer(rawAnswers.simExperience, inferSimExperience(simulatorGoals)),
     simulatorGoals,
     goals: asArray(answers.goals),
     frustrations: asArray(answers.frustrations),
-    practiceStyle: inferPracticeStyle(practiceRhythm),
-    timeAvailable: inferTimeAvailable(practiceRhythm),
-    frequency: inferFrequency(practiceRhythm),
-    experienceStyle: inferExperienceStyle(practiceRhythm, simulatorGoals),
+    practiceStyle: practiceStyle.length ? practiceStyle : inferPracticeStyle(practiceRhythm),
+    timeAvailable: asStringAnswer(rawAnswers.timeAvailable, inferTimeAvailable(practiceRhythm)),
+    frequency: asStringAnswer(rawAnswers.frequency, inferFrequency(practiceRhythm)),
+    experienceStyle: experienceStyle.length ? experienceStyle : inferExperienceStyle(practiceRhythm, simulatorGoals),
+    ...(coachNotes ? { coachNotes } : {}),
     completedAt: new Date().toISOString(),
   };
 
@@ -1156,7 +2210,20 @@ function buildUserPracticeProfile(answers: OnboardingAnswers): UserPracticeProfi
 function buildPracticeRecommendations(profile: UserPracticeProfile): PracticeRecommendations {
   const wantsDriverAccuracy = profile.goals.includes("Driver accuracy") || profile.frustrations.includes("Slicing");
   const wantsWedges = profile.goals.includes("Wedge control") || profile.frustrations.includes("Poor wedge distance control");
-  const wantsData = profile.experienceStyle.includes("Data-driven training") || profile.simulatorGoals.includes("Swing data");
+  const wantsData =
+    profile.experienceStyle.includes("Data-driven training") ||
+    profile.practiceStyle.includes("Data-focused practice") ||
+    profile.simulatorGoals.includes("Swing data") ||
+    profile.simulatorGoals.includes("Work on swing data");
+  const wantsLessons =
+    profile.experienceStyle.includes("Lesson-based improvement") ||
+    profile.practiceStyle.includes("Coach-guided sessions") ||
+    profile.simulatorGoals.includes("Lessons");
+  const wantsSocial =
+    profile.experienceStyle.includes("Social golf") ||
+    profile.experienceStyle.includes("Competitive challenges") ||
+    profile.simulatorGoals.includes("Compete with friends") ||
+    profile.simulatorGoals.includes("League play");
 
   if (profile.path === "Junior") {
     return {
@@ -1168,7 +2235,7 @@ function buildPracticeRecommendations(profile: UserPracticeProfile): PracticeRec
       lessonRecommendation: "Start with a short junior evaluation and a parent-friendly progress check.",
       trainingPlan: "Two 30-minute sessions per week: warmup game, one skill block, one fun scoring challenge.",
       priorities: ["Keep swings athletic", "Reward solid contact", "Track simple milestones"],
-      suggestions: ["Junior league invite", "Parent progress recap", "Gamified badges"],
+      suggestions: ["Junior league invite", "Parent progress recap", "Gamified milestones"],
     };
   }
 
@@ -1179,7 +2246,9 @@ function buildPracticeRecommendations(profile: UserPracticeProfile): PracticeRec
       focusAreas: ["Contact quality", "Basic start line", "Simple carry numbers", "Setup consistency"],
       drills: ["Half-swing contact map", "Seven-ball start-line gate", "Three-club distance baseline"],
       simulatorModes: ["Basic range session", "Short approach challenge", "Intro distance mapping"],
-      lessonRecommendation: "Book an intro lesson to set grip, posture, alignment, and a simple practice routine.",
+      lessonRecommendation: wantsLessons
+        ? "Start with a coach-guided intro lesson and leave with one simple homework drill."
+        : "Book an intro lesson to set grip, posture, alignment, and a simple practice routine.",
       trainingPlan: `${profile.timeAvailable} per session focused on one contact drill, one distance drill, and one confidence finish.`,
       priorities: ["Find center contact first", "Keep face/path language simple", "Build a no-guessing practice habit"],
       suggestions: ["Simulator orientation", "Beginner practice card", "Coach check-in after three sessions"],
@@ -1196,7 +2265,9 @@ function buildPracticeRecommendations(profile: UserPracticeProfile): PracticeRec
       lessonRecommendation: "Schedule a metrics review to turn path, face, launch, and spin into one scoring priority.",
       trainingPlan: `${profile.frequency}: one technical block, one random practice block, and one scored combine.`,
       priorities: ["Tighten misses", "Pressure-test yardages", "Separate technique from scoring practice"],
-      suggestions: ["Advanced league flight", "Monthly combine leaderboard", "Tournament prep session"],
+      suggestions: wantsSocial
+        ? ["Advanced league flight", "Monthly combine leaderboard", "Tournament prep session"]
+        : ["Monthly combine leaderboard", "Tournament prep session", "Advanced metrics review"],
     };
   }
 
@@ -1215,10 +2286,14 @@ function buildPracticeRecommendations(profile: UserPracticeProfile): PracticeRec
       "Ten-ball fairway or green challenge",
     ],
     simulatorModes: ["Distance mapping", "Target challenge", "Virtual course decision practice"],
-    lessonRecommendation: "Use one coaching session to confirm the root cause of the main miss before adding drills.",
+    lessonRecommendation: wantsLessons
+      ? "Pair each practice block with a quick coach checkpoint so the plan stays focused."
+      : "Use one coaching session to confirm the root cause of the main miss before adding drills.",
     trainingPlan: `${profile.timeAvailable} per session with a warmup, one skill block, one game, and a short recap.`,
     priorities: ["Know your stock carry", "Reduce the big miss", "Make practice repeatable"],
-    suggestions: ["Casual league night", "Monthly distance refresh", "Optional coach tune-up"],
+    suggestions: wantsSocial
+      ? ["Casual league night", "Member event recommendation", "Monthly distance refresh"]
+      : ["Monthly distance refresh", "Optional coach tune-up", wantsData ? "Data review after three sessions" : "Target challenge recap"],
   };
 }
 
@@ -1229,26 +2304,104 @@ export default function Home() {
   const [selectedClub, setSelectedClub] = useState("6-Iron");
   const [csvText, setCsvText] = useState(DEMO_CSV);
   const [importMessage, setImportMessage] = useState("Demo CSV loaded");
+  const [importConfirmation, setImportConfirmation] = useState<string | null>(null);
   const [accountMode, setAccountMode] = useState<AccountMode>("pending");
-  const [practiceProfile, setPracticeProfile] = useState<UserPracticeProfile | null>(() => readStoredPracticeProfile());
-  const [showOnboarding, setShowOnboarding] = useState(() => !readStoredPracticeProfile());
-  const [lastImport, setLastImport] = useState<LastImport>(() => makeLastImport("Photo", parseCsv(DEMO_CSV), DEFAULT_IMPORT_DATE));
+  const [workspaceRole, setWorkspaceRole] = useState<VideoViewerRole>("user");
+  const [videoLibraryMemberId, setVideoLibraryMemberId] = useState("current-user");
+  const [videoLibraryMemberName, setVideoLibraryMemberName] = useState("");
+  const [requestedVideoId, setRequestedVideoId] = useState<string | null>(null);
+  const [practiceProfile, setPracticeProfile] = useState<UserPracticeProfile | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(true);
+  const [lastImport, setLastImport] = useState<LastImport>(() =>
+    makeLastImport("Photo", parseCsv(DEMO_CSV), DEFAULT_IMPORT_DATE, DEFAULT_SIMULATOR, DEFAULT_FACILITY_NAME),
+  );
   const [userName, setUserName] = useState<string | null>(null);
+  const [accountUser, setAccountUser] = useState<AccountUser | null>(null);
+  const [devAuthEnabled, setDevAuthEnabled] = useState(false);
+  const [showLoginModal, setShowLoginModal] = useState(false);
   const [syncStatus, setSyncStatus] = useState("Choose how you want to use Free Range Golf.");
 
   const clubs = useMemo(() => summarizeClubs(sessions), [sessions]);
   const insights = useMemo(() => computeInsights(clubs, sessions), [clubs, sessions]);
   const allShots = useMemo(() => sessions.flatMap((session) => session.shots), [sessions]);
   const selectedSession = sessions.find((session) => session.id === selectedSessionId) ?? sessions[0];
-  const selectedClubSummary = clubs.find((club) => club.club === selectedClub) ?? clubs[0];
+  const selectedSessionClubs = useMemo(() => summarizeClubs([selectedSession]), [selectedSession]);
+  const selectedSessionInsights = useMemo(
+    () => computeInsights(selectedSessionClubs, [selectedSession]),
+    [selectedSessionClubs, selectedSession],
+  );
+  const selectedClubSummary =
+    selectedSessionClubs.find((club) => club.club === selectedClub) ??
+    clubs.find((club) => club.club === selectedClub) ??
+    clubs[0];
   const activeClub = selectedClubSummary?.club ?? selectedClub;
-  const selectedClubShots = allShots.filter((shot) => shot.club === activeClub);
-  const avgCarry = selectedClubSummary?.carry ?? round(average(allShots.map((shot) => shot.carry)));
-  const avgSmash = selectedClubSummary?.smash ?? round(average(allShots.map((shot) => shot.smash)), 2);
-  const avgDispersion = selectedClubSummary?.dispersion ?? round(standardDeviation(allShots.map((shot) => shot.offline)));
-  const performanceIndex = Math.round(average(clubs.map((club) => club.quality)));
+  const selectedSessionHasClub = selectedSession.shots.some((shot) => shot.club === activeClub);
+  const selectedClubShots = (selectedSessionHasClub ? selectedSession.shots : allShots)
+    .filter((shot) => shot.club === activeClub);
+  const avgCarry = selectedClubSummary?.carry ?? round(averageMetric(allShots, "carry"));
+  const avgSmash = selectedClubSummary?.smash ?? round(averageMetric(allShots, "smash"), 2);
+  const avgDispersion = selectedClubSummary?.dispersion ?? round(standardDeviation(metricValues(allShots, "offline")));
+  const qualityValues = clubs.map((club) => club.quality).filter(Number.isFinite);
+  const performanceIndex = qualityValues.length ? Math.round(average(qualityValues)) : Number.NaN;
   const ballCountLabel = `${allShots.length.toLocaleString()} ${allShots.length === 1 ? "ball" : "balls"}`;
-  const topInsight = insights[0];
+  const topInsight = selectedSessionInsights[0];
+
+  useEffect(() => {
+    const query = new URLSearchParams(window.location.search);
+    if (query.get("tab") === "videos") {
+      queueMicrotask(() => {
+        setActiveTab("videos");
+        setRequestedVideoId(query.get("video"));
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    void connectAccount();
+    // Authentication is checked once when the app loads.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const storedProfile = readStoredPracticeProfile();
+    if (storedProfile) {
+      queueMicrotask(() => {
+        setPracticeProfile(storedProfile);
+        setShowOnboarding(false);
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    const applyStoredSessions = (storedSessions: Session[]) => {
+      setSessions(storedSessions);
+      setSelectedSessionId(storedSessions[0].id);
+      setSelectedClub(storedSessions[0].shots[0]?.club ?? "6-Iron");
+    };
+    const storedSessions = readStoredSessions();
+    const storedLastImport = readStoredLastImport();
+
+    if (storedSessions || storedLastImport) {
+      queueMicrotask(() => {
+        if (storedSessions) applyStoredSessions(storedSessions);
+        if (storedLastImport) setLastImport(storedLastImport);
+      });
+    }
+
+    const syncImportState = (event: StorageEvent) => {
+      if (event.key === SESSIONS_STORAGE_KEY) {
+        const nextSessions = parseStoredSessions(event.newValue);
+        if (nextSessions) applyStoredSessions(nextSessions);
+      }
+      if (event.key === LAST_IMPORT_STORAGE_KEY) {
+        const nextLastImport = parseStoredLastImport(event.newValue);
+        if (nextLastImport) setLastImport(nextLastImport);
+      }
+    };
+
+    window.addEventListener("storage", syncImportState);
+    return () => window.removeEventListener("storage", syncImportState);
+  }, []);
 
   async function saveUserSessions(nextSessions: Session[]) {
     if (accountMode !== "user") return;
@@ -1306,46 +2459,134 @@ export default function Home() {
     }
   }
 
-  async function connectAccount() {
+  async function consumeLoginFromUrl() {
+    const url = new URL(window.location.href);
+    const token = url.searchParams.get("login");
+    if (!token) return false;
+
+    try {
+      const response = await fetch("/api/auth/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      const payload = await response.json().catch(() => ({})) as { error?: string; redirectPath?: string };
+      url.searchParams.delete("login");
+      window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+      if (!response.ok) {
+        setSyncStatus(payload.error ?? "This login link could not be used.");
+        return false;
+      }
+      setSyncStatus("Signed in from your secure email link.");
+      return true;
+    } catch {
+      setSyncStatus("This login link could not be used right now.");
+      return false;
+    }
+  }
+
+  async function acceptInvitationFromUrl() {
+    const url = new URL(window.location.href);
+    const token = url.searchParams.get("invite");
+    if (!token) return false;
+
+    try {
+      const response = await fetch("/api/invitations/accept", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      const payload = await response.json().catch(() => ({})) as { error?: string };
+      url.searchParams.delete("invite");
+      window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+      setSyncStatus(
+        response.ok
+          ? "Invitation accepted. Your video library is ready."
+          : payload.error ?? "Invitation could not be accepted.",
+      );
+      return response.ok;
+    } catch {
+      setSyncStatus("Invitation could not be accepted right now.");
+      return false;
+    }
+  }
+
+  async function connectAccount(options: { promptForEmail?: boolean } = {}) {
     setSyncStatus("Checking your account...");
     try {
-      const response = await fetch("/api/sessions");
-      const payload = await response.json();
+      await consumeLoginFromUrl();
+      await acceptInvitationFromUrl();
+      const [sessionsResponse, accountResponse] = await Promise.all([
+        fetch("/api/sessions"),
+        fetch("/api/account"),
+      ]);
+      const payload = await sessionsResponse.json();
+      const accountPayload = await accountResponse.json();
+      setDevAuthEnabled(accountPayload.devAuthEnabled === true);
 
-      if (payload.mode !== "user") {
+      if (payload.mode !== "user" || accountPayload.mode !== "user") {
         setAccountMode("guest");
-        setSyncStatus("Using guest mode. Sign-in headers were not available.");
+        setSyncStatus("Use an email login link to open your private account.");
+        if (options.promptForEmail) setShowLoginModal(true);
         return false;
       }
 
       const savedSessions = Array.isArray(payload.sessions) && payload.sessions.length ? payload.sessions : sessions;
+      const signedInRole: VideoViewerRole =
+        accountPayload.user?.role === "coach" || accountPayload.user?.role === "admin"
+          ? accountPayload.user.role
+          : "user";
+      const signedInUser = accountPayload.user as AccountUser;
       setAccountMode("user");
-      setUserName(payload.user?.displayName ?? payload.user?.email ?? "Signed-in golfer");
+      setWorkspaceRole(signedInRole);
+      setAccountUser(signedInUser);
+      setUserName(accountPayload.user?.displayName ?? accountPayload.user?.email ?? "Signed-in golfer");
+      setVideoLibraryMemberId(signedInUser.id);
+      setVideoLibraryMemberName(signedInUser.displayName);
       setSessions(savedSessions);
       setSelectedSessionId(savedSessions[0]?.id ?? BASE_SESSIONS[0].id);
       setSelectedClub(savedSessions[0]?.shots?.[0]?.club ?? "6-Iron");
-      setSyncStatus(payload.sessions?.length ? "Loaded your saved sessions." : "Signed in. Demo sessions saved on first import.");
-
-      if (!payload.sessions?.length) {
-        await fetch("/api/sessions", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessions }),
-        });
-      }
+      const requestedTab = new URLSearchParams(window.location.search).get("tab");
+      setActiveTab(
+        requestedTab === "videos"
+          ? "videos"
+          : signedInRole === "user"
+            ? "videos"
+            : "coach",
+      );
+      setShowOnboarding(false);
+      setSyncStatus(
+        signedInRole === "user"
+          ? payload.sessions?.length ? "Loaded your saved sessions." : "Signed in. Your lesson video library is ready."
+          : `${signedInRole === "admin" ? "Admin" : "Coach"} workspace ready.`,
+      );
 
       await loadUserPracticeProfile();
       return true;
     } catch {
       setAccountMode("guest");
       setSyncStatus("Using guest mode. Saved history is unavailable right now.");
+      if (options.promptForEmail) setShowLoginModal(true);
       return false;
     }
   }
 
   function continueAsGuest() {
     setAccountMode("guest");
-    setSyncStatus("Guest mode: session changes stay in this browser tab.");
+    setAccountUser(null);
+    setSyncStatus("Guest mode: session changes are saved in this browser.");
+  }
+
+  function changeWorkspaceRole(role: VideoViewerRole) {
+    setWorkspaceRole(role);
+    if (role === "user") setVideoLibraryMemberId("current-user");
+    setSyncStatus(
+      role === "user"
+        ? "Member workspace"
+        : role === "coach"
+          ? "Coach workspace preview"
+          : "Admin workspace preview",
+    );
   }
 
   async function finishOnboarding(profile: UserPracticeProfile, mode: "account" | "guest") {
@@ -1365,21 +2606,43 @@ export default function Home() {
     }
   }
 
-  function importCsv(submissionType: LastImport["submissionType"] = "CSV / Excel") {
-    const shots = parseCsv(csvText);
+  function importShots(
+    shots: Shot[],
+    submissionType: LastImport["submissionType"],
+    simulator = DEFAULT_SIMULATOR,
+    metadata: PhotoImportMetadata = {},
+  ) {
     if (!shots.length) {
-      setImportMessage("No rows detected");
+      setImportMessage("No shot data detected");
       return;
     }
-    const nextSession = buildImportedSession(shots, submissionType);
+    const nextSession = buildImportedSession(shots, submissionType, simulator, metadata);
     const nextSessions = [nextSession, ...sessions];
+    const nextLastImport = makeLastImport(
+      submissionType,
+      shots,
+      nextSession.date,
+      simulator,
+      metadata.location ?? LOCATION_UNAVAILABLE,
+    );
     setSessions(nextSessions);
     setSelectedSessionId(nextSession.id);
     setSelectedClub(shots[0]?.club ?? selectedClub);
     setActiveTab("dashboard");
-    setLastImport(makeLastImport(submissionType, shots, nextSession.date));
-    setImportMessage(`${shots.length} shots imported from ${submissionType}`);
+    setLastImport(nextLastImport);
+    storeImportState(nextSessions, nextLastImport);
+    const importedClubNames = Array.from(new Set(shots.map((shot) => getClubDisplayName(shot.club))));
+    const clubLabel = importedClubNames.length === 1 ? importedClubNames[0] : `${importedClubNames.length} clubs`;
+    const successMessage =
+      `${shots.length} ${clubLabel} ${shots.length === 1 ? "shot" : "shots"} successfully uploaded and analyzed. ` +
+      `Location: ${nextSession.location ?? LOCATION_UNAVAILABLE}. Missing metrics display as NA.`;
+    setImportMessage(successMessage);
+    setImportConfirmation(successMessage);
     void saveUserSessions(nextSessions);
+  }
+
+  function importCsv(submissionType: LastImport["submissionType"] = "CSV / Excel") {
+    importShots(parseCsv(csvText), submissionType, "CSV");
   }
 
   if (showOnboarding) {
@@ -1429,14 +2692,25 @@ export default function Home() {
           <div>
             <p className="eyebrow">June performance review</p>
             <h1>{NAV_ITEMS.find((item) => item.id === activeTab)?.label}</h1>
+            <p className="page-description">{PAGE_DESCRIPTIONS[activeTab]}</p>
           </div>
           <div className="topbar-actions" aria-label="Session controls">
+            {accountMode !== "user" && (
+              <div className="workspace-role-switcher" aria-label="Workspace preview role">
+                <span>Workspace preview</span>
+                <div>
+                  <button className={workspaceRole === "user" ? "active" : ""} onClick={() => changeWorkspaceRole("user")}>Member</button>
+                  <button className={workspaceRole === "coach" ? "active" : ""} onClick={() => changeWorkspaceRole("coach")}>Coach</button>
+                  <button className={workspaceRole === "admin" ? "active" : ""} onClick={() => changeWorkspaceRole("admin")}>Admin</button>
+                </div>
+              </div>
+            )}
             <div className={cls("account-pill", accountMode)}>
               <span>{accountMode === "user" ? "Saved" : accountMode === "guest" ? "Guest" : "Not set"}</span>
               <strong>{accountMode === "user" ? userName : syncStatus}</strong>
             </div>
             {accountMode !== "user" && (
-              <button className="secondary-action" onClick={connectAccount}>
+              <button className="secondary-action" onClick={() => void connectAccount({ promptForEmail: true })}>
                 Log in
               </button>
             )}
@@ -1456,7 +2730,7 @@ export default function Home() {
             avgDispersion={avgDispersion}
             avgSmash={avgSmash}
             clubs={clubs}
-            insights={insights}
+            insights={selectedSessionInsights}
             performanceIndex={performanceIndex}
             selectedClub={activeClub}
             selectedClubShots={selectedClubShots}
@@ -1476,21 +2750,44 @@ export default function Home() {
             selectedSessionId={selectedSessionId}
             sessions={sessions}
             setActiveTab={setActiveTab}
+            setSelectedClub={setSelectedClub}
             setSelectedSessionId={setSelectedSessionId}
           />
         )}
 
         {activeTab === "clubs" && <ClubsView clubs={clubs} selectedClub={activeClub} />}
 
+        {activeTab === "videos" && (
+          <VideosView
+            key={`${workspaceRole}-${workspaceRole === "user" ? accountUser?.id ?? "current-user" : videoLibraryMemberId}`}
+            authenticated={accountMode === "user"}
+            ownerId={workspaceRole === "user" ? accountUser?.id ?? "current-user" : videoLibraryMemberId}
+            ownerName={workspaceRole === "user" ? accountUser?.displayName : videoLibraryMemberName}
+            requestedVideoId={requestedVideoId}
+            sessions={sessions}
+            viewerRole={workspaceRole}
+          />
+        )}
+
         {activeTab === "coach" && (
           <CoachView
             clubs={clubs}
-            insights={insights}
+            insights={selectedSessionInsights}
             selectedClub={activeClub}
             selectedClubShots={selectedClubShots}
             selectedClubSummary={selectedClubSummary}
             selectedSession={selectedSession}
             sessions={sessions}
+            viewerRole={workspaceRole}
+            coachName={accountUser?.displayName ?? userName ?? "Coach"}
+            authenticated={accountMode === "user"}
+            devAuthEnabled={devAuthEnabled}
+            onOpenMemberVideos={(memberId, memberName) => {
+              setVideoLibraryMemberId(memberId);
+              setVideoLibraryMemberName(memberName);
+              setActiveTab("videos");
+            }}
+            onRequestCoachAccess={() => changeWorkspaceRole("coach")}
           />
         )}
 
@@ -1500,6 +2797,7 @@ export default function Home() {
           <ImportView
             csvText={csvText}
             importCsv={importCsv}
+            importPhotoShots={(shots, simulator, metadata) => importShots(shots, "Photo", simulator, metadata)}
             importMessage={importMessage}
             lastImport={lastImport}
             setCsvText={setCsvText}
@@ -1508,7 +2806,28 @@ export default function Home() {
       </section>
 
       {accountMode === "pending" && (
-        <AccountGate connectAccount={connectAccount} continueAsGuest={continueAsGuest} syncStatus={syncStatus} />
+        <AccountGate
+          connectAccount={() => connectAccount({ promptForEmail: true })}
+          continueAsGuest={continueAsGuest}
+          syncStatus={syncStatus}
+        />
+      )}
+
+      {showLoginModal && (
+        <LoginRequestModal
+          onClose={() => setShowLoginModal(false)}
+          onStatus={setSyncStatus}
+        />
+      )}
+
+      {importConfirmation && (
+        <div className="import-confirmation" role="status">
+          <div>
+            <strong>Upload complete</strong>
+            <span>{importConfirmation}</span>
+          </div>
+          <button aria-label="Dismiss upload confirmation" onClick={() => setImportConfirmation(null)}>×</button>
+        </div>
       )}
     </main>
   );
@@ -1547,12 +2866,14 @@ function DashboardView({
   setActiveTab: (tab: Tab) => void;
   setSelectedClub: (club: string) => void;
 }) {
+  const selectedClubLabel = getClubDisplayName(selectedClub);
+
   return (
     <div className="view-stack">
       <section className="control-strip">
         <div>
           <p className="eyebrow">Club selection</p>
-          <h2>{selectedClub} view</h2>
+          <h2>{selectedClubLabel} view</h2>
           <span>{selectedClubShots.length} shots matched to this club</span>
         </div>
         <label className="select-control">
@@ -1560,7 +2881,7 @@ function DashboardView({
           <select value={selectedClub} onChange={(event) => setSelectedClub(event.target.value)}>
             {clubs.map((club) => (
               <option key={club.club} value={club.club}>
-                {club.club}
+                {getClubDisplayName(club.club)}
               </option>
             ))}
           </select>
@@ -1570,8 +2891,8 @@ function DashboardView({
       <section className="metric-grid">
         <Kpi club={selectedClub} label="Performance index" metricKey="quality" value={selectedClubSummary?.quality ?? performanceIndex} unit="/100" tone="green" />
         <Kpi club={selectedClub} label="Average carry" metricKey="carry" value={avgCarry} unit="yd" tone="blue" />
-        <Kpi club={selectedClub} label="Shot dispersion" metricKey="dispersion" value={`±${avgDispersion}`} unit="yd" tone="amber" />
-        <Kpi club={selectedClub} label="Smash factor" metricKey="smash" value={avgSmash.toFixed(2)} unit="avg" tone="coral" />
+        <Kpi club={selectedClub} label="Shot dispersion" metricKey="dispersion" value={Number.isFinite(avgDispersion) ? `±${avgDispersion}` : "NA"} unit="yd" tone="amber" />
+        <Kpi club={selectedClub} label="Smash factor" metricKey="smash" value={Number.isFinite(avgSmash) ? avgSmash.toFixed(2) : "NA"} unit="avg" tone="coral" />
       </section>
 
       {selectedClubSummary && (
@@ -1589,15 +2910,15 @@ function DashboardView({
 
       <section className="dashboard-grid comparison-grid">
         <article className="panel">
-          <PanelHeader kicker="Selected club detail" title={`${selectedClub} delivery`} meta="Full Swing-style data points" />
+          <PanelHeader kicker="Selected club detail" title={`${selectedClubLabel} delivery`} meta="Available session data" />
           <MetricMatrix summary={selectedClubSummary} />
         </article>
         <article className="panel">
-          <PanelHeader kicker="Benchmark guide" title={`${selectedClub} windows`} meta="Hover cards use these targets" />
+          <PanelHeader kicker="Benchmark guide" title={`${selectedClubLabel} windows`} meta="Hover cards use these targets" />
           <BenchmarkList club={selectedClub} />
         </article>
         <article className="panel">
-          <PanelHeader kicker="Pro comparison" title={`${selectedClub} tour stats`} meta="PGA + LPGA reference" />
+          <PanelHeader kicker="Pro comparison" title={`${selectedClubLabel} tour stats`} meta="PGA + LPGA reference" />
           <ProStatsList club={selectedClub} />
         </article>
       </section>
@@ -1607,14 +2928,14 @@ function DashboardView({
           <PanelHeader
             kicker="Shot pattern"
             title={selectedSession.title}
-            meta={`${formatDate(selectedSession.date)} · ${selectedSession.source}`}
+            meta={`${formatDate(selectedSession.date)} · ${selectedSession.source}${selectedSession.location ? ` · ${selectedSession.location}` : ""}`}
             action={<button className="text-button" onClick={() => setActiveTab("sessions")}>Sessions</button>}
           />
           <ShotMap shots={selectedSession.shots} />
         </article>
 
         <article className="panel">
-          <PanelHeader kicker="Coach priority" title={topInsight?.club ?? "All clubs"} meta={topInsight?.metric ?? "No urgent flags"} />
+          <PanelHeader kicker="Coach priority" title={topInsight ? getClubDisplayName(topInsight.club) : "All clubs"} meta={topInsight?.metric ?? "No urgent flags"} />
           {topInsight ? (
             <div className="priority-card">
               <span className={cls("severity-dot", topInsight.severity)} />
@@ -1665,12 +2986,14 @@ function SessionsView({
   selectedSessionId,
   sessions,
   setActiveTab,
+  setSelectedClub,
   setSelectedSessionId,
 }: {
   selectedSession: Session;
   selectedSessionId: string;
   sessions: Session[];
   setActiveTab: (tab: Tab) => void;
+  setSelectedClub: (club: string) => void;
   setSelectedSessionId: (id: string) => void;
 }) {
   const selectedClubs = summarizeClubs([selectedSession]);
@@ -1682,20 +3005,26 @@ function SessionsView({
         <div className="session-list">
           {sessions.map((session) => {
             const sessionShots = session.shots;
-            const carry = round(average(sessionShots.map((shot) => shot.carry)));
-            const dispersion = round(standardDeviation(sessionShots.map((shot) => shot.offline)));
+            const carry = averageMetric(sessionShots, "carry");
+            const dispersion = standardDeviation(metricValues(sessionShots, "offline"));
             return (
               <button
                 className={cls("session-row", session.id === selectedSessionId && "active")}
                 key={session.id}
-                onClick={() => setSelectedSessionId(session.id)}
+                onClick={() => {
+                  setSelectedSessionId(session.id);
+                  if (session.shots[0]?.club) setSelectedClub(session.shots[0].club);
+                }}
               >
                 <span>
                   <strong>{session.title}</strong>
-                  <small>{formatDate(session.date)} · {session.source}</small>
+                  <small>
+                    {formatDate(session.date)} · {session.source}
+                    {session.location ? ` · ${session.location}` : ""}
+                  </small>
                 </span>
-                <span className="row-metric">{carry} yd</span>
-                <span className="row-metric">±{dispersion}</span>
+                <span className="row-metric">{formatAvailableMetric(carry, "yd")}</span>
+                <span className="row-metric">{Number.isFinite(dispersion) ? `±${round(dispersion)}` : "NA"}</span>
               </button>
             );
           })}
@@ -1706,7 +3035,7 @@ function SessionsView({
         <PanelHeader
           kicker={selectedSession.focus}
           title={selectedSession.title}
-          meta={`${selectedSession.shots.length} shots · ${selectedSession.source}`}
+          meta={`${selectedSession.shots.length} shots · ${selectedSession.source}${selectedSession.location ? ` · ${selectedSession.location}` : ""}`}
           action={<button className="text-button" onClick={() => setActiveTab("coach")}>Coach notes</button>}
         />
         <ShotMap shots={selectedSession.shots} />
@@ -1715,16 +3044,26 @@ function SessionsView({
             <span>Club</span>
             <span>Shots</span>
             <span>Carry</span>
+            <span>Total</span>
+            <span>Ball speed</span>
+            <span>Launch</span>
+            <span>Apex</span>
+            <span>Curve</span>
             <span>Dispersion</span>
             <span>Smash</span>
           </div>
           {selectedClubs.map((club) => (
             <div className="table-row" key={club.club}>
-              <span>{club.club}</span>
+              <span>{getClubDisplayName(club.club)}</span>
               <span>{club.shots}</span>
-              <span>{club.carry} yd</span>
-              <span>±{club.dispersion}</span>
-              <span>{club.smash.toFixed(2)}</span>
+              <span>{formatAvailableMetric(club.carry, "yd")}</span>
+              <span>{formatAvailableMetric(club.total, "yd")}</span>
+              <span>{formatAvailableMetric(club.ballSpeed, "mph")}</span>
+              <span>{formatAvailableMetric(club.launch, "deg")}</span>
+              <span>{formatAvailableMetric(club.apex, "ft")}</span>
+              <span>{formatAvailableMetric(club.curve, "ft")}</span>
+              <span>{Number.isFinite(club.dispersion) ? `±${club.dispersion}` : "NA"}</span>
+              <span>{formatAvailableMetric(club.smash, "", 2)}</span>
             </div>
           ))}
         </div>
@@ -1761,25 +3100,33 @@ function ClubsView({ clubs, selectedClub }: { clubs: ClubSummary[]; selectedClub
             <span>Dispersion</span>
             <span>Launch</span>
             <span>Apex</span>
+            <span>Curve</span>
+            <span>Launch dir.</span>
             <span>Spin</span>
             <span>Quality</span>
           </div>
           {clubs.map((club, index) => {
             const nextClub = clubs[index + 1];
-            const gap = nextClub ? round(club.carry - nextClub.carry) : null;
+            const gap = nextClub && Number.isFinite(club.carry) && Number.isFinite(nextClub.carry)
+              ? round(club.carry - nextClub.carry)
+              : Number.NaN;
             return (
               <div className={cls("table-row", club.club === selectedClub && "selected-row")} key={club.club}>
-                <span>{club.club}</span>
+                <span>{getClubDisplayName(club.club)}</span>
                 <span>{club.shots}</span>
-                <span>{club.carry} yd</span>
-                <span>{club.total} yd</span>
-                <span className={cls(gap !== null && (gap < 8 || gap > 18) && "warning-text")}>{gap ? `${gap} yd` : "—"}</span>
-                <span>{club.ballSpeed} mph</span>
-                <span>{club.clubSpeed} mph</span>
-                <span>±{club.dispersion}</span>
-                <span>{club.launch}°</span>
-                <span>{club.apex} ft</span>
-                <span>{club.spin}</span>
+                <span>{formatAvailableMetric(club.carry, "yd")}</span>
+                <span>{formatAvailableMetric(club.total, "yd")}</span>
+                <span className={cls(Number.isFinite(gap) && (gap < 8 || gap > 18) && "warning-text")}>
+                  {formatAvailableMetric(gap, "yd")}
+                </span>
+                <span>{formatAvailableMetric(club.ballSpeed, "mph")}</span>
+                <span>{formatAvailableMetric(club.clubSpeed, "mph")}</span>
+                <span>{Number.isFinite(club.dispersion) ? `±${club.dispersion}` : "NA"}</span>
+                <span>{formatAvailableMetric(club.launch, "deg")}</span>
+                <span>{formatAvailableMetric(club.apex, "ft")}</span>
+                <span>{formatAvailableMetric(club.curve, "ft")}</span>
+                <span>{formatAvailableMetric(club.horizontalAngle, "deg")}</span>
+                <span>{formatAvailableMetric(club.spin, "rpm", 0)}</span>
                 <span>
                   <QualityPill score={club.quality} />
                 </span>
@@ -1824,7 +3171,8 @@ function ClubsView({ clubs, selectedClub }: { clubs: ClubSummary[]; selectedClub
 }
 
 function ClubMetricUserTable({ clubs, metric }: { clubs: ClubSummary[]; metric: ClubMetricConfig }) {
-  const maxValue = Math.max(...clubs.map((club) => getClubMetricValue(club, metric.key)), 1);
+  const availableValues = clubs.map((club) => getClubMetricValue(club, metric.key)).filter(Number.isFinite);
+  const maxValue = Math.max(...availableValues, 1);
 
   return (
     <div className="metric-table">
@@ -1837,16 +3185,18 @@ function ClubMetricUserTable({ clubs, metric }: { clubs: ClubSummary[]; metric: 
         const value = getClubMetricValue(club, metric.key);
         const midBenchmark = getAmateurMetricValue(club.club, metric.key, "mid");
         const delta = value - midBenchmark;
-        const deltaLabel = `${delta >= 0 ? "+" : ""}${formatClubMetricValue(delta, metric)}`;
+        const deltaLabel = Number.isFinite(delta)
+          ? `${delta >= 0 ? "+" : ""}${formatClubMetricValue(delta, metric)}`
+          : "NA";
 
         return (
           <div className="metric-table-row metric-user-row" key={club.club}>
-            <span>{club.club}</span>
+            <span>{getClubDisplayName(club.club)}</span>
             <span>
               <strong>{formatClubMetricValue(value, metric)}</strong>
-              <i style={{ width: `${Math.max(8, (value / maxValue) * 100)}%` }} />
+              {Number.isFinite(value) && <i style={{ width: `${Math.max(8, (value / maxValue) * 100)}%` }} />}
             </span>
-            <span className={cls("metric-delta", delta >= 0 ? "positive" : "negative")}>{deltaLabel}</span>
+            <span className={cls("metric-delta", Number.isFinite(delta) && (delta >= 0 ? "positive" : "negative"))}>{deltaLabel}</span>
           </div>
         );
       })}
@@ -1871,7 +3221,7 @@ function AmateurMetricTable({ clubs, metric }: { clubs: ClubSummary[]; metric: C
       </div>
       {clubs.map((club) => (
         <div className="metric-table-row" key={club.club}>
-          <span>{club.club}</span>
+          <span>{getClubDisplayName(club.club)}</span>
           {tiers.map((tier) => (
             <span key={tier.key}>{formatClubMetricValue(getAmateurMetricValue(club.club, metric.key, tier.key), metric)}</span>
           ))}
@@ -1890,12 +3240,12 @@ function ProfessionalMetricTable({ clubs, metric }: { clubs: ClubSummary[]; metr
         <span>LPGA</span>
       </div>
       {clubs.map((club) => {
-        const reference = PRO_REFERENCE_STATS[club.club] ?? PRO_REFERENCE_STATS["7-Iron"];
+        const reference = PRO_REFERENCE_STATS[club.club];
         return (
           <div className="metric-table-row" key={club.club}>
-            <span>{club.club}</span>
-            <span>{formatClubMetricValue(getReferenceMetricValue(reference.pga, metric.key), metric)}</span>
-            <span>{formatClubMetricValue(getReferenceMetricValue(reference.lpga, metric.key), metric)}</span>
+            <span>{getClubDisplayName(club.club)}</span>
+            <span>{reference ? formatClubMetricValue(getReferenceMetricValue(reference.pga, metric.key), metric) : "NA"}</span>
+            <span>{reference ? formatClubMetricValue(getReferenceMetricValue(reference.lpga, metric.key), metric) : "NA"}</span>
           </div>
         );
       })}
@@ -1904,22 +3254,38 @@ function ProfessionalMetricTable({ clubs, metric }: { clubs: ClubSummary[]; metr
 }
 
 function CoachView({
+  authenticated,
   clubs,
+  coachName,
+  devAuthEnabled,
   insights,
+  onOpenMemberVideos,
+  onRequestCoachAccess,
   selectedClub,
   selectedClubShots,
   selectedClubSummary,
   selectedSession,
   sessions,
+  viewerRole,
 }: {
+  authenticated: boolean;
   clubs: ClubSummary[];
+  coachName: string;
+  devAuthEnabled: boolean;
   insights: Insight[];
+  onOpenMemberVideos: (memberId: string, memberName: string) => void;
+  onRequestCoachAccess: () => void;
   selectedClub: string;
   selectedClubShots: Shot[];
   selectedClubSummary?: ClubSummary;
   selectedSession: Session;
   sessions: Session[];
+  viewerRole: VideoViewerRole;
 }) {
+  const selectedClubLabel = getClubDisplayName(selectedClub);
+  const [coachSection, setCoachSection] = useState<"assistant" | "video-tools">(
+    viewerRole === "user" ? "assistant" : "video-tools",
+  );
   const [coachInput, setCoachInput] = useState("");
   const [coachStatus, setCoachStatus] = useState("Ready");
   const [coachMessages, setCoachMessages] = useState<CoachMessage[]>([
@@ -1930,7 +3296,7 @@ function CoachView({
   ]);
 
   const quickPrompts = [
-    `What should I fix first with my ${selectedClub}?`,
+    `What should I fix first with my ${selectedClubLabel}?`,
     "Explain my face-to-path in plain English.",
     "Give me one drill for my next practice block.",
     "Am I losing more distance or control?",
@@ -1996,9 +3362,52 @@ function CoachView({
   }
 
   return (
-    <section className="coach-layout">
-      <article className="panel coach-chat-panel">
-        <PanelHeader kicker="MatRat AI coach" title={`${selectedClub} conversation`} meta={coachStatus} />
+    <section className="view-stack">
+      <header className="coach-workspace-header">
+        <div>
+          <p className="eyebrow">{viewerRole === "admin" ? "Admin workspace" : "Coach workspace"}</p>
+          <h2>
+            {coachSection === "assistant"
+              ? "Player analysis"
+              : viewerRole === "admin"
+                ? "Lesson delivery operations"
+                : "Lesson video delivery"}
+          </h2>
+          <p className="coach-workspace-description">
+            {coachSection === "assistant"
+              ? "Translate launch data into one clear priority, drill, and measurable target."
+              : "Deliver lesson videos, connect sessions, and send players clear next steps."}
+          </p>
+        </div>
+        <div className="segmented-control coach-section-control" aria-label="Coach workspace section">
+          <button className={coachSection === "assistant" ? "active" : ""} onClick={() => setCoachSection("assistant")}>AI Coach</button>
+          <button className={coachSection === "video-tools" ? "active" : ""} onClick={() => setCoachSection("video-tools")}>Coach Tools</button>
+        </div>
+      </header>
+
+      {coachSection === "video-tools" ? (
+        viewerRole === "user" ? (
+          <section className="panel coach-access-panel">
+            <span className="coach-access-icon" aria-hidden="true">▶</span>
+            <p className="eyebrow">Coach access required</p>
+            <h3>Upload lesson videos for members</h3>
+            <p>Open the coach workspace to select a member, attach session data, add feedback, and publish a lesson recap.</p>
+            <button className="primary-action" onClick={onRequestCoachAccess}>Open Coach Workspace</button>
+          </section>
+        ) : (
+          <CoachVideoWorkspace
+            authenticated={authenticated}
+            coachName={coachName}
+            devAuthEnabled={devAuthEnabled}
+            onOpenMemberVideos={onOpenMemberVideos}
+            sessions={sessions}
+            viewerRole={viewerRole}
+          />
+        )
+      ) : (
+        <section className="coach-layout">
+          <article className="panel coach-chat-panel">
+        <PanelHeader kicker="MatRat AI coach" title={`${selectedClubLabel} conversation`} meta={coachStatus} />
 
         <div className="chat-transcript" aria-live="polite">
           {coachMessages.map((message) => (
@@ -2027,35 +3436,35 @@ function CoachView({
           <textarea
             aria-label="Ask MatRat AI"
             onChange={(event) => setCoachInput(event.target.value)}
-            placeholder={`Ask about your ${selectedClub} misses, distance gaps, or next drill`}
+            placeholder={`Ask about your ${selectedClubLabel} misses, distance gaps, or next drill`}
             value={coachInput}
           />
           <button className="primary-action" type="submit">
             Ask coach
           </button>
         </form>
-      </article>
+          </article>
 
-      <aside className="coach-side-panel">
+          <aside className="coach-side-panel">
         <article className="panel">
-          <PanelHeader kicker="Context sent" title={selectedClub} meta={`${contextShots.length} recent shots`} />
+          <PanelHeader kicker="Context sent" title={selectedClubLabel} meta={`${contextShots.length} recent shots`} />
           {selectedClubSummary ? (
             <div className="coach-context-grid">
               <div>
                 <span>Carry</span>
-                <strong>{selectedClubSummary.carry} yd</strong>
+                <strong>{formatAvailableMetric(selectedClubSummary.carry, "yd")}</strong>
               </div>
               <div>
                 <span>Smash</span>
-                <strong>{selectedClubSummary.smash.toFixed(2)}</strong>
+                <strong>{formatAvailableMetric(selectedClubSummary.smash, "", 2)}</strong>
               </div>
               <div>
                 <span>Face to path</span>
-                <strong>{selectedClubSummary.faceToPath}°</strong>
+                <strong>{formatAvailableMetric(selectedClubSummary.faceToPath, "deg")}</strong>
               </div>
               <div>
                 <span>Dispersion</span>
-                <strong>±{selectedClubSummary.dispersion} yd</strong>
+                <strong>{Number.isFinite(selectedClubSummary.dispersion) ? `±${selectedClubSummary.dispersion} yd` : "NA"}</strong>
               </div>
             </div>
           ) : (
@@ -2067,8 +3476,840 @@ function CoachView({
           <PanelHeader kicker="Active findings" title="What MatRat sees" meta={`${insights.length} flags`} />
           <InsightList insights={insights.slice(0, 3)} compact />
         </article>
-      </aside>
+          </aside>
+        </section>
+      )}
     </section>
+  );
+}
+
+function getSessionPrimaryClub(session: Session) {
+  const clubCounts = session.shots.reduce<Record<string, number>>((counts, shot) => {
+    counts[shot.club] = (counts[shot.club] ?? 0) + 1;
+    return counts;
+  }, {});
+  return Object.entries(clubCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
+}
+
+function CoachVideoWorkspace({
+  authenticated,
+  coachName,
+  devAuthEnabled,
+  onOpenMemberVideos,
+  sessions,
+  viewerRole,
+}: {
+  authenticated: boolean;
+  coachName: string;
+  devAuthEnabled: boolean;
+  onOpenMemberVideos: (memberId: string, memberName: string) => void;
+  sessions: Session[];
+  viewerRole: Exclude<VideoViewerRole, "user">;
+}) {
+  const [members, setMembers] = useState<CoachMember[]>([]);
+  const [videos, setVideos] = useState<VideoLibraryItem[]>([]);
+  const [loadingMembers, setLoadingMembers] = useState(true);
+  const [loadingVideos, setLoadingVideos] = useState(true);
+  const [showAddMember, setShowAddMember] = useState(false);
+  const [memberSaveState, setMemberSaveState] = useState<"idle" | "saving">("idle");
+  const [newMember, setNewMember] = useState({
+    firstName: "",
+    lastName: "",
+    email: "",
+    phone: "",
+    skillLevel: "",
+    notes: "",
+  });
+  const [step, setStep] = useState(1);
+  const [memberSearch, setMemberSearch] = useState("");
+  const [selectedMemberId, setSelectedMemberId] = useState("");
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [thumbnailFile, setThumbnailFile] = useState<File | null>(null);
+  const [videoTitle, setVideoTitle] = useState("");
+  const [videoType, setVideoType] = useState<VideoType>("Lesson Recap");
+  const [lessonDate, setLessonDate] = useState(getTodayDateString());
+  const [focusArea, setFocusArea] = useState<VideoFocusArea>("Irons");
+  const [videoDescription, setVideoDescription] = useState("");
+  const [tags, setTags] = useState("");
+  const [selectedSessionId, setSelectedSessionId] = useState("");
+  const [lessonSummary, setLessonSummary] = useState("");
+  const [workedOn, setWorkedOn] = useState("");
+  const [keyIssue, setKeyIssue] = useState("");
+  const [improvement, setImprovement] = useState("");
+  const [practiceAssignment, setPracticeAssignment] = useState("");
+  const [recommendedDrill, setRecommendedDrill] = useState("");
+  const [memberFacingNotes, setMemberFacingNotes] = useState("");
+  const [coachPrivateNotes, setCoachPrivateNotes] = useState("");
+  const [emailMember, setEmailMember] = useState(true);
+  const [editingVideoId, setEditingVideoId] = useState<string | null>(null);
+  const [saveState, setSaveState] = useState<"idle" | "saving">("idle");
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [workspaceMessage, setWorkspaceMessage] = useState("Select a member to begin.");
+  const allowedMembers = members;
+  const normalizedMemberSearch = memberSearch.trim().toLowerCase();
+  const memberResults = allowedMembers.filter((member) =>
+    !normalizedMemberSearch ||
+    [member.name, member.email, member.phone].some((value) => value.toLowerCase().includes(normalizedMemberSearch)),
+  );
+  const selectedMember = allowedMembers.find((member) => member.id === selectedMemberId);
+  // Cross-account session sharing is not available yet, so coach uploads stay
+  // standalone until a real member-session relationship exists in D1.
+  const selectedMemberSessions: Session[] = [];
+  const selectedSession = selectedMemberSessions.find((session) => session.id === selectedSessionId);
+  const managedVideos = [...videos]
+    .sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
+  const editingVideo = videos.find((video) => video.id === editingVideoId);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!authenticated) {
+      queueMicrotask(() => {
+        setWorkspaceMessage("Log in with a coach or admin account to manage lesson videos.");
+        setLoadingMembers(false);
+        setLoadingVideos(false);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    Promise.all([
+      readVideoLibrary(),
+      fetch("/api/members", { cache: "no-store" }).then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error ?? "Members could not be loaded.");
+        return (payload.members ?? []) as CoachMember[];
+      }),
+    ])
+      .then(([records, loadedMembers]) => {
+        if (cancelled) return;
+        const items = records.map((record) => createVideoLibraryItem(record));
+        setVideos(items);
+        setMembers(loadedMembers);
+        setWorkspaceMessage(
+          loadedMembers.length
+            ? `${loadedMembers.length} ${loadedMembers.length === 1 ? "member" : "members"} ready.`
+            : "Add your first member to begin.",
+        );
+      })
+      .catch((error) => {
+        if (!cancelled) setWorkspaceMessage(error instanceof Error ? error.message : "Video storage is unavailable.");
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingMembers(false);
+          setLoadingVideos(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authenticated]);
+
+  function resetWorkflow() {
+    setStep(1);
+    setMemberSearch("");
+    setSelectedMemberId("");
+    setVideoFile(null);
+    setThumbnailFile(null);
+    setVideoTitle("");
+    setVideoType("Lesson Recap");
+    setLessonDate(getTodayDateString());
+    setFocusArea("Irons");
+    setVideoDescription("");
+    setTags("");
+    setSelectedSessionId("");
+    setLessonSummary("");
+    setWorkedOn("");
+    setKeyIssue("");
+    setImprovement("");
+    setPracticeAssignment("");
+    setRecommendedDrill("");
+    setMemberFacingNotes("");
+    setCoachPrivateNotes("");
+    setEmailMember(true);
+    setEditingVideoId(null);
+    setUploadProgress(0);
+  }
+
+  function chooseMember(member: CoachMember) {
+    setSelectedMemberId(member.id);
+    setSelectedSessionId("");
+    setWorkspaceMessage(`${member.name} selected. Add the lesson video when ready.`);
+  }
+
+  async function addMember(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setMemberSaveState("saving");
+    try {
+      const response = await fetch("/api/members", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newMember),
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.member) {
+        throw new Error(payload.error ?? "The member could not be added.");
+      }
+      const member = payload.member as CoachMember;
+      setMembers((current) => [
+        member,
+        ...current.filter((item) => item.id !== member.id),
+      ]);
+      setSelectedMemberId(member.id);
+      setShowAddMember(false);
+      setNewMember({
+        firstName: "",
+        lastName: "",
+        email: "",
+        phone: "",
+        skillLevel: "",
+        notes: "",
+      });
+      setWorkspaceMessage(
+        payload.invite?.status === "sent"
+          ? `${member.name} was added and invited by email.`
+          : `${member.name} was added. The login invitation is pending email configuration.`,
+      );
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "The member could not be added.");
+    } finally {
+      setMemberSaveState("idle");
+    }
+  }
+
+  function selectVideoFile(file: File | null) {
+    if (!file) {
+      setVideoFile(null);
+      return;
+    }
+    const allowedTypes = ["video/mp4", "video/quicktime", "video/webm", "video/x-m4v"];
+    if (!allowedTypes.includes(file.type) || file.size > 500 * 1024 * 1024) {
+      setVideoFile(null);
+      setWorkspaceMessage("Choose an MP4, MOV, WebM, or M4V video smaller than 500 MB.");
+      return;
+    }
+    setVideoFile(file);
+    if (!videoTitle.trim()) setVideoTitle(file.name.replace(/\.[^.]+$/, ""));
+    setWorkspaceMessage(`${file.name} is ready to upload.`);
+  }
+
+  async function loadDevelopmentTestVideo() {
+    try {
+      const response = await fetch("/dev-test-video.mov");
+      if (!response.ok) throw new Error("Local test clip not found.");
+      const blob = await response.blob();
+      selectVideoFile(new File([blob], "lesson-flow-test.mov", { type: "video/quicktime" }));
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "The local test clip could not be loaded.");
+    }
+  }
+
+  function selectThumbnailFile(file: File | null) {
+    if (!file) {
+      setThumbnailFile(null);
+      return;
+    }
+    if (!file.type.startsWith("image/") || file.size > 10 * 1024 * 1024) {
+      setThumbnailFile(null);
+      setWorkspaceMessage("Choose a JPG, PNG, or WebP thumbnail smaller than 10 MB.");
+      return;
+    }
+    setThumbnailFile(file);
+  }
+
+  function replaceItem(record: VideoLibraryRecord) {
+    const item = createVideoLibraryItem(record);
+    setVideos((items) => [item, ...items.filter((video) => video.id !== record.id)]);
+  }
+
+  async function persistRecord(record: VideoLibraryRecord) {
+    const saved = await saveVideoRecord(record);
+    replaceItem(saved);
+  }
+
+  async function sendMemberNotification(record: VideoLibraryRecord) {
+    try {
+      const updated = await finalizeVideoRecord(record.id, {
+        ...videoPatchPayload(record),
+        publicationStatus: "Published",
+        notifyMember: true,
+      });
+      replaceItem(updated);
+      return { ok: updated.emailStatus === "Sent", record: updated };
+    } catch (error) {
+      return {
+        ok: false,
+        record,
+        error: error instanceof Error ? error.message : "Email delivery failed.",
+      };
+    }
+  }
+
+  async function saveCoachVideo(publicationStatus: VideoPublicationStatus, notifyMember: boolean) {
+    if (!selectedMember) {
+      setWorkspaceMessage("Select a member before uploading a lesson video.");
+      setStep(1);
+      return;
+    }
+    if (!videoTitle.trim() || (!videoFile && !editingVideo)) {
+      setWorkspaceMessage("Choose a video and add a title before continuing.");
+      setStep(2);
+      return;
+    }
+
+    setSaveState("saving");
+    setUploadProgress(4);
+    let pendingVideoId = editingVideo?.id ?? "";
+    try {
+      const duration = videoFile ? await readVideoDuration(videoFile) : editingVideo?.duration ?? 0;
+      const metadata = {
+        memberId: selectedMember.id,
+        title: videoTitle.trim(),
+        description: videoDescription.trim(),
+        videoType,
+        tags: tags.split(",").map((tag) => tag.trim()).filter(Boolean),
+        sessionId: selectedSessionId || undefined,
+        club: selectedSession ? getSessionPrimaryClub(selectedSession) : editingVideo?.club,
+        swingType: editingVideo?.swingType,
+        focusArea,
+        duration,
+        publicationStatus,
+        lessonDate,
+        lessonSummary: lessonSummary.trim(),
+        workedOn: workedOn.trim(),
+        keyIssue: keyIssue.trim(),
+        improvement: improvement.trim(),
+        practiceAssignment: practiceAssignment.trim(),
+        recommendedDrill: recommendedDrill.trim(),
+        memberFacingNotes: memberFacingNotes.trim(),
+        coachPrivateNotes: coachPrivateNotes.trim(),
+        coachNotes: memberFacingNotes.trim(),
+      };
+
+      if (!pendingVideoId) {
+        const created = await createVideoRecord(metadata, videoFile!);
+        pendingVideoId = created.id;
+      }
+      if (videoFile) {
+        await uploadVideoAsset(pendingVideoId, videoFile, "video", (progress) => {
+          setUploadProgress(8 + Math.round(progress * 0.72));
+        });
+      }
+      if (thumbnailFile) {
+        await uploadVideoAsset(pendingVideoId, thumbnailFile, "thumbnail", (progress) => {
+          setUploadProgress(80 + Math.round(progress * 0.12));
+        });
+      }
+      setUploadProgress(94);
+      const record = await finalizeVideoRecord(pendingVideoId, {
+        ...metadata,
+        reviewStatus: publicationStatus === "Published" ? "New" : editingVideo?.status ?? "Coach Feedback",
+        notifyMember: publicationStatus === "Published" && notifyMember && emailMember,
+      });
+      replaceItem(record);
+      setUploadProgress(100);
+
+      if (publicationStatus === "Draft") {
+        setWorkspaceMessage(`Draft saved for ${selectedMember.name}. It is not visible to the member.`);
+      } else if (notifyMember && emailMember) {
+        setWorkspaceMessage(
+          record.emailStatus === "Sent"
+            ? `Video published to ${selectedMember.name} and the email notification was sent.`
+            : "Video published, but the email notification could not be sent.",
+        );
+      } else {
+        setWorkspaceMessage(`Video published to ${selectedMember.name}. No email was sent.`);
+      }
+      const completedMember = selectedMember;
+      resetWorkflow();
+      if (publicationStatus === "Published") {
+        onOpenMemberVideos(completedMember.id, completedMember.name);
+      }
+    } catch (error) {
+      setUploadProgress(0);
+      setWorkspaceMessage(error instanceof Error ? error.message : "The video could not be saved.");
+    } finally {
+      setSaveState("idle");
+    }
+  }
+
+  function editVideo(video: VideoLibraryItem) {
+    setEditingVideoId(video.id);
+    setSelectedMemberId(video.ownerId);
+    setVideoFile(null);
+    setThumbnailFile(null);
+    setVideoTitle(video.title);
+    setVideoType(video.type);
+    setLessonDate(video.lessonDate ?? video.uploadedAt.slice(0, 10));
+    setFocusArea(video.focusArea ?? "Other");
+    setVideoDescription(video.description);
+    setTags(video.tags.join(", "));
+    setSelectedSessionId(video.sessionId ?? "");
+    setLessonSummary(video.lessonSummary ?? "");
+    setWorkedOn(video.workedOn ?? "");
+    setKeyIssue(video.keyIssue ?? "");
+    setImprovement(video.improvement ?? "");
+    setPracticeAssignment(video.practiceAssignment ?? "");
+    setRecommendedDrill(video.recommendedDrill ?? "");
+    setMemberFacingNotes(video.memberFacingNotes ?? "");
+    setCoachPrivateNotes(video.coachPrivateNotes ?? "");
+    setEmailMember(video.emailStatus !== "Sent");
+    setStep(2);
+    setWorkspaceMessage(`Editing ${video.title}. Choose a replacement file only if the video changed.`);
+  }
+
+  async function updateManagedVideo(video: VideoLibraryItem, patch: Partial<VideoLibraryRecord>, message: string) {
+    try {
+      await persistRecord({ ...stripVideoObjectUrl(video), ...patch, updatedAt: new Date().toISOString() });
+      setWorkspaceMessage(message);
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "The video could not be updated.");
+    }
+  }
+
+  async function removeManagedVideo(video: VideoLibraryItem) {
+    if (viewerRole !== "admin") return;
+    try {
+      await deleteVideoRecord(video.id);
+      setVideos((items) => items.filter((item) => item.id !== video.id));
+      setWorkspaceMessage(`${video.title} was deleted.`);
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "The video could not be deleted.");
+    }
+  }
+
+  function moveToNextStep() {
+    if (step === 1 && !selectedMember) {
+      setWorkspaceMessage("Select a member before uploading a lesson video.");
+      return;
+    }
+    if (step === 2 && (!videoTitle.trim() || (!videoFile && !editingVideo))) {
+      setWorkspaceMessage("Choose a video and add a title before continuing.");
+      return;
+    }
+    setStep((current) => Math.min(5, current + 1));
+  }
+
+  function canOpenWorkflowStep(stepNumber: number) {
+    if (stepNumber <= step) return true;
+    if (stepNumber !== step + 1) return false;
+    if (step === 1) return Boolean(selectedMember);
+    if (step === 2) return Boolean(videoTitle.trim() && (videoFile || editingVideo));
+    return true;
+  }
+
+  return (
+    <div className="coach-video-workspace">
+      <section className="coach-dashboard-overview">
+        <div>
+          <p className="eyebrow">Coach dashboard</p>
+          <h3>Lesson video delivery</h3>
+          <span>Choose a member, upload the lesson, and send their next practice focus.</span>
+        </div>
+        <div className="coach-dashboard-stats">
+          <article><span>Members</span><strong>{loadingMembers ? "..." : members.length}</strong></article>
+          <article><span>Recent uploads</span><strong>{loadingVideos ? "..." : managedVideos.length}</strong></article>
+          <article><span>Waiting to watch</span><strong>{managedVideos.filter((video) => getVideoPublicationStatus(video) === "Published" && !video.isViewedByMember).length}</strong></article>
+        </div>
+        <div className="button-row">
+          <button className="secondary-action" disabled={!authenticated} onClick={() => setShowAddMember(true)}>＋ Add Member</button>
+          <button
+            className="primary-action"
+            disabled={!authenticated}
+            onClick={() => {
+              resetWorkflow();
+              setWorkspaceMessage(members.length ? "Select a member to upload a lesson video." : "Add a member before uploading a lesson video.");
+            }}
+          >
+            ⇧ Upload Lesson Video
+          </button>
+        </div>
+      </section>
+
+      <section className="coach-tool-status" role="status">
+        <div>
+          <span>{viewerRole === "admin" ? "Admin tools" : `${coachName}'s coach tools`}</span>
+          <strong>{workspaceMessage}</strong>
+        </div>
+        {editingVideoId && <button className="text-button" onClick={resetWorkflow}>Cancel editing</button>}
+      </section>
+
+      <section className="coach-upload-shell">
+        <nav className="coach-upload-steps" aria-label="Coach video upload steps">
+          {["Member", "Video", "Session", "Notes", "Review"].map((label, index) => {
+            const stepNumber = index + 1;
+            const stepComplete =
+              stepNumber === 1
+                ? Boolean(selectedMember && step > 1)
+                : stepNumber === 2
+                  ? Boolean(videoTitle.trim() && (videoFile || editingVideo) && step > 2)
+                  : step > stepNumber;
+            return (
+              <button
+                className={cls(step === stepNumber && "active", stepComplete && "complete")}
+                key={label}
+                onClick={() => {
+                  if (canOpenWorkflowStep(stepNumber)) setStep(stepNumber);
+                }}
+              >
+                <span>{stepComplete ? "✓" : stepNumber}</span>
+                <strong>{label}</strong>
+              </button>
+            );
+          })}
+        </nav>
+
+        <section className="coach-upload-stage">
+          {step === 1 && (
+            <div className="coach-step-stack">
+              <div className="coach-step-heading">
+                <p className="eyebrow">Step 1</p>
+                <h3>Select member</h3>
+                <p>Search by member name, email, or phone.</p>
+              </div>
+              <label className="coach-member-search">
+                <span>Member search</span>
+                <input
+                  autoFocus
+                  onChange={(event) => setMemberSearch(event.target.value)}
+                  placeholder="Search members"
+                  type="search"
+                  value={memberSearch}
+                />
+              </label>
+              <div className="coach-member-results">
+                {memberResults.map((member) => (
+                  <button
+                    className={cls("coach-member-row", member.id === selectedMemberId && "selected")}
+                    key={member.id}
+                    onClick={() => chooseMember(member)}
+                  >
+                    <span className="member-initials">{member.name.split(" ").map((part) => part[0]).join("")}</span>
+                    <span>
+                      <strong>{member.name}</strong>
+                      <small>{member.email} · {member.phone}</small>
+                    </span>
+                    <span>
+                      <strong>{member.inviteStatus === "accepted" ? "Active" : "Invited"}</strong>
+                      <small>{member.skillLevel || "Skill level not set"}</small>
+                    </span>
+                    <span>
+                      <strong>{member.recentLessonDate ? formatDate(member.recentLessonDate) : "No lesson"}</strong>
+                      <small>Recent lesson</small>
+                    </span>
+                  </button>
+                ))}
+              </div>
+              {!selectedMember && <p className="coach-inline-warning">Select a member before uploading a lesson video.</p>}
+              {selectedMember && (
+                <>
+                  <div className="selected-member-confirmation">
+                    <span className="member-initials">{selectedMember.name.split(" ").map((part) => part[0]).join("")}</span>
+                    <div><span>Selected member</span><strong>{selectedMember.name}</strong><small>{selectedMember.email}</small></div>
+                    <div><span>Contact</span><strong>{selectedMember.phone || "No phone"}</strong><small>{selectedMember.inviteStatus === "accepted" ? "Login active" : "Invitation pending"}</small></div>
+                    <div><span>Lesson archive</span><strong>{selectedMember.videoCount ?? 0} videos</strong><small>{selectedMember.lastVideoAt ? formatVideoUploadDate(selectedMember.lastVideoAt) : "No lesson videos yet"}</small></div>
+                  </div>
+                  <div className="coach-member-profile">
+                    <div>
+                      <span>Skill level</span>
+                      <strong>{selectedMember.skillLevel || "Not provided"}</strong>
+                    </div>
+                    <div>
+                      <span>Coach notes</span>
+                      <p>{selectedMember.notes || "No member notes yet."}</p>
+                    </div>
+                    <div className="button-row">
+                      <button className="secondary-action" onClick={() => onOpenMemberVideos(selectedMember.id, selectedMember.name)}>View Lesson Videos</button>
+                      <button className="primary-action" onClick={() => setStep(2)}>Upload New Video</button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {step === 2 && (
+            <div className="coach-step-stack">
+              <div className="coach-step-heading">
+                <p className="eyebrow">Step 2</p>
+                <h3>{editingVideo ? "Update lesson video" : "Upload lesson video"}</h3>
+                <p>Common mobile video formats are supported up to 500 MB.</p>
+              </div>
+              <div className="coach-video-file-grid">
+                <label className="video-file-picker coach-file-picker">
+                  <input
+                    accept="video/mp4,video/quicktime,video/webm,video/x-m4v"
+                    onChange={(event) => selectVideoFile(event.currentTarget.files?.[0] ?? null)}
+                    type="file"
+                  />
+                  <span aria-hidden="true">▶</span>
+                  <strong>{videoFile?.name ?? (editingVideo ? "Keep current video" : "Choose video")}</strong>
+                  <small>MP4, MOV, WebM, or M4V · 500 MB max</small>
+                </label>
+                <label className="video-file-picker coach-file-picker">
+                  <input
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={(event) => selectThumbnailFile(event.currentTarget.files?.[0] ?? null)}
+                    type="file"
+                  />
+                  <span aria-hidden="true">▣</span>
+                  <strong>{thumbnailFile?.name ?? (editingVideo?.thumbnailObjectUrl ? "Keep current thumbnail" : "Optional thumbnail")}</strong>
+                  <small>JPG, PNG, or WebP · 10 MB max</small>
+                </label>
+              </div>
+              {devAuthEnabled && (
+                <button className="text-button coach-dev-test-button" onClick={() => void loadDevelopmentTestVideo()} type="button">
+                  Use local test clip
+                </button>
+              )}
+              <div className="coach-video-form-grid">
+                <label className="wide"><span>Video title</span><input maxLength={120} onChange={(event) => setVideoTitle(event.target.value)} placeholder="7-Iron takeaway lesson recap" value={videoTitle} /></label>
+                <label><span>Video type</span><select onChange={(event) => setVideoType(event.target.value as VideoType)} value={videoType}>{VIDEO_TYPES.filter((type) => type !== "User Upload" && type !== "Practice Session" && type !== "Drill").map((type) => <option key={type}>{type}</option>)}</select></label>
+                <label><span>Lesson date</span><input onChange={(event) => setLessonDate(event.target.value)} type="date" value={lessonDate} /></label>
+                <label><span>Focus area</span><select onChange={(event) => setFocusArea(event.target.value as VideoFocusArea)} value={focusArea}>{VIDEO_FOCUS_AREAS.map((area) => <option key={area}>{area}</option>)}</select></label>
+                <label><span>Tags</span><input onChange={(event) => setTags(event.target.value)} placeholder="takeaway, face control" value={tags} /></label>
+                <label className="wide"><span>Description</span><textarea onChange={(event) => setVideoDescription(event.target.value)} placeholder="Optional context for this lesson video" value={videoDescription} /></label>
+              </div>
+            </div>
+          )}
+
+          {step === 3 && (
+            <div className="coach-step-stack">
+              <div className="coach-step-heading">
+                <p className="eyebrow">Step 3</p>
+                <h3>Attach lesson or session data</h3>
+                <p>Session data is optional. The video can be published without it.</p>
+              </div>
+              <label className={cls("coach-session-option", "standalone", !selectedSessionId && "selected")}>
+                <input checked={!selectedSessionId} name="session" onChange={() => setSelectedSessionId("")} type="radio" />
+                <span><strong>Upload without session data</strong><small>Keep this as a standalone lesson video.</small></span>
+              </label>
+              {selectedMemberSessions.length ? (
+                <div className="coach-session-list">
+                  {selectedMemberSessions.map((session, index) => {
+                    const sessionClub = getSessionPrimaryClub(session);
+                    const sessionShots = sessionClub ? session.shots.filter((shot) => shot.club === sessionClub) : session.shots;
+                    return (
+                      <label className={cls("coach-session-option", selectedSessionId === session.id && "selected")} key={session.id}>
+                        <input checked={selectedSessionId === session.id} name="session" onChange={() => setSelectedSessionId(session.id)} type="radio" />
+                        <span>
+                          <strong>{formatFullDate(session.date)} · {session.title}</strong>
+                          <small>{index % 2 ? "5:30 PM" : "3:00 PM"} · {session.source} · Bay {index + 2} · Coach {coachName}</small>
+                        </span>
+                        <span>
+                          <strong>{sessionClub ? getClubDisplayName(sessionClub) : "Mixed bag"}</strong>
+                          <small>{formatAvailableMetric(averageMetric(sessionShots, "carry"), "yd")} carry · {session.shots.length} shots</small>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="coach-inline-warning">No session data found for this member. You can still upload this video to their library.</p>
+              )}
+            </div>
+          )}
+
+          {step === 4 && (
+            <div className="coach-step-stack">
+              <div className="coach-step-heading">
+                <p className="eyebrow">Step 4</p>
+                <h3>Add coach notes</h3>
+                <p>Keep the member-facing guidance concise enough to revisit during practice.</p>
+              </div>
+              <div className="coach-notes-grid">
+                <label><span>Lesson summary</span><textarea onChange={(event) => setLessonSummary(event.target.value)} placeholder="Today we worked on takeaway and face control with the 7 iron." value={lessonSummary} /></label>
+                <label><span>What we worked on</span><textarea onChange={(event) => setWorkedOn(event.target.value)} placeholder="Takeaway structure, face control, and start line." value={workedOn} /></label>
+                <label><span>Key swing issue</span><textarea onChange={(event) => setKeyIssue(event.target.value)} placeholder="The club was rolling inside with the face opening early." value={keyIssue} /></label>
+                <label><span>What improved</span><textarea onChange={(event) => setImprovement(event.target.value)} placeholder="Start line tightened and contact moved toward center." value={improvement} /></label>
+                <label><span>What to practice next</span><textarea onChange={(event) => setPracticeAssignment(event.target.value)} placeholder="3 sets of slow takeaway drills and 20 half-speed 7-iron swings." value={practiceAssignment} /></label>
+                <label><span>Recommended drill</span><textarea onChange={(event) => setRecommendedDrill(event.target.value)} placeholder="Headcover outside the hands takeaway drill." value={recommendedDrill} /></label>
+                <label><span>Member-facing notes</span><textarea onChange={(event) => setMemberFacingNotes(event.target.value)} placeholder="A short message the member will see." value={memberFacingNotes} /></label>
+                <label><span>Coach private notes</span><textarea onChange={(event) => setCoachPrivateNotes(event.target.value)} placeholder="Only coaches and admins can see this." value={coachPrivateNotes} /></label>
+              </div>
+            </div>
+          )}
+
+          {step === 5 && selectedMember && (
+            <div className="coach-step-stack">
+              <div className="coach-step-heading">
+                <p className="eyebrow">Step 5</p>
+                <h3>Review and publish</h3>
+                <p>Confirm the member and delivery settings before publishing.</p>
+              </div>
+              <div className="coach-review-layout">
+                <div className="coach-review-thumbnail">
+                  <span aria-hidden="true">▶</span>
+                  <strong>{thumbnailFile?.name ?? videoFile?.name ?? editingVideo?.fileName ?? "Lesson video"}</strong>
+                </div>
+                <dl className="coach-review-list">
+                  <div><dt>Member</dt><dd>{selectedMember.name}<small>{selectedMember.email}</small></dd></div>
+                  <div><dt>Video</dt><dd>{videoTitle || "Untitled"}<small>{videoType}</small></dd></div>
+                  <div><dt>Lesson</dt><dd>{formatFullDate(lessonDate)}<small>{focusArea}</small></dd></div>
+                  <div><dt>Session</dt><dd>{selectedSession?.title ?? "No session attached"}<small>{selectedSession?.source ?? "Standalone video"}</small></dd></div>
+                  <div><dt>Practice focus</dt><dd>{practiceAssignment || "No assignment added"}<small>{recommendedDrill || "No drill added"}</small></dd></div>
+                  <div><dt>Coach note</dt><dd>{memberFacingNotes || lessonSummary || "No member-facing note"}<small>Private notes are not shared.</small></dd></div>
+                </dl>
+              </div>
+              <label className="coach-email-toggle">
+                <input checked={emailMember} onChange={(event) => setEmailMember(event.target.checked)} type="checkbox" />
+                <span><strong>Email {selectedMember.name} when published</strong><small>Notification is sent only after the video is saved successfully.</small></span>
+              </label>
+              {saveState === "saving" && (
+                <div className="coach-upload-progress" aria-label={`Upload ${uploadProgress}% complete`}>
+                  <span style={{ width: `${uploadProgress}%` }} />
+                  <strong>{uploadProgress}%</strong>
+                </div>
+              )}
+            </div>
+          )}
+
+          <footer className="coach-step-actions">
+            <button className="secondary-action" disabled={step === 1 || saveState === "saving"} onClick={() => setStep((current) => Math.max(1, current - 1))}>Back</button>
+            {step < 5 ? (
+              <button className="primary-action" onClick={moveToNextStep}>Continue</button>
+            ) : (
+              <div className="button-row">
+                <button className="secondary-action" disabled={saveState === "saving"} onClick={() => void saveCoachVideo("Draft", false)}>Save as Draft</button>
+                <button className="secondary-action" disabled={saveState === "saving"} onClick={() => void saveCoachVideo("Published", false)}>Publish to Member</button>
+                <button className="primary-action" disabled={saveState === "saving"} onClick={() => void saveCoachVideo("Published", true)}>
+                  {saveState === "saving" ? "Publishing..." : "Publish and Email Member"}
+                </button>
+              </div>
+            )}
+          </footer>
+        </section>
+      </section>
+
+      <section className="coach-video-management">
+        <div className="coach-management-heading">
+          <div><p className="eyebrow">Video management</p><h3>Coach uploads</h3></div>
+          <span>{loadingVideos ? "Loading..." : `${managedVideos.length} ${managedVideos.length === 1 ? "video" : "videos"}`}</span>
+        </div>
+        {managedVideos.length ? (
+          <div className="coach-management-table">
+            <div className="coach-management-row coach-management-head">
+              <span>Member / Video</span><span>Delivery</span><span>Member activity</span><span>Session</span><span>Actions</span>
+            </div>
+            {managedVideos.map((video) => (
+              <div className="coach-management-row" key={video.id}>
+                <div>
+                  <strong>{video.memberName ?? members.find((member) => member.id === video.ownerId)?.name ?? "Member"}</strong>
+                  <span>{video.title}</span>
+                  <small>{formatVideoUploadDate(video.uploadedAt)} · {video.coachName ?? video.uploadedBy}</small>
+                </div>
+                <div>
+                  <span className={cls("video-status", getVideoPublicationStatus(video).toLowerCase())}>{getVideoPublicationStatus(video)}</span>
+                  <small>Email: {video.emailStatus ?? "Not sent"}</small>
+                </div>
+                <div>
+                  <strong>{video.isViewedByMember ? "Viewed" : "Not viewed"}</strong>
+                  <small>{video.viewedAt ? formatVideoUploadDate(video.viewedAt) : "No view recorded"}</small>
+                </div>
+                <div>
+                  <strong>{video.sessionId ? "Attached" : "None"}</strong>
+                  <small>{video.sessionId ? sessions.find((session) => session.id === video.sessionId)?.title ?? "Session" : "Standalone"}</small>
+                </div>
+                <div className="coach-management-actions">
+                  <button aria-label={`Edit ${video.title}`} className="icon-button" onClick={() => editVideo(video)} title="Edit video">✎</button>
+                  <button
+                    aria-label={`Open ${video.memberName ?? "member"} video library`}
+                    className="icon-button"
+                    onClick={() => onOpenMemberVideos(video.ownerId, video.memberName ?? "Member")}
+                    title="Open member library"
+                  >
+                    ▶
+                  </button>
+                  <button
+                    aria-label={`Resend ${video.title} email`}
+                    className="icon-button"
+                    disabled={getVideoPublicationStatus(video) !== "Published"}
+                    onClick={async () => {
+                      const result = await sendMemberNotification(stripVideoObjectUrl(video));
+                      setWorkspaceMessage(result.ok ? "Email notification resent." : "The email notification could not be sent.");
+                    }}
+                    title="Resend email"
+                  >
+                    ↻
+                  </button>
+                  <button
+                    aria-label={`Archive ${video.title}`}
+                    className="icon-button"
+                    disabled={getVideoPublicationStatus(video) === "Archived"}
+                    onClick={() => void updateManagedVideo(video, { publicationStatus: "Archived" }, `${video.title} was archived.`)}
+                    title="Archive video"
+                  >
+                    ⌄
+                  </button>
+                  {viewerRole === "admin" && (
+                    <button aria-label={`Delete ${video.title}`} className="icon-button danger-text-button" onClick={() => void removeManagedVideo(video)} title="Delete video">×</button>
+                  )}
+                </div>
+                {viewerRole === "admin" && (
+                  <label className="coach-owner-control">
+                    <span>Owner</span>
+                    <select
+                      onChange={(event) => {
+                        const nextMember = members.find((member) => member.id === event.target.value);
+                        if (nextMember) {
+                          void updateManagedVideo(
+                            video,
+                            { ownerId: nextMember.id, memberName: nextMember.name, memberEmail: nextMember.email } as Partial<VideoLibraryRecord>,
+                            `${video.title} reassigned to ${nextMember.name}.`,
+                          );
+                        }
+                      }}
+                      value={video.ownerId}
+                    >
+                      {members.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
+                    </select>
+                  </label>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="coach-management-empty">
+            <strong>No coach uploads yet</strong>
+            <p>Published videos and drafts will appear here with delivery and viewed status.</p>
+          </div>
+        )}
+      </section>
+
+      {showAddMember && (
+        <div className="video-modal-overlay">
+          <form className="video-upload-modal coach-member-modal" onSubmit={addMember}>
+            <div className="video-modal-header">
+              <div>
+                <p className="eyebrow">Member account</p>
+                <h2>Add Member</h2>
+              </div>
+              <button aria-label="Close add member dialog" className="icon-button" onClick={() => setShowAddMember(false)} type="button">×</button>
+            </div>
+            <p className="muted-copy">The member record is saved in D1 and tied to their login email. An invitation is sent when email delivery is configured.</p>
+            <div className="video-form-grid">
+              <label><span>First name</span><input required value={newMember.firstName} onChange={(event) => setNewMember((current) => ({ ...current, firstName: event.target.value }))} /></label>
+              <label><span>Last name</span><input required value={newMember.lastName} onChange={(event) => setNewMember((current) => ({ ...current, lastName: event.target.value }))} /></label>
+              <label className="video-form-wide"><span>Email</span><input required type="email" value={newMember.email} onChange={(event) => setNewMember((current) => ({ ...current, email: event.target.value }))} /></label>
+              <label><span>Phone optional</span><input type="tel" value={newMember.phone} onChange={(event) => setNewMember((current) => ({ ...current, phone: event.target.value }))} /></label>
+              <label><span>Skill level optional</span><input placeholder="Beginner, 12 handicap, competitive..." value={newMember.skillLevel} onChange={(event) => setNewMember((current) => ({ ...current, skillLevel: event.target.value }))} /></label>
+              <label className="video-form-wide"><span>Coach notes optional</span><textarea placeholder="Goals, tendencies, or lesson context..." value={newMember.notes} onChange={(event) => setNewMember((current) => ({ ...current, notes: event.target.value }))} /></label>
+            </div>
+            <div className="video-modal-actions">
+              <span>{workspaceMessage}</span>
+              <div className="button-row">
+                <button className="secondary-action" onClick={() => setShowAddMember(false)} type="button">Cancel</button>
+                <button className="primary-action" disabled={memberSaveState === "saving"} type="submit">
+                  {memberSaveState === "saving" ? "Adding..." : "Add Member"}
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -2101,7 +4342,7 @@ function PracticeView({ insights }: { insights: Insight[] }) {
         <PanelHeader
           kicker="Next session"
           title={priority ? priority.title : "Maintenance block"}
-          meta={priority ? `${priority.club} · ${priority.metric}` : "Balanced practice"}
+          meta={priority ? `${getClubDisplayName(priority.club)} · ${priority.metric}` : "Balanced practice"}
         />
         <div className="practice-track">
           {practiceBlocks.map((block, index) => (
@@ -2133,20 +4374,970 @@ function PracticeView({ insights }: { insights: Insight[] }) {
   );
 }
 
+function formatVideoDuration(duration: number) {
+  if (!Number.isFinite(duration) || duration <= 0) return "NA";
+  const totalSeconds = Math.round(duration);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
+
+function formatVideoUploadDate(value: string) {
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(value));
+}
+
+function canViewLibraryVideo(video: VideoLibraryRecord, ownerId: string, viewerRole: VideoViewerRole) {
+  if (video.ownerId !== ownerId) return false;
+  if (viewerRole === "admin") return true;
+  if (viewerRole === "coach") return video.visibility === "Coach + User";
+  return getVideoPublicationStatus(video) === "Published" && video.visibility !== "Admin only";
+}
+
+function VideoThumbnail({ video }: { video: VideoLibraryItem }) {
+  return (
+    <div className="video-thumbnail">
+      {video.thumbnailObjectUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img alt="" aria-hidden="true" src={video.thumbnailObjectUrl} />
+      ) : (
+        <video
+          aria-hidden="true"
+          muted
+          onLoadedMetadata={(event) => {
+            event.currentTarget.currentTime = Math.min(0.4, Math.max(0, event.currentTarget.duration / 10));
+          }}
+          playsInline
+          preload="metadata"
+          src={video.objectUrl}
+        />
+      )}
+      <span className="video-play-mark" aria-hidden="true">▶</span>
+      <span className="video-duration">{formatVideoDuration(video.duration)}</span>
+    </div>
+  );
+}
+
+function VideoLibraryCard({
+  comparisonSelected,
+  onCompare,
+  onOpen,
+  session,
+  video,
+}: {
+  comparisonSelected: boolean;
+  onCompare: () => void;
+  onOpen: () => void;
+  session?: Session;
+  video: VideoLibraryItem;
+}) {
+  return (
+    <article className="video-library-card">
+      <button className="video-card-open" onClick={onOpen}>
+        <VideoThumbnail video={video} />
+        <div className="video-card-copy">
+          <div className="video-card-heading">
+            <span className="video-type-tag">{video.type}</span>
+            {getVideoPublicationStatus(video) !== "Published" ? (
+              <span className={cls("video-status", getVideoPublicationStatus(video).toLowerCase())}>
+                {getVideoPublicationStatus(video)}
+              </span>
+            ) : video.uploadedBy !== "User" && !video.isViewedByMember ? (
+              <span className="video-status new">New Coach Video</span>
+            ) : (
+              <span className={cls("video-status", video.status.toLowerCase().replace(" ", "-"))}>{video.status}</span>
+            )}
+          </div>
+          <h3>{video.title}</h3>
+          <p>
+            {video.lessonDate ? formatVideoUploadDate(video.lessonDate) : formatVideoUploadDate(video.uploadedAt)}
+            {" · "}
+            Uploaded by {video.coachName ?? video.uploadedBy}
+          </p>
+          <div className="video-card-meta">
+            <span>{session ? session.title : "No session attached"}</span>
+            {video.focusArea && <span>{video.focusArea}</span>}
+            {video.club && <span>{getClubDisplayName(video.club)}</span>}
+            {(video.memberFacingNotes || (video.coachNotes && !video.coachNotesPrivate)) && <span>Coach notes</span>}
+          </div>
+        </div>
+      </button>
+      <button
+        aria-label={`${comparisonSelected ? "Remove" : "Add"} ${video.title} ${comparisonSelected ? "from" : "to"} comparison`}
+        aria-pressed={comparisonSelected}
+        className={cls("video-compare-toggle", comparisonSelected && "selected")}
+        onClick={onCompare}
+        title="Select for comparison"
+      >
+        {comparisonSelected ? "✓" : "⇄"}
+      </button>
+    </article>
+  );
+}
+
+function VideoSessionMetrics({ session, video }: { session?: Session; video: VideoLibraryItem }) {
+  if (!session) {
+    return <EmptyState title="No session data" body="No session data attached to this video." />;
+  }
+
+  const relevantShots = video.club
+    ? session.shots.filter((shot) => shot.club === video.club)
+    : session.shots;
+  const metricShots = relevantShots.length ? relevantShots : session.shots;
+  const metricRows = [
+    ["Ball speed", formatAvailableMetric(averageMetric(metricShots, "ballSpeed"), "mph")],
+    ["Club speed", formatAvailableMetric(averageMetric(metricShots, "clubSpeed"), "mph")],
+    ["Carry", formatAvailableMetric(averageMetric(metricShots, "carry"), "yd")],
+    ["Total", formatAvailableMetric(averageMetric(metricShots, "total"), "yd")],
+    ["Launch", formatAvailableMetric(averageMetric(metricShots, "launch"), "deg")],
+    ["Spin", formatAvailableMetric(averageMetric(metricShots, "spin"), "rpm", 0)],
+    ["Dispersion", formatAvailableMetric(standardDeviation(metricValues(metricShots, "offline")), "yd")],
+    ["Face-to-path", formatAvailableMetric(averageMetric(metricShots, "faceToPath"), "deg")],
+  ];
+
+  return (
+    <div className="video-session-block">
+      <div className="video-session-heading">
+        <div>
+          <span>{formatFullDate(session.date)}</span>
+          <strong>{session.title}</strong>
+        </div>
+        <span>{video.club ? getClubDisplayName(video.club) : `${metricShots.length} shots`}</span>
+      </div>
+      <div className="video-metric-grid">
+        {metricRows.map(([label, value]) => (
+          <div key={label}>
+            <span>{label}</span>
+            <strong>{value}</strong>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function VideoDetailView({
+  onBack,
+  onDelete,
+  onOpenRelated,
+  onUpdate,
+  relatedVideos,
+  session,
+  video,
+  viewerRole,
+}: {
+  onBack: () => void;
+  onDelete: () => void;
+  onOpenRelated: (video: VideoLibraryItem) => void;
+  onUpdate: (patch: Partial<VideoLibraryRecord>) => void | Promise<void>;
+  relatedVideos: VideoLibraryItem[];
+  session?: Session;
+  video: VideoLibraryItem;
+  viewerRole: VideoViewerRole;
+}) {
+  const [userNotes, setUserNotes] = useState(video.userNotes);
+  const [coachNotes, setCoachNotes] = useState(video.coachNotes);
+  const [coachNotesPrivate, setCoachNotesPrivate] = useState(video.coachNotesPrivate);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const canEditCoachNotes = viewerRole === "coach" || viewerRole === "admin";
+  const canEditUserNotes = viewerRole === "user";
+  const canDelete =
+    viewerRole === "admin" ||
+    (viewerRole === "user" && video.uploadedBy === "User") ||
+    (viewerRole === "coach" && video.uploadedBy === "Coach");
+  const relatedInsights = session
+    ? computeInsights(summarizeClubs([session]), [session]).slice(0, 2)
+    : [];
+  const sharedCoachNote = video.memberFacingNotes || (video.coachNotesPrivate ? "" : video.coachNotes);
+
+  return (
+    <section className="view-stack">
+      <div className="video-detail-toolbar">
+        <button className="secondary-action" onClick={onBack}>← Back to videos</button>
+        <div className="button-row">
+          {video.status !== "Reviewed" && (
+            <button className="secondary-action" onClick={() => void onUpdate({ status: "Reviewed" })}>
+              ✓ Mark reviewed
+            </button>
+          )}
+          {canDelete && !confirmDelete && (
+            <button className="text-button danger-text-button" onClick={() => setConfirmDelete(true)}>Delete</button>
+          )}
+          {confirmDelete && (
+            <>
+              <button className="secondary-action" onClick={() => setConfirmDelete(false)}>Cancel</button>
+              <button className="primary-action danger-action" onClick={onDelete}>Delete video</button>
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="video-detail-layout">
+        <section className="panel video-player-panel">
+          <video className="video-player" controls playsInline preload="metadata" src={video.objectUrl} />
+          <div className="video-detail-title">
+            <div>
+              <p className="eyebrow">{video.type}</p>
+              <h2>{video.title}</h2>
+              <span>
+                {video.lessonDate ? `Lesson ${formatVideoUploadDate(video.lessonDate)} · ` : ""}
+                Uploaded by {video.coachName ?? video.uploadedBy} · {formatVideoDuration(video.duration)}
+              </span>
+            </div>
+            <span className={cls("video-status", video.status.toLowerCase().replace(" ", "-"))}>{video.status}</span>
+          </div>
+          {video.description && <p className="video-description">{video.description}</p>}
+          <div className="video-tag-row">
+            {video.swingType && <span>{video.swingType}</span>}
+            {video.club && <span>{getClubDisplayName(video.club)}</span>}
+            {video.tags.map((tag) => <span key={tag}>{tag}</span>)}
+            <span>{video.visibility}</span>
+          </div>
+        </section>
+
+        <aside className="video-notes-column">
+          <section className="panel video-note-panel">
+            <PanelHeader kicker="Coach notes" title="Feedback" meta={canEditCoachNotes ? "Coach workspace" : "Shared with you"} />
+            {canEditCoachNotes ? (
+              <>
+                <textarea value={coachNotes} onChange={(event) => setCoachNotes(event.target.value)} placeholder="Key issue, improvement, next focus, and recommended drill..." />
+                <label className="video-private-toggle">
+                  <input checked={coachNotesPrivate} onChange={(event) => setCoachNotesPrivate(event.target.checked)} type="checkbox" />
+                  <span>Private admin-only note</span>
+                </label>
+                {video.coachPrivateNotes && (
+                  <div className="coach-private-note">
+                    <span>Private coach note</span>
+                    <p>{video.coachPrivateNotes}</p>
+                  </div>
+                )}
+                <button
+                  className="primary-action"
+                  onClick={() => void onUpdate({ coachNotes, coachNotesPrivate, status: "Coach Feedback" })}
+                >
+                  Save coach notes
+                </button>
+              </>
+            ) : sharedCoachNote || video.lessonSummary || video.workedOn || video.keyIssue || video.improvement || video.recommendedDrill ? (
+              <div className="structured-video-notes">
+                {video.lessonSummary && <div><span>Lesson summary</span><p>{video.lessonSummary}</p></div>}
+                {video.workedOn && <div><span>What we worked on</span><p>{video.workedOn}</p></div>}
+                {video.keyIssue && <div><span>Key swing issue</span><p>{video.keyIssue}</p></div>}
+                {video.improvement && <div><span>What improved</span><p>{video.improvement}</p></div>}
+                {video.recommendedDrill && <div><span>Recommended drill</span><p>{video.recommendedDrill}</p></div>}
+                {sharedCoachNote && <div><span>Coach message</span><p>{sharedCoachNote}</p></div>}
+              </div>
+            ) : (
+              <p className="video-note-empty">No coach feedback has been shared yet.</p>
+            )}
+          </section>
+
+          {video.practiceAssignment && (
+            <section className="practice-focus-callout">
+              <span>Practice Focus Before Your Next Session</span>
+              <strong>{video.practiceAssignment}</strong>
+            </section>
+          )}
+
+          {canEditUserNotes && (
+            <section className="panel video-note-panel">
+              <PanelHeader kicker="Private notes" title="My notes" meta="Only visible to you" />
+              <textarea value={userNotes} onChange={(event) => setUserNotes(event.target.value)} placeholder="What felt different? What do you want to revisit?" />
+              <button className="primary-action" onClick={() => void onUpdate({ userNotes })}>Save my notes</button>
+            </section>
+          )}
+        </aside>
+      </div>
+
+      <section className="panel">
+        <PanelHeader kicker="Linked data" title="Session performance" meta={session ? session.source : "Optional"} />
+        <VideoSessionMetrics session={session} video={video} />
+      </section>
+
+      <section className="panel">
+        <PanelHeader kicker="Next work" title="Related drills and recommendations" meta={relatedInsights.length ? "Based on linked session" : "No linked recommendations"} />
+        {relatedInsights.length ? (
+          <div className="video-recommendation-grid">
+            {relatedInsights.map((insight) => (
+              <article key={insight.id}>
+                <span>{getClubDisplayName(insight.club)}</span>
+                <strong>{insight.title}</strong>
+                <p>{insight.action}</p>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <EmptyState title="No recommendations yet" body="Attach a practice session to connect this video with drills and performance priorities." />
+        )}
+      </section>
+
+      {relatedVideos.length > 0 && (
+        <section className="panel">
+          <PanelHeader kicker="Lesson timeline" title="Previous coach videos" meta={`${relatedVideos.length} related`} />
+          <div className="related-video-list">
+            {relatedVideos.map((relatedVideo) => (
+              <button key={relatedVideo.id} onClick={() => onOpenRelated(relatedVideo)}>
+                <span aria-hidden="true">▶</span>
+                <span><strong>{relatedVideo.title}</strong><small>{relatedVideo.lessonDate ? formatFullDate(relatedVideo.lessonDate) : formatVideoUploadDate(relatedVideo.uploadedAt)} · {relatedVideo.coachName ?? relatedVideo.uploadedBy}</small></span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+    </section>
+  );
+}
+
+function VideoComparisonView({
+  onBack,
+  sessions,
+  videos,
+}: {
+  onBack: () => void;
+  sessions: Session[];
+  videos: VideoLibraryItem[];
+}) {
+  return (
+    <section className="view-stack">
+      <div className="video-detail-toolbar">
+        <button className="secondary-action" onClick={onBack}>← Back to library</button>
+        <span className="comparison-label">Side-by-side progress review</span>
+      </div>
+      <div className="video-comparison-grid">
+        {videos.map((video) => {
+          const session = sessions.find((item) => item.id === video.sessionId);
+          return (
+            <article className="panel comparison-video" key={video.id}>
+              <video controls playsInline preload="metadata" src={video.objectUrl} />
+              <div>
+                <span>{formatVideoUploadDate(video.uploadedAt)} · {video.type}</span>
+                <h2>{video.title}</h2>
+              </div>
+              <VideoSessionMetrics session={session} video={video} />
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function VideosView({
+  authenticated,
+  ownerId,
+  ownerName,
+  requestedVideoId,
+  sessions,
+  viewerRole,
+}: {
+  authenticated: boolean;
+  ownerId: string;
+  ownerName?: string;
+  requestedVideoId?: string | null;
+  sessions: Session[];
+  viewerRole: VideoViewerRole;
+}) {
+  const [videos, setVideos] = useState<VideoLibraryItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [libraryMessage, setLibraryMessage] = useState("Loading your video library...");
+  const [showUpload, setShowUpload] = useState(false);
+  const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
+  const [comparisonIds, setComparisonIds] = useState<string[]>([]);
+  const [showComparison, setShowComparison] = useState(false);
+  const [layout, setLayout] = useState<"library" | "timeline">("library");
+  const [search, setSearch] = useState("");
+  const [uploaderFilter, setUploaderFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [clubFilter, setClubFilter] = useState("all");
+  const [sessionFilter, setSessionFilter] = useState("all");
+  const [reviewFilter, setReviewFilter] = useState("all");
+  const [dateFilter, setDateFilter] = useState("all");
+  const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
+  const [filterReferenceTime] = useState(() => Date.now());
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [uploadTitle, setUploadTitle] = useState("");
+  const [uploadDescription, setUploadDescription] = useState("");
+  const [uploadTags, setUploadTags] = useState("");
+  const [uploadType, setUploadType] = useState<VideoType>("User Upload");
+  const [uploadSessionId, setUploadSessionId] = useState("");
+  const [uploadClub, setUploadClub] = useState("");
+  const [uploadSwingType, setUploadSwingType] = useState<VideoSwingType | "">("");
+  const [uploadVisibility, setUploadVisibility] = useState<VideoVisibility>(
+    viewerRole === "user" ? "User only" : "Coach + User",
+  );
+  const [uploadState, setUploadState] = useState<"idle" | "saving">("idle");
+  const [uploadProgress, setUploadProgress] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!authenticated) {
+      queueMicrotask(() => {
+        setLibraryMessage("Log in to open your private lesson video library.");
+        setLoading(false);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+    readVideoLibrary(viewerRole === "user" ? undefined : ownerId)
+      .then((records) => {
+        if (cancelled) return;
+        const items = records.map((record) => createVideoLibraryItem(record));
+        setVideos(items);
+        if (requestedVideoId && items.some((item) => item.id === requestedVideoId && canViewLibraryVideo(item, ownerId, viewerRole))) {
+          setSelectedVideoId(requestedVideoId);
+        }
+        setLibraryMessage(items.length ? `${items.length} saved ${items.length === 1 ? "video" : "videos"}` : "Your library is ready.");
+      })
+      .catch((error) => {
+        if (!cancelled) setLibraryMessage(error instanceof Error ? error.message : "Video storage is unavailable.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authenticated, ownerId, requestedVideoId, viewerRole]);
+
+  const visibleVideos = useMemo(
+    () => videos.filter((video) => canViewLibraryVideo(video, ownerId, viewerRole)),
+    [ownerId, viewerRole, videos],
+  );
+  const clubOptions = useMemo(
+    () => Array.from(new Set([...CLUB_ORDER, ...sessions.flatMap((session) => session.shots.map((shot) => shot.club))])),
+    [sessions],
+  );
+  const filteredVideos = useMemo(() => {
+    const normalizedSearch = search.trim().toLowerCase();
+    const dateCutoff =
+      dateFilter === "30" ? filterReferenceTime - 30 * 86_400_000 :
+        dateFilter === "90" ? filterReferenceTime - 90 * 86_400_000 :
+          dateFilter === "365" ? filterReferenceTime - 365 * 86_400_000 :
+            0;
+
+    return visibleVideos
+      .filter((video) => {
+        const searchable = [
+          video.title,
+          video.description,
+          video.coachNotes,
+          video.lessonSummary,
+          video.workedOn,
+          video.keyIssue,
+          video.improvement,
+          video.practiceAssignment,
+          video.recommendedDrill,
+          video.memberFacingNotes,
+          video.userNotes,
+          video.type,
+          video.focusArea,
+          video.club,
+          video.swingType,
+          ...video.tags,
+        ].join(" ").toLowerCase();
+        if (normalizedSearch && !searchable.includes(normalizedSearch)) return false;
+        if (uploaderFilter !== "all" && video.uploadedBy !== uploaderFilter) return false;
+        if (typeFilter !== "all" && video.type !== typeFilter) return false;
+        if (clubFilter !== "all" && video.club !== clubFilter) return false;
+        if (sessionFilter === "attached" && !video.sessionId) return false;
+        if (sessionFilter === "none" && video.sessionId) return false;
+        if (reviewFilter === "reviewed" && video.status !== "Reviewed") return false;
+        if (reviewFilter === "unreviewed" && video.status === "Reviewed") return false;
+        if (dateCutoff && new Date(video.uploadedAt).getTime() < dateCutoff) return false;
+        return true;
+      })
+      .sort((a, b) =>
+        sortOrder === "newest"
+          ? new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime()
+          : new Date(a.uploadedAt).getTime() - new Date(b.uploadedAt).getTime(),
+      );
+  }, [
+    clubFilter,
+    dateFilter,
+    filterReferenceTime,
+    reviewFilter,
+    search,
+    sessionFilter,
+    sortOrder,
+    typeFilter,
+    uploaderFilter,
+    visibleVideos,
+  ]);
+  const selectedVideo = videos.find((video) => video.id === selectedVideoId);
+  const comparisonVideos = comparisonIds
+    .map((videoId) => videos.find((video) => video.id === videoId))
+    .filter((video): video is VideoLibraryItem => Boolean(video));
+  const timelineGroups = filteredVideos.reduce<Record<string, VideoLibraryItem[]>>((groups, video) => {
+    const key = new Intl.DateTimeFormat("en", { month: "long", year: "numeric" }).format(new Date(video.uploadedAt));
+    groups[key] = [...(groups[key] ?? []), video];
+    return groups;
+  }, {});
+
+  async function updateVideo(videoId: string, patch: Partial<VideoLibraryRecord>) {
+    const current = videos.find((video) => video.id === videoId);
+    if (!current) return;
+    const updated = { ...current, ...patch };
+    setVideos((items) => items.map((item) => item.id === videoId ? updated : item));
+    try {
+      await saveVideoRecord(stripVideoObjectUrl(updated));
+      setLibraryMessage("Video details saved.");
+    } catch (error) {
+      setVideos((items) => items.map((item) => item.id === videoId ? current : item));
+      setLibraryMessage(error instanceof Error ? error.message : "The video update could not be saved.");
+    }
+  }
+
+  async function removeVideo(video: VideoLibraryItem) {
+    try {
+      await deleteVideoRecord(video.id);
+      setVideos((items) => items.filter((item) => item.id !== video.id));
+      setSelectedVideoId(null);
+      setComparisonIds((items) => items.filter((videoId) => videoId !== video.id));
+      setLibraryMessage("Video removed.");
+    } catch (error) {
+      setLibraryMessage(error instanceof Error ? error.message : "The video could not be removed.");
+    }
+  }
+
+  function toggleComparison(videoId: string) {
+    setComparisonIds((current) => {
+      if (current.includes(videoId)) return current.filter((item) => item !== videoId);
+      if (current.length >= 2) return [current[1], videoId];
+      return [...current, videoId];
+    });
+  }
+
+  function openVideo(video: VideoLibraryItem) {
+    setSelectedVideoId(video.id);
+    if (
+      viewerRole === "user" &&
+      video.uploadedBy !== "User" &&
+      getVideoPublicationStatus(video) === "Published" &&
+      !video.isViewedByMember
+    ) {
+      void fetch("/api/videos", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoId: video.id, action: "viewed" }),
+      })
+        .then(async (response) => {
+          const payload = await response.json();
+          if (!response.ok || !payload.video) throw new Error(payload.error ?? "The view could not be recorded.");
+          const updated = createVideoLibraryItem(payload.video as VideoLibraryRecord);
+          setVideos((items) => items.map((item) => item.id === updated.id ? updated : item));
+        })
+        .catch(() => {
+          setLibraryMessage("The video opened, but its viewed status could not be saved.");
+        });
+    }
+  }
+
+  function resetUploadForm() {
+    setVideoFile(null);
+    setUploadTitle("");
+    setUploadDescription("");
+    setUploadTags("");
+    setUploadType(viewerRole === "user" ? "User Upload" : "Coach Feedback");
+    setUploadSessionId("");
+    setUploadClub("");
+    setUploadSwingType("");
+    setUploadVisibility(viewerRole === "user" ? "User only" : "Coach + User");
+    setUploadProgress(0);
+  }
+
+  async function uploadVideo(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!videoFile || !uploadTitle.trim()) {
+      setLibraryMessage("Choose a video and add a title.");
+      return;
+    }
+    if (videoFile.size > 500 * 1024 * 1024) {
+      setLibraryMessage("Choose a video smaller than 500 MB.");
+      return;
+    }
+    if (!["video/mp4", "video/quicktime", "video/webm", "video/x-m4v"].includes(videoFile.type)) {
+      setLibraryMessage("Use an MP4, MOV, WebM, or M4V video.");
+      return;
+    }
+
+    setUploadState("saving");
+    setUploadProgress(2);
+    try {
+      const duration = await readVideoDuration(videoFile);
+      const created = await createVideoRecord({
+        memberId: ownerId,
+        title: uploadTitle.trim(),
+        description: uploadDescription.trim(),
+        videoType: uploadType,
+        tags: uploadTags.split(",").map((tag) => tag.trim()).filter(Boolean),
+        sessionId: uploadSessionId || undefined,
+        club: uploadClub || undefined,
+        swingType: uploadSwingType || undefined,
+        duration,
+        publicationStatus: "Published",
+      }, videoFile);
+      await uploadVideoAsset(created.id, videoFile, "video", setUploadProgress);
+      const record = await finalizeVideoRecord(created.id, {
+        title: uploadTitle.trim(),
+        description: uploadDescription.trim(),
+        videoType: uploadType,
+        tags: uploadTags.split(",").map((tag) => tag.trim()).filter(Boolean),
+        sessionId: uploadSessionId || null,
+        club: uploadClub || null,
+        swingType: uploadSwingType || null,
+        duration,
+        publicationStatus: "Published",
+      });
+      const item = createVideoLibraryItem(record);
+      setVideos((items) => [item, ...items]);
+      setLibraryMessage(`${record.title} was uploaded successfully.`);
+      setShowUpload(false);
+      resetUploadForm();
+    } catch (error) {
+      setLibraryMessage(error instanceof Error ? error.message : "The video could not be uploaded.");
+    } finally {
+      setUploadState("idle");
+    }
+  }
+
+  if (selectedVideo) {
+    return (
+      <VideoDetailView
+        key={selectedVideo.id}
+        onBack={() => setSelectedVideoId(null)}
+        onDelete={() => void removeVideo(selectedVideo)}
+        onOpenRelated={openVideo}
+        onUpdate={(patch) => updateVideo(selectedVideo.id, patch)}
+        relatedVideos={visibleVideos
+          .filter((video) => video.id !== selectedVideo.id && getVideoPublicationStatus(video) === "Published")
+          .slice(0, 3)}
+        session={sessions.find((session) => session.id === selectedVideo.sessionId)}
+        video={selectedVideo}
+        viewerRole={viewerRole}
+      />
+    );
+  }
+
+  if (showComparison && comparisonVideos.length === 2) {
+    return <VideoComparisonView onBack={() => setShowComparison(false)} sessions={sessions} videos={comparisonVideos} />;
+  }
+
+  return (
+    <section className="view-stack videos-view">
+      <section className="video-library-header">
+        <div>
+          <p className="eyebrow">{viewerRole === "user" ? "Personal improvement library" : "Member video library"}</p>
+          <h2>{viewerRole === "user" ? "Your golf journey, on video" : `${ownerName ?? "Member"} videos`}</h2>
+          <span>{libraryMessage}</span>
+        </div>
+        <div className="button-row">
+          <button
+            className="secondary-action"
+            disabled={comparisonIds.length !== 2}
+            onClick={() => setShowComparison(true)}
+          >
+            ⇄ Compare {comparisonIds.length}/2
+          </button>
+          {viewerRole === "user" && <button className="primary-action" onClick={() => setShowUpload(true)}>＋ Upload video</button>}
+        </div>
+      </section>
+
+      <section className="video-filter-band">
+        <label className="video-search-control">
+          <span>Search</span>
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Title, notes, tags, or coach comments" type="search" />
+        </label>
+        <label><span>Uploaded by</span><select value={uploaderFilter} onChange={(event) => setUploaderFilter(event.target.value)}><option value="all">Anyone</option><option>User</option><option>Coach</option><option>Admin</option></select></label>
+        <label><span>Video type</span><select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="all">All types</option>{VIDEO_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>
+        <label><span>Club</span><select value={clubFilter} onChange={(event) => setClubFilter(event.target.value)}><option value="all">All clubs</option>{clubOptions.map((club) => <option key={club} value={club}>{getClubDisplayName(club)}</option>)}</select></label>
+        <label><span>Session</span><select value={sessionFilter} onChange={(event) => setSessionFilter(event.target.value)}><option value="all">Any linkage</option><option value="attached">Session attached</option><option value="none">No session</option></select></label>
+        <label><span>Review</span><select value={reviewFilter} onChange={(event) => setReviewFilter(event.target.value)}><option value="all">Any status</option><option value="reviewed">Reviewed</option><option value="unreviewed">Not reviewed</option></select></label>
+        <label><span>Date</span><select value={dateFilter} onChange={(event) => setDateFilter(event.target.value)}><option value="all">Any date</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last year</option></select></label>
+        <label><span>Sort</span><select value={sortOrder} onChange={(event) => setSortOrder(event.target.value as "newest" | "oldest")}><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label>
+      </section>
+
+      <div className="video-view-controls">
+        <div className="segmented-control" aria-label="Video library view">
+          <button className={layout === "library" ? "active" : ""} onClick={() => setLayout("library")}>Library</button>
+          <button className={layout === "timeline" ? "active" : ""} onClick={() => setLayout("timeline")}>Timeline</button>
+        </div>
+        <span>{filteredVideos.length} {filteredVideos.length === 1 ? "video" : "videos"}</span>
+      </div>
+
+      {loading ? (
+        <section className="panel video-empty-state"><strong>Loading videos...</strong></section>
+      ) : filteredVideos.length ? (
+        layout === "library" ? (
+          <div className="video-library-grid">
+            {filteredVideos.map((video) => (
+              <VideoLibraryCard
+                comparisonSelected={comparisonIds.includes(video.id)}
+                key={video.id}
+                onCompare={() => toggleComparison(video.id)}
+                onOpen={() => openVideo(video)}
+                session={sessions.find((session) => session.id === video.sessionId)}
+                video={video}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="video-timeline">
+            {Object.entries(timelineGroups).map(([period, periodVideos]) => (
+              <section key={period}>
+                <div className="video-timeline-label"><span>{period}</span><i /></div>
+                <div className="video-library-grid">
+                  {periodVideos.map((video) => (
+                    <VideoLibraryCard
+                      comparisonSelected={comparisonIds.includes(video.id)}
+                      key={video.id}
+                      onCompare={() => toggleComparison(video.id)}
+                      onOpen={() => openVideo(video)}
+                      session={sessions.find((session) => session.id === video.sessionId)}
+                      video={video}
+                    />
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+        )
+      ) : (
+        <section className="panel video-empty-state">
+          <span className="video-empty-icon" aria-hidden="true">▶</span>
+          <strong>{visibleVideos.length ? "No videos match these filters." : "No lesson videos yet."}</strong>
+          <p>
+            {visibleVideos.length
+              ? "Adjust the search or filters to see more of your library."
+              : "After your next session, your coach can upload your swing video here."}
+          </p>
+          {viewerRole === "user" && <button className="primary-action" onClick={() => setShowUpload(true)}>＋ Upload Video</button>}
+        </section>
+      )}
+
+      {showUpload && (
+        <div className="video-modal-overlay">
+          <form className="video-upload-modal" onSubmit={uploadVideo}>
+            <div className="video-modal-header">
+              <div>
+                <p className="eyebrow">Add to library</p>
+                <h2>Upload video</h2>
+              </div>
+              <button aria-label="Close upload dialog" className="icon-button" onClick={() => setShowUpload(false)} type="button">×</button>
+            </div>
+
+            <label className="video-file-picker">
+              <input
+                accept="video/mp4,video/quicktime,video/webm,video/x-m4v"
+                onChange={(event) => {
+                  const file = event.currentTarget.files?.[0] ?? null;
+                  setVideoFile(file);
+                  if (file && !uploadTitle) setUploadTitle(file.name.replace(/\.[^.]+$/, ""));
+                }}
+                required
+                type="file"
+              />
+              <span aria-hidden="true">▶</span>
+              <strong>{videoFile ? videoFile.name : "Choose a video file"}</strong>
+              <small>MP4, MOV, WebM, or M4V · up to 500 MB</small>
+            </label>
+
+            <div className="video-form-grid">
+              <label className="video-form-wide"><span>Title</span><input maxLength={120} onChange={(event) => setUploadTitle(event.target.value)} required value={uploadTitle} /></label>
+              <label><span>Video type</span><select value={uploadType} onChange={(event) => setUploadType(event.target.value as VideoType)}>{VIDEO_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>
+              <label><span>Visibility</span><select value={uploadVisibility} onChange={(event) => setUploadVisibility(event.target.value as VideoVisibility)}>{viewerRole === "user" ? <><option>User only</option><option>Coach + User</option></> : viewerRole === "coach" ? <><option>Coach + User</option><option>Admin only</option></> : <><option>User only</option><option>Coach + User</option><option>Admin only</option></>}</select></label>
+              <label><span>Related session</span><select value={uploadSessionId} onChange={(event) => setUploadSessionId(event.target.value)}><option value="">No session attached</option>{sessions.map((session) => <option key={session.id} value={session.id}>{formatDate(session.date)} · {session.title}</option>)}</select></label>
+              <label><span>Club used</span><select value={uploadClub} onChange={(event) => setUploadClub(event.target.value)}><option value="">Not specified</option>{clubOptions.map((club) => <option key={club} value={club}>{getClubDisplayName(club)}</option>)}</select></label>
+              <label><span>Swing type</span><select value={uploadSwingType} onChange={(event) => setUploadSwingType(event.target.value as VideoSwingType | "")}><option value="">Not specified</option>{VIDEO_SWING_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>
+              <label><span>Tags</span><input onChange={(event) => setUploadTags(event.target.value)} placeholder="tempo, takeaway, lesson" value={uploadTags} /></label>
+              <label className="video-form-wide"><span>Description or notes</span><textarea onChange={(event) => setUploadDescription(event.target.value)} placeholder="Context, lesson recap, or what to review..." value={uploadDescription} /></label>
+            </div>
+
+            {uploadState === "saving" && (
+              <div className="coach-upload-progress" aria-label={`Upload ${uploadProgress}% complete`}>
+                <span style={{ width: `${uploadProgress}%` }} />
+                <strong>{uploadProgress}%</strong>
+              </div>
+            )}
+
+            <div className="video-modal-actions">
+              <span>{libraryMessage}</span>
+              <div className="button-row">
+                <button className="secondary-action" onClick={() => setShowUpload(false)} type="button">Cancel</button>
+                <button className="primary-action" disabled={uploadState === "saving"} type="submit">
+                  {uploadState === "saving" ? "Saving..." : "Upload Video"}
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ImportView({
   csvText,
   importCsv,
+  importPhotoShots,
   importMessage,
   lastImport,
   setCsvText,
 }: {
   csvText: string;
   importCsv: (submissionType?: LastImport["submissionType"]) => void;
+  importPhotoShots: (shots: Shot[], simulator: string, metadata: PhotoImportMetadata) => void;
   importMessage: string;
   lastImport: LastImport;
   setCsvText: (value: string) => void;
 }) {
   const [importMode, setImportMode] = useState<"api" | "file" | "photo">("api");
+  const [photoScans, setPhotoScans] = useState<PhotoScanResult[]>([]);
+  const [photoScanState, setPhotoScanState] = useState<"idle" | "scanning" | "ready" | "error">("idle");
+  const [photoProgress, setPhotoProgress] = useState(0);
+  const [photoStatus, setPhotoStatus] = useState("Choose up to five TrackMan or simulator screenshots.");
+  const [csvFileName, setCsvFileName] = useState("Demo rows");
+  const [csvFileStatus, setCsvFileStatus] = useState("Choose a CSV file or paste exported rows.");
+
+  async function readCsvFile(file: File | undefined) {
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".csv") || file.size > 5 * 1024 * 1024) {
+      setCsvFileStatus("Use a CSV file smaller than 5 MB.");
+      return;
+    }
+
+    try {
+      const contents = await file.text();
+      const shots = parseCsv(contents);
+      if (!shots.length) {
+        setCsvFileStatus("No recognizable shot rows were found in this CSV.");
+        return;
+      }
+      setCsvText(contents);
+      setCsvFileName(file.name);
+      setCsvFileStatus(`${shots.length} ${shots.length === 1 ? "shot row is" : "shot rows are"} ready to analyze.`);
+    } catch {
+      setCsvFileStatus("This CSV could not be read. Try exporting it again.");
+    }
+  }
+
+  async function scanPhotoFiles(files: File[]) {
+    const selectedFiles = files.slice(0, 5);
+    if (!selectedFiles.length) return;
+
+    const supportedFiles = selectedFiles.filter((file) =>
+      ["image/png", "image/jpeg", "image/webp"].includes(file.type) && file.size <= 15 * 1024 * 1024,
+    );
+    const rejectedFiles: PhotoScanResult[] = selectedFiles
+      .filter((file) => !supportedFiles.includes(file))
+      .map((file, index) => ({
+        id: `rejected-${Date.now()}-${index}`,
+        fileName: file.name,
+        status: "error",
+        message: "Use a PNG, JPG, or WebP image smaller than 15 MB.",
+      }));
+
+    setPhotoScans(rejectedFiles);
+    if (!supportedFiles.length) {
+      setPhotoScanState("error");
+      setPhotoStatus("No supported images were selected.");
+      return;
+    }
+
+    setPhotoScanState("scanning");
+    setPhotoProgress(0);
+    setPhotoStatus("Starting the private photo reader...");
+
+    let worker: Awaited<ReturnType<(typeof import("tesseract.js"))["createWorker"]>> | undefined;
+    const results: PhotoScanResult[] = [...rejectedFiles];
+
+    try {
+      const { createWorker, PSM } = await import("tesseract.js");
+      worker = await createWorker("eng", undefined, {
+        logger: (message) => {
+          const currentProgress = Math.round(message.progress * 100);
+          setPhotoProgress(currentProgress);
+          setPhotoStatus(
+            message.status === "recognizing text"
+              ? `Reading shot data... ${currentProgress}%`
+              : "Preparing the photo reader...",
+          );
+        },
+      });
+      await worker.setParameters({
+        tessedit_pageseg_mode: PSM.SPARSE_TEXT,
+        preserve_interword_spaces: "1",
+      });
+
+      for (let index = 0; index < supportedFiles.length; index += 1) {
+        const file = supportedFiles[index];
+        setPhotoStatus(`Reading ${file.name} (${index + 1} of ${supportedFiles.length})...`);
+
+        try {
+          const [recognition, metadata] = await Promise.all([
+            worker.recognize(
+              file,
+              { rotateAuto: true },
+              { text: true, tsv: true },
+            ),
+            readPhotoMetadata(file),
+          ]);
+          const parsed = parsePhotoOcr(recognition.data.text, file.name, index, recognition.data.tsv ?? undefined);
+          results.push({
+            id: `scan-${Date.now()}-${index}`,
+            fileName: file.name,
+            status: "ready",
+            simulator: parsed.simulator,
+            shot: parsed.shot,
+            confidence: Math.round(recognition.data.confidence),
+            metadata,
+          });
+        } catch (error) {
+          results.push({
+            id: `scan-error-${Date.now()}-${index}`,
+            fileName: file.name,
+            status: "error",
+            message: error instanceof Error ? error.message : "This image could not be read.",
+          });
+        }
+      }
+    } catch {
+      setPhotoScanState("error");
+      setPhotoStatus("The photo reader could not start. Check your connection and try again.");
+      return;
+    } finally {
+      await worker?.terminate();
+    }
+
+    const readyCount = results.filter((result) => result.status === "ready").length;
+    setPhotoScans(results);
+    setPhotoProgress(100);
+    setPhotoScanState(readyCount ? "ready" : "error");
+    setPhotoStatus(
+      readyCount
+        ? `${readyCount} ${readyCount === 1 ? "photo is" : "photos are"} ready to review.`
+        : "No readable shot data was found. Try a sharper, tighter crop.",
+    );
+  }
+
+  const readyPhotoScans = photoScans.filter(
+    (result): result is Extract<PhotoScanResult, { status: "ready" }> => result.status === "ready",
+  );
+  const detectedSimulators = [...new Set(readyPhotoScans.map((result) => result.simulator))];
+  const photoSimulator = detectedSimulators.length === 1 ? detectedSimulators[0] : "Simulator photos";
+  const photoMetadata = readyPhotoScans.reduce<PhotoImportMetadata>(
+    (combined, result) => ({
+      location: combined.location ?? result.metadata.location,
+      capturedAt: combined.capturedAt ?? result.metadata.capturedAt,
+      latitude: combined.latitude ?? result.metadata.latitude,
+      longitude: combined.longitude ?? result.metadata.longitude,
+    }),
+    {},
+  );
 
   return (
     <section className="import-grid">
@@ -2155,8 +5346,8 @@ function ImportView({
         <div className="import-mode-grid">
           {[
             { id: "api", label: "API feed", body: "Connect TrackMan, Full Swing, GCQuad, SkyTrak, or Mevo+." },
-            { id: "file", label: "CSV / Excel", body: "Paste exported rows or upload a file from your simulator." },
-            { id: "photo", label: "Session photos", body: "Upload screenshots like your Full Swing shot-history screens." },
+            { id: "file", label: "CSV file", body: "Paste exported rows or upload a CSV from your simulator." },
+            { id: "photo", label: "Session photos", body: "Upload TrackMan or other simulator screenshots." },
           ].map((mode) => (
             <button
               className={cls("import-mode", importMode === mode.id && "active")}
@@ -2188,15 +5379,41 @@ function ImportView({
 
         {importMode === "file" && (
           <div className="import-panel">
-            <input className="file-input" type="file" accept=".csv,.xlsx,.xls" />
+            <input
+              className="file-input"
+              type="file"
+              accept=".csv,text/csv"
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0];
+                event.currentTarget.value = "";
+                void readCsvFile(file);
+              }}
+            />
+            <div className="csv-file-status" role="status">
+              <strong>{csvFileName}</strong>
+              <span>{csvFileStatus}</span>
+            </div>
             <textarea
               className="csv-input"
               value={csvText}
-              onChange={(event) => setCsvText(event.target.value)}
+              onChange={(event) => {
+                setCsvText(event.target.value);
+                setCsvFileName("Pasted rows");
+                setCsvFileStatus(`${parseCsv(event.target.value).length} shot rows are ready to analyze.`);
+              }}
               spellCheck={false}
             />
             <div className="button-row">
-              <button className="secondary-action" onClick={() => setCsvText(DEMO_CSV)}>Load Full Swing demo rows</button>
+              <button
+                className="secondary-action"
+                onClick={() => {
+                  setCsvText(DEMO_CSV);
+                  setCsvFileName("Demo rows");
+                  setCsvFileStatus(`${parseCsv(DEMO_CSV).length} demo shot rows are ready to analyze.`);
+                }}
+              >
+                Load Full Swing demo rows
+              </button>
               <button className="primary-action" onClick={() => importCsv("CSV / Excel")}>
                 <span>⇧</span>
                 Analyze rows
@@ -2207,14 +5424,86 @@ function ImportView({
 
         {importMode === "photo" && (
           <div className="import-panel">
-            <input className="file-input" type="file" accept="image/*" multiple />
+            <input
+              className="file-input"
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              multiple
+              disabled={photoScanState === "scanning"}
+              onChange={(event) => {
+                const files = Array.from(event.currentTarget.files ?? []);
+                event.currentTarget.value = "";
+                void scanPhotoFiles(files);
+              }}
+            />
             <div className="photo-drop">
-              <strong>Photo scan ready</strong>
-              <span>Upload shot-history or shot-dispersion screenshots. The current Full Swing sample maps proximity, carry, total, ball speed, club speed, smash, apex, spin, spin axis, launch, descent, face angle, club path, face-to-path, side carry, and side total.</span>
+              <strong>{photoScanState === "scanning" ? "Reading your data" : "TrackMan photo reader"}</strong>
+              <span>{photoStatus}</span>
+              {photoScanState === "scanning" && (
+                <progress aria-label="Photo scan progress" max="100" value={photoProgress} />
+              )}
             </div>
-            <div className="button-row">
-              <button className="primary-action" onClick={() => importCsv("Photo")}>Use Full Swing sample</button>
-            </div>
+
+            {photoScans.length > 0 && (
+              <div className="photo-scan-results" aria-live="polite">
+                {photoScans.map((result) => (
+                  <article className={cls("photo-scan-card", result.status === "error" && "error")} key={result.id}>
+                    <div className="photo-scan-heading">
+                      <div>
+                        <strong>{result.fileName}</strong>
+                        <span>{result.status === "ready" ? `${result.simulator} · OCR confidence ${result.confidence}%` : "Needs another photo"}</span>
+                      </div>
+                      <span className={cls("scan-status", result.status)}>{result.status === "ready" ? "Ready" : "Unreadable"}</span>
+                    </div>
+
+                    {result.status === "ready" ? (
+                      <>
+                        <div className="photo-metric-list">
+                          <div><span>Club</span><strong>{result.shot.club}</strong></div>
+                          {result.shot.detectedMetrics?.map((metric) => (
+                            <div key={metric}>
+                              <span>{PHOTO_METRIC_LABELS[metric]}</span>
+                              <strong>{formatPhotoMetric(metric, result.shot[metric])}</strong>
+                            </div>
+                          ))}
+                        </div>
+                        {result.shot.detectedMetrics && result.shot.detectedMetrics.length < 7 && (
+                          <p className="scan-note">Only detected values are shown. Missing dashboard fields will display as NA.</p>
+                        )}
+                        <p className="scan-note">
+                          Photo location: {result.metadata.location ?? LOCATION_UNAVAILABLE}
+                        </p>
+                      </>
+                    ) : (
+                      <p className="scan-note">{result.message}</p>
+                    )}
+                  </article>
+                ))}
+              </div>
+            )}
+
+            {readyPhotoScans.length > 0 && (
+              <div className="button-row">
+                <button
+                  className="secondary-action"
+                  onClick={() => {
+                    setPhotoScans([]);
+                    setPhotoScanState("idle");
+                    setPhotoProgress(0);
+                    setPhotoStatus("Choose up to five TrackMan or simulator screenshots.");
+                  }}
+                >
+                  Clear
+                </button>
+                <button
+                  className="primary-action"
+                  onClick={() => importPhotoShots(readyPhotoScans.map((result) => result.shot), photoSimulator, photoMetadata)}
+                >
+                  <span>⇧</span>
+                  Import detected data
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -2225,27 +5514,32 @@ function ImportView({
 }
 
 function LastImportPanel({ lastImport }: { lastImport: LastImport }) {
+  const importedClubs = Array.from(new Set(lastImport.shots.map((shot) => getClubDisplayName(shot.club))));
   const detailRows = [
     ["Date", formatFullDate(lastImport.date)],
-    ["Facility Name", lastImport.facilityName],
+    ["Location", lastImport.location],
     ["Sim", lastImport.simulator],
     ["Submission type", lastImport.submissionType],
+    ["Club", importedClubs.join(", ") || "NA"],
   ];
   const averageRows = [
     ["Shots", `${lastImport.shots.length}`],
-    ["Carry", `${round(averageMetric(lastImport.shots, "carry"))} yd`],
-    ["Total", `${round(averageMetric(lastImport.shots, "total"))} yd`],
-    ["Ball speed", `${round(averageMetric(lastImport.shots, "ballSpeed"))} mph`],
-    ["Club speed", `${round(averageMetric(lastImport.shots, "clubSpeed"), 1)} mph`],
-    ["Smash", averageMetric(lastImport.shots, "smash").toFixed(2)],
-    ["Launch", `${round(averageMetric(lastImport.shots, "launch"), 1)} deg`],
-    ["Spin", `${Math.round(averageMetric(lastImport.shots, "spin"))} rpm`],
-    ["Descent", `${round(averageMetric(lastImport.shots, "descent"), 1)} deg`],
+    ["Carry", formatAvailableMetric(averageMetric(lastImport.shots, "carry"), "yd")],
+    ["Total", formatAvailableMetric(averageMetric(lastImport.shots, "total"), "yd")],
+    ["Ball speed", formatAvailableMetric(averageMetric(lastImport.shots, "ballSpeed"), "mph")],
+    ["Club speed", formatAvailableMetric(averageMetric(lastImport.shots, "clubSpeed"), "mph")],
+    ["Smash", formatAvailableMetric(averageMetric(lastImport.shots, "smash"), "", 2)],
+    ["Launch", formatAvailableMetric(averageMetric(lastImport.shots, "launch"), "deg")],
+    ["Apex", formatAvailableMetric(averageMetric(lastImport.shots, "apex"), "ft")],
+    ["Curve", formatAvailableMetric(averageMetric(lastImport.shots, "curve"), "ft")],
+    ["Launch direction", formatAvailableMetric(averageMetric(lastImport.shots, "horizontalAngle"), "deg")],
+    ["Spin", formatAvailableMetric(averageMetric(lastImport.shots, "spin"), "rpm", 0)],
+    ["Descent", formatAvailableMetric(averageMetric(lastImport.shots, "descent"), "deg")],
   ];
 
   return (
     <div className="panel import-summary-panel">
-      <PanelHeader kicker="Last import" title={lastImport.facilityName} meta={`${lastImport.simulator} · ${lastImport.shots.length} shots`} />
+      <PanelHeader kicker="Last import" title={lastImport.location} meta={`${lastImport.simulator} · ${lastImport.shots.length} shots`} />
       <dl className="import-detail-list">
         {detailRows.map(([label, value]) => (
           <div key={label}>
@@ -2285,6 +5579,7 @@ function Kpi({
   tone: "green" | "blue" | "amber" | "coral";
 }) {
   const definition = METRIC_DEFINITIONS[metricKey];
+  const isAvailable = typeof value === "number" ? Number.isFinite(value) : value !== "NA" && value !== "NaN";
 
   return (
     <article className={cls("kpi", tone)} tabIndex={0}>
@@ -2293,8 +5588,8 @@ function Kpi({
         <span>{label}</span>
       </span>
       <strong>
-        {value}
-        <small>{unit}</small>
+        {isAvailable ? value : "NA"}
+        {isAvailable && <small>{unit}</small>}
       </strong>
       {definition && (
         <div className="metric-tooltip" role="tooltip">
@@ -2422,12 +5717,14 @@ function MetricMatrix({ summary }: { summary?: ClubSummary }) {
   if (!summary) return <EmptyState title="No club selected" body="Choose a club to inspect its delivery numbers." />;
 
   const rows = [
-    ["Proximity", `${summary.proximity} ft`],
-    ["Spin axis", `${summary.spinAxis} deg`],
-    ["Side carry", `${summary.sideCarry} yd`],
-    ["Face to path", `${summary.faceToPath} deg`],
-    ["Apex", `${summary.apex} ft`],
-    ["Descent", `${summary.descent} deg`],
+    ["Proximity", formatAvailableMetric(summary.proximity, "ft")],
+    ["Spin axis", formatAvailableMetric(summary.spinAxis, "deg")],
+    ["Side carry", formatAvailableMetric(summary.sideCarry, "yd")],
+    ["Face to path", formatAvailableMetric(summary.faceToPath, "deg")],
+    ["Apex", formatAvailableMetric(summary.apex, "ft")],
+    ["Descent", formatAvailableMetric(summary.descent, "deg")],
+    ["Curve", formatAvailableMetric(summary.curve, "ft")],
+    ["Launch direction", formatAvailableMetric(summary.horizontalAngle, "deg")],
   ];
 
   return (
@@ -2443,7 +5740,8 @@ function MetricMatrix({ summary }: { summary?: ClubSummary }) {
 }
 
 function BenchmarkList({ club }: { club: string }) {
-  const target = CLUB_TARGETS[club] ?? CLUB_TARGETS["7-Iron"];
+  const target = CLUB_TARGETS[club];
+  if (!target) return <EmptyState title="Benchmarks are NA" body="No reference window is available for this club." />;
   const rows = [
     ["Carry", `${target.carry} yd`],
     ["Ball speed", `${target.ballSpeed} mph`],
@@ -2466,7 +5764,8 @@ function BenchmarkList({ club }: { club: string }) {
 }
 
 function ProStatsList({ club }: { club: string }) {
-  const reference = PRO_REFERENCE_STATS[club] ?? PRO_REFERENCE_STATS["7-Iron"];
+  const reference = PRO_REFERENCE_STATS[club];
+  if (!reference) return <EmptyState title="Tour stats are NA" body="No professional reference is available for this club." />;
   const tours = [
     { label: "PGA Tour avg", stats: reference.pga },
     { label: "LPGA Tour avg", stats: reference.lpga },
@@ -2508,17 +5807,20 @@ function ProStatsList({ club }: { club: string }) {
 }
 
 function answersFromPracticeProfile(profile: UserPracticeProfile): OnboardingAnswers {
-  const gameProfile = Object.entries(GAME_PROFILE_MAP).find(
-    ([, value]) => value.skillLevel === profile.skillLevel && value.handicap === profile.handicap,
-  )?.[0];
-
   return {
     ageRange: profile.ageRange,
     handedness: profile.handedness,
-    gameProfile,
-    simulatorUse: profile.simulatorGoals,
+    skillLevel: profile.skillLevel,
+    handicap: profile.handicap,
+    simExperience: profile.simExperience,
+    simulatorGoals: profile.simulatorGoals,
     goals: profile.goals,
-    frustrations: profile.frustrations[0],
+    frustrations: profile.frustrations,
+    practiceStyle: profile.practiceStyle,
+    timeAvailable: profile.timeAvailable,
+    frequency: profile.frequency,
+    experienceStyle: profile.experienceStyle,
+    coachNotes: profile.coachNotes,
   };
 }
 
@@ -2532,10 +5834,22 @@ function OnboardingFlow({
   onRegister: (profile: UserPracticeProfile) => void;
 }) {
   const [step, setStep] = useState(0);
-  const [answers, setAnswers] = useState<OnboardingAnswers>(() => {
+  const [answers, setAnswers] = useState<OnboardingAnswers>(() =>
+    initialProfile ? answersFromPracticeProfile(initialProfile) : {},
+  );
+  useEffect(() => {
     const draft = readStoredOnboardingAnswers();
-    return Object.keys(draft).length ? draft : initialProfile ? answersFromPracticeProfile(initialProfile) : {};
-  });
+    if (Object.keys(draft).length) {
+      queueMicrotask(() => setAnswers(draft));
+      return;
+    }
+
+    if (initialProfile) {
+      const nextAnswers = answersFromPracticeProfile(initialProfile);
+      queueMicrotask(() => setAnswers(nextAnswers));
+    }
+  }, [initialProfile]);
+
   const isFinalStep = step >= ONBOARDING_QUESTIONS.length;
   const currentQuestion = ONBOARDING_QUESTIONS[step];
   const progress = Math.min(100, Math.round((step / ONBOARDING_QUESTIONS.length) * 100));
@@ -2543,7 +5857,7 @@ function OnboardingFlow({
   const recommendations = buildPracticeRecommendations(userPracticeProfile);
   const currentAnswer = currentQuestion ? answers[currentQuestion.id] : undefined;
   const selectedValues = asArray(currentAnswer);
-  const canContinue = !currentQuestion || selectedValues.length > 0;
+  const canContinue = !currentQuestion || currentQuestion.type === "text" || selectedValues.length > 0;
 
   function updateAnswer(question: OnboardingQuestion, value: string) {
     let nextValue: string | string[];
@@ -2561,6 +5875,17 @@ function OnboardingFlow({
     }
 
     const nextAnswers = { ...answers, [question.id]: nextValue };
+    setAnswers(nextAnswers);
+    storeOnboardingAnswers(nextAnswers);
+  }
+
+  function updateTextAnswer(question: OnboardingQuestion, value: string) {
+    const nextAnswers = { ...answers };
+    if (value.trim()) {
+      nextAnswers[question.id] = value;
+    } else {
+      delete nextAnswers[question.id];
+    }
     setAnswers(nextAnswers);
     storeOnboardingAnswers(nextAnswers);
   }
@@ -2709,21 +6034,33 @@ function OnboardingFlow({
           <p>{currentQuestion.helper}</p>
         </div>
 
-        <div className={cls("onboarding-options", currentQuestion.display)}>
-          {currentQuestion.options.map((option) => {
-            const selected = selectedValues.includes(option.value);
-            return (
-              <button
-                className={cls("onboarding-option", selected && "selected")}
-                key={option.value}
-                onClick={() => updateAnswer(currentQuestion, option.value)}
-              >
-                <strong>{option.label}</strong>
-                {option.detail && <span>{option.detail}</span>}
-              </button>
-            );
-          })}
-        </div>
+        {currentQuestion.type === "text" ? (
+          <div className="onboarding-text-panel">
+            <textarea
+              maxLength={180}
+              onChange={(event) => updateTextAnswer(currentQuestion, event.target.value)}
+              placeholder={currentQuestion.placeholder}
+              value={typeof currentAnswer === "string" ? currentAnswer : ""}
+            />
+            <span>{typeof currentAnswer === "string" ? `${currentAnswer.length}/180` : "Optional"}</span>
+          </div>
+        ) : (
+          <div className={cls("onboarding-options", currentQuestion.display)}>
+            {currentQuestion.options.map((option) => {
+              const selected = selectedValues.includes(option.value);
+              return (
+                <button
+                  className={cls("onboarding-option", selected && "selected")}
+                  key={option.value}
+                  onClick={() => updateAnswer(currentQuestion, option.value)}
+                >
+                  <strong>{option.label}</strong>
+                  {option.detail && <span>{option.detail}</span>}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {currentQuestion.maxSelections && currentQuestion.type === "multi" && (
           <p className="onboarding-selection-note">
@@ -2744,6 +6081,86 @@ function OnboardingFlow({
         </div>
       </section>
     </main>
+  );
+}
+
+function LoginRequestModal({
+  onClose,
+  onStatus,
+}: {
+  onClose: () => void;
+  onStatus: (message: string) => void;
+}) {
+  const [email, setEmail] = useState("");
+  const [state, setState] = useState<"idle" | "sending">("idle");
+  const [message, setMessage] = useState("Enter the email connected to your Free Range Golf account.");
+  const [debugLoginUrl, setDebugLoginUrl] = useState("");
+
+  async function requestLogin(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setState("sending");
+    setDebugLoginUrl("");
+    try {
+      const response = await fetch("/api/auth/request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, redirectPath: "/?tab=videos" }),
+      });
+      const payload = await response.json().catch(() => ({})) as {
+        debugLoginUrl?: string;
+        error?: string;
+        publicMessage?: string;
+      };
+      const nextMessage = payload.publicMessage ?? payload.error ?? "Check your email for a secure login link.";
+      setMessage(nextMessage);
+      onStatus(nextMessage);
+      if (payload.debugLoginUrl) setDebugLoginUrl(payload.debugLoginUrl);
+    } catch {
+      setMessage("The login email could not be sent right now.");
+      onStatus("The login email could not be sent right now.");
+    } finally {
+      setState("idle");
+    }
+  }
+
+  return (
+    <div className="video-modal-overlay">
+      <form className="video-upload-modal" onSubmit={requestLogin}>
+        <div className="video-modal-header">
+          <div>
+            <p className="eyebrow">Secure login</p>
+            <h2>Email me a login link</h2>
+          </div>
+          <button aria-label="Close login dialog" className="icon-button" onClick={onClose} type="button">×</button>
+        </div>
+        <label className="video-form-wide">
+          <span>Email</span>
+          <input
+            autoFocus
+            onChange={(event) => setEmail(event.target.value)}
+            placeholder="zac@example.com"
+            required
+            type="email"
+            value={email}
+          />
+        </label>
+        <p className="muted-copy">{message}</p>
+        {debugLoginUrl && (
+          <a className="secondary-action" href={debugLoginUrl}>
+            Open local test login
+          </a>
+        )}
+        <div className="video-modal-actions">
+          <span />
+          <div className="button-row">
+            <button className="secondary-action" onClick={onClose} type="button">Cancel</button>
+            <button className="primary-action" disabled={state === "sending"} type="submit">
+              {state === "sending" ? "Sending..." : "Send Login Link"}
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
   );
 }
 
@@ -2802,75 +6219,319 @@ function PanelHeader({
   );
 }
 
+const SHOT_MAP_COLORS = ["#35f27a", "#38bdf8", "#facc15", "#ef4444", "#a78bfa", "#2dd4bf"];
+const SHOT_SHAPE_METRICS: NumericShotMetric[] = [
+  "offline",
+  "sideTotal",
+  "sideCarry",
+  "curve",
+  "horizontalAngle",
+  "faceAngle",
+  "faceToPath",
+  "spinAxis",
+];
+
+function limitChartValue(value: number, minimum: number, maximum: number) {
+  return Math.max(minimum, Math.min(maximum, value));
+}
+
+function hasShotShapeInput(shot: Shot) {
+  return SHOT_SHAPE_METRICS.some((metric) => hasShotMetric(shot, metric));
+}
+
+function getRecordedShotFinish(shot: Shot) {
+  return (
+    getShotMetric(shot, "sideTotal") ??
+    getShotMetric(shot, "offline") ??
+    getShotMetric(shot, "sideCarry")
+  );
+}
+
+function getShotFlightProfile(shot: Shot) {
+  const carry = getShotMetric(shot, "carry") ?? 0;
+  const total = getShotMetric(shot, "total") ?? carry;
+  const launchDirection = getShotMetric(shot, "horizontalAngle") ?? getShotMetric(shot, "faceAngle") ?? 0;
+  const startLineYards = Math.tan((launchDirection * Math.PI) / 180) * carry;
+  const recordedCurve = getShotMetric(shot, "curve");
+  const faceToPath = getShotMetric(shot, "faceToPath");
+  const spinAxis = getShotMetric(shot, "spinAxis");
+  const curveYards =
+    recordedCurve !== undefined
+      ? recordedCurve / 3
+      : faceToPath !== undefined
+        ? Math.tan(((faceToPath * 0.32) * Math.PI) / 180) * carry
+        : spinAxis !== undefined
+          ? Math.tan(((spinAxis * 0.22) * Math.PI) / 180) * carry
+          : 0;
+  const recordedCarrySide =
+    getShotMetric(shot, "sideCarry") ??
+    getShotMetric(shot, "offline") ??
+    getShotMetric(shot, "sideTotal");
+  const recordedTotalSide =
+    getShotMetric(shot, "sideTotal") ??
+    getShotMetric(shot, "offline") ??
+    getShotMetric(shot, "sideCarry");
+  const carrySide = recordedCarrySide ?? startLineYards + curveYards;
+  const totalSide = recordedTotalSide ?? carrySide;
+  const curveMagnitude = Math.abs(curveYards);
+  const curveName =
+    curveYards > 0
+      ? curveMagnitude > 8 ? "Slice" : curveMagnitude > 2 ? "Fade" : "Straight"
+      : curveYards < 0
+        ? curveMagnitude > 8 ? "Hook" : curveMagnitude > 2 ? "Draw" : "Straight"
+        : "Straight";
+  const startName = startLineYards > 3 ? "Push" : startLineYards < -3 ? "Pull" : "";
+  const shape = curveName === "Straight" ? startName || "Straight" : `${startName ? `${startName} ` : ""}${curveName}`;
+
+  return {
+    carry,
+    total,
+    startLineYards,
+    curveYards,
+    carrySide,
+    totalSide,
+    shape,
+  };
+}
+
+function formatSignedMetric(value: number | undefined, unit: string, digits = 1) {
+  if (value === undefined || !Number.isFinite(value)) return "NA";
+  const absoluteValue = Math.abs(value);
+  const formatted = digits === 0 ? Math.round(absoluteValue).toString() : absoluteValue.toFixed(digits);
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  return `${sign}${formatted}${unit ? ` ${unit}` : ""}`;
+}
+
+function formatLateralDistance(value: number | undefined) {
+  if (value === undefined || !Number.isFinite(value)) return "NA";
+  if (Math.abs(value) < 0.05) return "Center";
+  return `${Math.abs(value).toFixed(1)} yd ${value < 0 ? "L" : "R"}`;
+}
+
 function ShotMap({ shots }: { shots: Shot[] }) {
-  const maxCarry = Math.max(...shots.map((shot) => shot.carry), 1);
-  const minCarry = Math.min(...shots.map((shot) => shot.carry), 0);
-  const clubNames = Array.from(new Set(shots.map((shot) => shot.club))).slice(0, 6);
+  const carryShots = shots.filter((shot) => hasShotMetric(shot, "carry"));
+  if (!carryShots.length) {
+    return <EmptyState title="Carry data is NA" body="This session did not include enough distance data to draw a shot pattern." />;
+  }
+
+  const clubNames = Array.from(new Set(carryShots.map((shot) => shot.club))).slice(0, 6);
+  const profiles = carryShots.map((shot) => getShotFlightProfile(shot));
+  const rawMaxDistance = Math.max(...profiles.map((profile) => Math.max(profile.carry, profile.total)), 1);
+  const distanceStep = rawMaxDistance <= 150 ? 25 : 50;
+  const maxDistance = Math.max(distanceStep, Math.ceil(rawMaxDistance / distanceStep) * distanceStep);
+  const rawLateralExtent = Math.max(
+    ...profiles.flatMap((profile) => [
+      Math.abs(profile.startLineYards),
+      Math.abs(profile.carrySide),
+      Math.abs(profile.totalSide),
+    ]),
+    12,
+  );
+  const lateralStep = rawLateralExtent <= 20 ? 5 : rawLateralExtent <= 40 ? 10 : 20;
+  const lateralExtent = Math.ceil(rawLateralExtent / lateralStep) * lateralStep;
+  const distanceTicks = Array.from(
+    { length: Math.floor(maxDistance / distanceStep) + 1 },
+    (_, index) => index * distanceStep,
+  );
+  const lateralTicks = Array.from(
+    { length: Math.floor((lateralExtent * 2) / lateralStep) + 1 },
+    (_, index) => -lateralExtent + index * lateralStep,
+  );
+  const plot = { left: 82, right: 868, top: 34, bottom: 430 };
+  const xScale = (yards: number) =>
+    plot.left + ((limitChartValue(yards, -lateralExtent, lateralExtent) + lateralExtent) / (lateralExtent * 2)) * (plot.right - plot.left);
+  const yScale = (yards: number) =>
+    plot.bottom - (limitChartValue(yards, 0, maxDistance) / maxDistance) * (plot.bottom - plot.top);
+  const hasShapeData = carryShots.some(hasShotShapeInput);
+  const deliverySummary = [
+    ["Club path", formatSignedMetric(averageMetric(carryShots, "clubPath"), "deg")],
+    ["Face angle", formatSignedMetric(averageMetric(carryShots, "faceAngle"), "deg")],
+    ["Face-to-path", formatSignedMetric(averageMetric(carryShots, "faceToPath"), "deg")],
+    ["Launch direction", formatSignedMetric(averageMetric(carryShots, "horizontalAngle"), "deg")],
+  ];
 
   return (
     <div className="shot-map">
-      <svg viewBox="0 0 760 360" role="img" aria-label="Shot dispersion chart">
-        <defs>
-          <linearGradient id="fairway" x1="0" x2="1" y1="0" y2="1">
-            <stop offset="0%" stopColor="#e3f7ec" />
-            <stop offset="100%" stopColor="#d8ecff" />
-          </linearGradient>
-        </defs>
-        <rect x="24" y="18" width="712" height="314" rx="8" fill="url(#fairway)" />
-        <path d="M380 40 C438 92 462 170 430 322" fill="none" stroke="#ffffff" strokeWidth="72" strokeLinecap="round" opacity="0.62" />
-        <path d="M380 40 C438 92 462 170 430 322" fill="none" stroke="#34a853" strokeWidth="2" strokeDasharray="8 8" opacity="0.65" />
-        {[0, 1, 2, 3].map((line) => (
-          <line key={line} x1={92 + line * 174} x2={92 + line * 174} y1="28" y2="322" stroke="#ffffff" strokeWidth="1" opacity="0.85" />
+      <div className="shot-map-summary">
+        {deliverySummary.map(([label, value]) => (
+          <div key={label}>
+            <span>{label}</span>
+            <strong>{value}</strong>
+          </div>
         ))}
-        {[0, 1, 2].map((line) => (
-          <line key={line} x1="36" x2="724" y1={92 + line * 78} y2={92 + line * 78} stroke="#ffffff" strokeWidth="1" opacity="0.85" />
-        ))}
-        {shots.map((shot, index) => {
-          const x = 380 + shot.offline * 7.2;
-          const y = 306 - ((shot.carry - minCarry) / Math.max(1, maxCarry - minCarry)) * 242;
-          const clubIndex = clubNames.indexOf(shot.club);
-          return (
-            <circle
-              cx={Math.max(44, Math.min(716, x))}
-              cy={Math.max(42, Math.min(312, y))}
-              fill={["#177245", "#1769aa", "#d97706", "#d84a4a", "#7c3aed", "#0f766e"][clubIndex] ?? "#177245"}
-              key={shot.id}
-              opacity="0.82"
-              r={index % 3 === 0 ? 5.4 : 4.4}
-            />
-          );
-        })}
-      </svg>
+      </div>
+
+      <div className="shot-flight-chart">
+        <svg viewBox="0 0 950 480" role="img" aria-label="Top-down shot flight chart with distance and lateral yardage">
+          <rect x={plot.left} y={plot.top} width={plot.right - plot.left} height={plot.bottom - plot.top} rx="6" fill="var(--surface-soft)" />
+
+          {distanceTicks.map((distance) => {
+            const y = yScale(distance);
+            return (
+              <g key={`distance-${distance}`}>
+                <line x1={plot.left} x2={plot.right} y1={y} y2={y} stroke="rgba(255,255,255,0.09)" strokeWidth="1" />
+                <text x={plot.left - 12} y={y + 4} textAnchor="end">{distance} yd</text>
+              </g>
+            );
+          })}
+
+          {lateralTicks.map((distance) => {
+            const x = xScale(distance);
+            return (
+              <g key={`lateral-${distance}`}>
+                <line
+                  x1={x}
+                  x2={x}
+                  y1={plot.top}
+                  y2={plot.bottom}
+                  stroke={distance === 0 ? "#35f27a" : "rgba(255,255,255,0.09)"}
+                  strokeDasharray={distance === 0 ? "7 6" : undefined}
+                  strokeWidth={distance === 0 ? "1.8" : "1"}
+                />
+                <text x={x} y={plot.bottom + 25} textAnchor="middle">
+                  {distance === 0 ? "Target" : `${Math.abs(distance)}${distance < 0 ? "L" : "R"}`}
+                </text>
+              </g>
+            );
+          })}
+
+          <text className="chart-axis-title" x={(plot.left + plot.right) / 2} y="474" textAnchor="middle">Offline distance (yards)</text>
+          <text className="chart-axis-title" x="19" y={(plot.top + plot.bottom) / 2} textAnchor="middle" transform={`rotate(-90 19 ${(plot.top + plot.bottom) / 2})`}>
+            Distance from tee
+          </text>
+
+          {carryShots.map((shot, index) => {
+            const profile = profiles[index];
+            const clubIndex = clubNames.indexOf(shot.club);
+            const color = SHOT_MAP_COLORS[clubIndex] ?? SHOT_MAP_COLORS[0];
+            const carryY = yScale(profile.carry);
+            const carryX = xScale(profile.carrySide);
+            const controlOneX = xScale(profile.startLineYards * 0.34);
+            const controlOneY = yScale(profile.carry * 0.34);
+            const controlTwoX = xScale(profile.startLineYards * 0.82 + profile.curveYards * 0.3);
+            const controlTwoY = yScale(profile.carry * 0.78);
+            const totalX = xScale(profile.totalSide);
+            const totalY = yScale(profile.total);
+            const path = `M ${xScale(0)} ${yScale(0)} C ${controlOneX} ${controlOneY}, ${controlTwoX} ${controlTwoY}, ${carryX} ${carryY}`;
+            const recordedFinish = getRecordedShotFinish(shot);
+            const displayedFinish = recordedFinish ?? (hasShotShapeInput(shot) ? profile.totalSide : undefined);
+
+            return (
+              <g key={shot.id}>
+                <title>
+                  {`Shot ${index + 1}: ${getClubDisplayName(shot.club)}, ${hasShotShapeInput(shot) ? profile.shape : "shape NA"}, ${profile.carry.toFixed(1)} yd carry, ${formatLateralDistance(displayedFinish)}${recordedFinish === undefined && displayedFinish !== undefined ? " estimated finish" : ""}`}
+                </title>
+                <path d={path} fill="none" stroke={color} strokeLinecap="round" strokeWidth="3" opacity="0.72" />
+                {profile.total > profile.carry + 0.5 && (
+                  <line
+                    x1={carryX}
+                    x2={totalX}
+                    y1={carryY}
+                    y2={totalY}
+                    stroke={color}
+                    strokeDasharray="5 5"
+                    strokeLinecap="round"
+                    strokeWidth="2"
+                    opacity="0.65"
+                  />
+                )}
+                <circle cx={carryX} cy={carryY} fill="#111d19" r="7" stroke={color} strokeWidth="2.5" />
+                <text className="shot-number" x={carryX} y={carryY + 3} textAnchor="middle">{index + 1}</text>
+              </g>
+            );
+          })}
+
+          <circle cx={xScale(0)} cy={yScale(0)} fill="#35f27a" r="5" />
+          <text className="tee-label" x={xScale(0) + 10} y={yScale(0) - 10}>Tee</text>
+        </svg>
+      </div>
+
       <div className="map-legend">
         {clubNames.map((club, index) => (
           <span key={club}>
-            <i style={{ background: ["#177245", "#1769aa", "#d97706", "#d84a4a", "#7c3aed", "#0f766e"][index] }} />
-            {club}
+            <i style={{ background: SHOT_MAP_COLORS[index] }} />
+            {getClubDisplayName(club)}
           </span>
         ))}
+        <span><b className="flight-key" />Carry flight</span>
+        <span><b className="roll-key" />Rollout</span>
       </div>
+
+      <div className="shot-shape-table-shell">
+        <table className="shot-shape-table">
+          <thead>
+            <tr>
+              <th>Shot</th>
+              <th>Club</th>
+              <th>Shape</th>
+              <th>Carry</th>
+              <th>Finish</th>
+              <th>Curve</th>
+              <th>Launch dir.</th>
+              <th>Club path</th>
+              <th>Face angle</th>
+              <th>Face-to-path</th>
+            </tr>
+          </thead>
+          <tbody>
+            {carryShots.map((shot, index) => {
+              const clubIndex = clubNames.indexOf(shot.club);
+              const recordedFinish = getRecordedShotFinish(shot);
+              const displayedFinish = recordedFinish ?? (hasShotShapeInput(shot) ? profiles[index].totalSide : undefined);
+              return (
+                <tr key={shot.id}>
+                  <td><span className="shot-index" style={{ background: SHOT_MAP_COLORS[clubIndex] ?? SHOT_MAP_COLORS[0] }}>{index + 1}</span></td>
+                  <td>{getClubDisplayName(shot.club)}</td>
+                  <td><strong>{hasShotShapeInput(shot) ? profiles[index].shape : "NA"}</strong></td>
+                  <td>{formatAvailableMetric(getShotMetric(shot, "carry") ?? Number.NaN, "yd")}</td>
+                  <td>
+                    {formatLateralDistance(displayedFinish)}
+                    {recordedFinish === undefined && displayedFinish !== undefined ? " est." : ""}
+                  </td>
+                  <td>{formatSignedMetric(getShotMetric(shot, "curve"), "ft")}</td>
+                  <td>{formatSignedMetric(getShotMetric(shot, "horizontalAngle"), "deg")}</td>
+                  <td>{formatSignedMetric(getShotMetric(shot, "clubPath"), "deg")}</td>
+                  <td>{formatSignedMetric(getShotMetric(shot, "faceAngle"), "deg")}</td>
+                  <td>{formatSignedMetric(getShotMetric(shot, "faceToPath"), "deg")}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="shot-map-note">
+        Positive delivery and finish values are right of target; negative values are left.
+        {" "}Estimated finishes use recorded launch direction and curve when lateral finish data is NA.
+        {!hasShapeData && " Shape inputs are NA, so flights are centered."}
+      </p>
     </div>
   );
 }
 
 function GapLadder({ clubs, extended = false }: { clubs: ClubSummary[]; extended?: boolean }) {
-  const maxCarry = Math.max(...clubs.map((club) => club.carry), 1);
+  const availableCarry = clubs.map((club) => club.carry).filter(Number.isFinite);
+  const maxCarry = Math.max(...availableCarry, 1);
 
   return (
     <div className="gap-list">
       {clubs.slice(0, extended ? clubs.length : 7).map((club, index) => {
         const nextClub = clubs[index + 1];
-        const gap = nextClub ? round(club.carry - nextClub.carry) : null;
+        const gap = nextClub && Number.isFinite(club.carry) && Number.isFinite(nextClub.carry)
+          ? round(club.carry - nextClub.carry)
+          : Number.NaN;
         return (
           <div className="gap-row" key={club.club}>
             <div>
-              <strong>{club.club}</strong>
-              <span>{club.carry} yd</span>
+              <strong>{getClubDisplayName(club.club)}</strong>
+              <span>{formatAvailableMetric(club.carry, "yd")}</span>
             </div>
             <div className="gap-track">
-              <i style={{ width: `${Math.max(12, (club.carry / maxCarry) * 100)}%` }} />
+              {Number.isFinite(club.carry) && <i style={{ width: `${Math.max(12, (club.carry / maxCarry) * 100)}%` }} />}
             </div>
-            <em className={cls(gap !== null && (gap < 8 || gap > 18) && "flagged")}>{gap ? `${gap} yd` : "top"}</em>
+            <em className={cls(Number.isFinite(gap) && (gap < 8 || gap > 18) && "flagged")}>
+              {nextClub ? formatAvailableMetric(gap, "yd") : "top"}
+            </em>
           </div>
         );
       })}
@@ -2883,31 +6544,39 @@ function TrendChart({ sessions }: { sessions: Session[] }) {
     const clubs = summarizeClubs([session]);
     return {
       label: formatDate(session.date),
-      quality: Math.round(average(clubs.map((club) => club.quality))),
+      quality: (() => {
+        const values = clubs.map((club) => club.quality).filter(Number.isFinite);
+        return values.length ? Math.round(average(values)) : Number.NaN;
+      })(),
     };
   });
   const width = 720;
   const height = 220;
   const plotted = points.map((point, index) => {
     const x = 42 + (index / Math.max(1, points.length - 1)) * (width - 84);
-    const y = height - 34 - (point.quality / 100) * (height - 68);
+    const y = Number.isFinite(point.quality)
+      ? height - 34 - (point.quality / 100) * (height - 68)
+      : height - 48;
     return { ...point, x, y };
   });
-  const path = plotted.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
+  const availablePoints = plotted.filter((point) => Number.isFinite(point.quality));
+  const path = availablePoints.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
 
   return (
     <div className="trend-chart">
       <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Session quality trend">
         {[25, 50, 75].map((line) => {
           const y = height - 34 - (line / 100) * (height - 68);
-          return <line key={line} x1="34" x2={width - 28} y1={y} y2={y} stroke="#d8e1ea" strokeWidth="1" />;
+          return <line key={line} x1="34" x2={width - 28} y1={y} y2={y} stroke="rgba(255,255,255,0.09)" strokeWidth="1" />;
         })}
-        <path d={path} fill="none" stroke="#177245" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+        <path d={path} fill="none" stroke="#35f27a" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
         {plotted.map((point) => (
           <g key={point.label}>
-            <circle cx={point.x} cy={point.y} r="6" fill="#ffffff" stroke="#177245" strokeWidth="3" />
-            <text x={point.x} y={height - 10} textAnchor="middle" fill="#607083" fontSize="12">{point.label}</text>
-            <text x={point.x} y={point.y - 12} textAnchor="middle" fill="#1f2b37" fontSize="12" fontWeight="700">{point.quality}</text>
+            <circle cx={point.x} cy={point.y} r="6" fill="#111d19" stroke={Number.isFinite(point.quality) ? "#35f27a" : "#6f7d76"} strokeWidth="3" />
+            <text x={point.x} y={height - 10} textAnchor="middle" fill="#a8b3ad" fontSize="12">{point.label}</text>
+            <text x={point.x} y={point.y - 12} textAnchor="middle" fill="#f4f7f5" fontSize="12" fontWeight="700">
+              {Number.isFinite(point.quality) ? point.quality : "NA"}
+            </text>
           </g>
         ))}
       </svg>
@@ -2924,7 +6593,7 @@ function InsightList({ compact = false, insights }: { compact?: boolean; insight
         <article className="insight-card" key={insight.id}>
           <div className="insight-topline">
             <span className={cls("severity-pill", insight.severity)}>{insight.severity}</span>
-            <strong>{insight.club}</strong>
+            <strong>{getClubDisplayName(insight.club)}</strong>
           </div>
           <h3>{insight.title}</h3>
           {!compact && <p>{insight.evidence}</p>}
@@ -2950,11 +6619,11 @@ function QualityBars({ clubs }: { clubs: ClubSummary[] }) {
     <div className="quality-list">
       {clubs.map((club) => (
         <div className="quality-row" key={club.club}>
-          <span>{club.club}</span>
+          <span>{getClubDisplayName(club.club)}</span>
           <div>
-            <i style={{ width: `${club.quality}%` }} />
+            {Number.isFinite(club.quality) && <i style={{ width: `${club.quality}%` }} />}
           </div>
-          <strong>{club.quality}</strong>
+          <strong>{Number.isFinite(club.quality) ? club.quality : "NA"}</strong>
         </div>
       ))}
     </div>
@@ -2962,6 +6631,7 @@ function QualityBars({ clubs }: { clubs: ClubSummary[] }) {
 }
 
 function QualityPill({ score }: { score: number }) {
+  if (!Number.isFinite(score)) return <span className="quality-pill">NA</span>;
   return <span className={cls("quality-pill", score >= 80 ? "good" : score >= 68 ? "ok" : "work")}>{score}</span>;
 }
 

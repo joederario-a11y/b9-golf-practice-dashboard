@@ -9,6 +9,7 @@ const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
 
 const { d1, r2 } = hostingConfig;
 
+// Keep local D1 and R2 bindings aligned with the deployed Sites project.
 const localBindingConfig = {
   main: "./worker/index.ts",
   compatibility_flags: ["nodejs_compat"],
@@ -32,6 +33,9 @@ const localBindingConfig = {
 };
 
 export default defineConfig({
+  optimizeDeps: {
+    exclude: ["react/jsx-dev-runtime", "react/jsx-runtime"],
+  },
   plugins: [
     vinext(),
     sites(),

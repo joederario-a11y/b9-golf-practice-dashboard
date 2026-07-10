@@ -15,6 +15,20 @@
       "when": 1782347272000,
       "tag": "0001_practice_profiles",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1782917050836,
+      "tag": "0002_useful_nomad",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1783695000000,
+      "tag": "0003_magic_link_auth",
+      "breakpoints": true
     }
   ]
 }
