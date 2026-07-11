@@ -2321,6 +2321,7 @@ export default function Home() {
   const [accountUser, setAccountUser] = useState<AccountUser | null>(null);
   const [devAuthEnabled, setDevAuthEnabled] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
+  const [showPasswordResetModal, setShowPasswordResetModal] = useState(false);
   const [loginModalMode, setLoginModalMode] = useState<LoginModalMode>("login");
   const [syncStatus, setSyncStatus] = useState("Choose how you want to use Free Range Golf.");
 
@@ -2473,12 +2474,19 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token }),
       });
-      const payload = await response.json().catch(() => ({})) as { error?: string; redirectPath?: string };
+      const payload = await response.json().catch(() => ({})) as { error?: string; purpose?: string; redirectPath?: string };
+      const shouldResetPassword = url.searchParams.get("resetPassword") === "1" || payload.purpose === "password_reset";
       url.searchParams.delete("login");
+      url.searchParams.delete("resetPassword");
       window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
       if (!response.ok) {
         setSyncStatus(payload.error ?? "This login link could not be used.");
         return false;
+      }
+      if (shouldResetPassword) {
+        setShowPasswordResetModal(true);
+        setSyncStatus("Signed in. Choose a new password to finish reset.");
+        return true;
       }
       setSyncStatus("Signed in from your secure email link.");
       return true;
@@ -2582,6 +2590,7 @@ export default function Home() {
 
   function openSignup() {
     setShowOnboarding(false);
+    setShowPasswordResetModal(false);
     setLoginModalMode("register");
     setShowLoginModal(true);
     setSyncStatus("Create your account to continue.");
@@ -2602,6 +2611,7 @@ export default function Home() {
     setRequestedVideoId(null);
     setActiveTab("videos");
     setShowOnboarding(false);
+    setShowPasswordResetModal(false);
     setLoginModalMode("register");
     setShowLoginModal(true);
     setSyncStatus("Signed out. Create a new account or sign in.");
@@ -2758,6 +2768,7 @@ export default function Home() {
               <button
                 className="secondary-action"
                 onClick={() => {
+                  setShowPasswordResetModal(false);
                   setLoginModalMode("login");
                   void connectAccount({ promptForEmail: true });
                 }}
@@ -2859,10 +2870,12 @@ export default function Home() {
       {accountMode === "pending" && (
         <AccountGate
           connectAccount={() => {
+            setShowPasswordResetModal(false);
             setLoginModalMode("login");
             return connectAccount({ promptForEmail: true });
           }}
           createAccount={() => {
+            setShowPasswordResetModal(false);
             setLoginModalMode("register");
             setShowLoginModal(true);
           }}
@@ -2873,7 +2886,15 @@ export default function Home() {
       {showLoginModal && (
         <LoginRequestModal
           initialMode={loginModalMode}
+          onAuthenticated={() => connectAccount()}
           onClose={() => setShowLoginModal(false)}
+          onStatus={setSyncStatus}
+        />
+      )}
+
+      {showPasswordResetModal && (
+        <PasswordResetModal
+          onClose={() => setShowPasswordResetModal(false)}
           onStatus={setSyncStatus}
         />
       )}
@@ -6127,10 +6148,12 @@ function OnboardingFlow({
 
 function LoginRequestModal({
   initialMode,
+  onAuthenticated,
   onClose,
   onStatus,
 }: {
   initialMode: LoginModalMode;
+  onAuthenticated: () => void | Promise<boolean>;
   onClose: () => void;
   onStatus: (message: string) => void;
 }) {
@@ -6138,34 +6161,85 @@ function LoginRequestModal({
   const [email, setEmail] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [accountType, setAccountType] = useState<RegisterAccountType>("player");
-  const [state, setState] = useState<"idle" | "sending">("idle");
+  const [state, setState] = useState<"idle" | "sending" | "link" | "reset">("idle");
   const [message, setMessage] = useState(
     initialMode === "register"
-      ? "Create your account, then open it with a secure email link."
-      : "Enter the email connected to your Free Range Golf account.",
+      ? "Create your account with an email and password."
+      : "Enter your email and password to open your account.",
   );
   const [debugLoginUrl, setDebugLoginUrl] = useState("");
 
   function changeMode(nextMode: LoginModalMode) {
     setMode(nextMode);
+    setPassword("");
+    setConfirmPassword("");
     setDebugLoginUrl("");
     setMessage(
       nextMode === "register"
-        ? "Create your account, then open it with a secure email link."
-        : "Enter the email connected to your Free Range Golf account.",
+        ? "Create your account with an email and password."
+        : "Enter your email and password to open your account.",
     );
   }
 
-  async function requestLogin(event: React.FormEvent<HTMLFormElement>) {
+  async function submitPasswordAuth(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setState("sending");
     setDebugLoginUrl("");
+    if (mode === "register" && password !== confirmPassword) {
+      const nextMessage = "Passwords must match.";
+      setMessage(nextMessage);
+      onStatus(nextMessage);
+      setState("idle");
+      return;
+    }
     try {
-      const response = await fetch(mode === "register" ? "/api/auth/register" : "/api/auth/request", {
+      const response = await fetch(mode === "register" ? "/api/auth/register" : "/api/auth/password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountType, email, firstName, lastName, redirectPath: "/?tab=videos" }),
+        body: JSON.stringify({ accountType, email, firstName, lastName, password, redirectPath: "/?tab=videos" }),
+      });
+      const payload = await response.json().catch(() => ({})) as {
+        debugLoginUrl?: string;
+        error?: string;
+        user?: AccountUser;
+        needsRegistration?: boolean;
+        publicMessage?: string;
+      };
+      const nextMessage = payload.publicMessage ?? payload.error ?? (mode === "register" ? "Account created." : "Signed in.");
+      setMessage(nextMessage);
+      onStatus(nextMessage);
+      if (payload.debugLoginUrl) setDebugLoginUrl(payload.debugLoginUrl);
+      if (payload.needsRegistration) setMode("register");
+      if (response.ok && payload.user) {
+        await onAuthenticated();
+        onClose();
+      }
+    } catch {
+      const nextMessage = mode === "register" ? "The account could not be created right now." : "The account could not be opened right now.";
+      setMessage(nextMessage);
+      onStatus(nextMessage);
+    } finally {
+      setState("idle");
+    }
+  }
+
+  async function sendLoginLink() {
+    if (!email.trim()) {
+      const nextMessage = "Enter your email first.";
+      setMessage(nextMessage);
+      onStatus(nextMessage);
+      return;
+    }
+    setState("link");
+    setDebugLoginUrl("");
+    try {
+      const response = await fetch("/api/auth/request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, redirectPath: "/?tab=videos" }),
       });
       const payload = await response.json().catch(() => ({})) as {
         debugLoginUrl?: string;
@@ -6179,8 +6253,42 @@ function LoginRequestModal({
       if (payload.debugLoginUrl) setDebugLoginUrl(payload.debugLoginUrl);
       if (payload.needsRegistration) setMode("register");
     } catch {
-      setMessage("The login email could not be sent right now.");
-      onStatus("The login email could not be sent right now.");
+      const nextMessage = "The login email could not be sent right now.";
+      setMessage(nextMessage);
+      onStatus(nextMessage);
+    } finally {
+      setState("idle");
+    }
+  }
+
+  async function sendPasswordReset() {
+    if (!email.trim()) {
+      const nextMessage = "Enter your email first.";
+      setMessage(nextMessage);
+      onStatus(nextMessage);
+      return;
+    }
+    setState("reset");
+    setDebugLoginUrl("");
+    try {
+      const response = await fetch("/api/auth/password-reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      const payload = await response.json().catch(() => ({})) as {
+        debugLoginUrl?: string;
+        error?: string;
+        publicMessage?: string;
+      };
+      const nextMessage = payload.publicMessage ?? payload.error ?? "If that email has an account, a password reset link will arrive shortly.";
+      setMessage(nextMessage);
+      onStatus(nextMessage);
+      if (payload.debugLoginUrl) setDebugLoginUrl(payload.debugLoginUrl);
+    } catch {
+      const nextMessage = "The password reset email could not be sent right now.";
+      setMessage(nextMessage);
+      onStatus(nextMessage);
     } finally {
       setState("idle");
     }
@@ -6188,11 +6296,11 @@ function LoginRequestModal({
 
   return (
     <div className="video-modal-overlay">
-      <form className="video-upload-modal" onSubmit={requestLogin}>
+      <form className="video-upload-modal" onSubmit={submitPasswordAuth}>
         <div className="video-modal-header">
           <div>
             <p className="eyebrow">Secure login</p>
-            <h2>{mode === "register" ? "Create your account" : "Email me a login link"}</h2>
+            <h2>{mode === "register" ? "Create your account" : "Sign in to your account"}</h2>
           </div>
           <button aria-label="Close login dialog" className="icon-button" onClick={onClose} type="button">×</button>
         </div>
@@ -6259,7 +6367,41 @@ function LoginRequestModal({
             value={email}
           />
         </label>
+        <label className="video-form-wide">
+          <span>Password</span>
+          <input
+            autoComplete={mode === "register" ? "new-password" : "current-password"}
+            onChange={(event) => setPassword(event.target.value)}
+            placeholder={mode === "register" ? "Create a password" : "Enter your password"}
+            required
+            type="password"
+            value={password}
+          />
+        </label>
+        {mode === "register" && (
+          <label className="video-form-wide">
+            <span>Confirm password</span>
+            <input
+              autoComplete="new-password"
+              onChange={(event) => setConfirmPassword(event.target.value)}
+              placeholder="Re-enter your password"
+              required
+              type="password"
+              value={confirmPassword}
+            />
+          </label>
+        )}
         <p className="muted-copy">{message}</p>
+        {mode === "login" && (
+          <div className="auth-action-row">
+            <button className="text-button login-inline-action" disabled={state !== "idle"} onClick={sendLoginLink} type="button">
+              {state === "link" ? "Sending link..." : "Email me a login link"}
+            </button>
+            <button className="text-button login-inline-action" disabled={state !== "idle"} onClick={sendPasswordReset} type="button">
+              {state === "reset" ? "Sending reset..." : "Forgot password? Send reset link"}
+            </button>
+          </div>
+        )}
         {debugLoginUrl && (
           <div className="login-debug-card">
             <div>
@@ -6278,8 +6420,97 @@ function LoginRequestModal({
           <span />
           <div className="button-row">
             <button className="secondary-action" onClick={onClose} type="button">Cancel</button>
-            <button className="primary-action" disabled={state === "sending"} type="submit">
-              {state === "sending" ? "Sending..." : mode === "register" ? "Create Account" : "Send Login Link"}
+            <button className="primary-action" disabled={state !== "idle"} type="submit">
+              {state === "sending" ? "Working..." : mode === "register" ? "Create Account" : "Log In"}
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function PasswordResetModal({
+  onClose,
+  onStatus,
+}: {
+  onClose: () => void;
+  onStatus: (message: string) => void;
+}) {
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [state, setState] = useState<"idle" | "saving">("idle");
+  const [message, setMessage] = useState("Choose a new password for your Free Range Golf account.");
+
+  async function savePassword(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (password !== confirmPassword) {
+      const nextMessage = "Passwords must match.";
+      setMessage(nextMessage);
+      onStatus(nextMessage);
+      return;
+    }
+    setState("saving");
+    try {
+      const response = await fetch("/api/auth/password", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      const payload = await response.json().catch(() => ({})) as { error?: string; publicMessage?: string };
+      const nextMessage = payload.publicMessage ?? payload.error ?? "Your password has been updated.";
+      setMessage(nextMessage);
+      onStatus(nextMessage);
+      if (response.ok) onClose();
+    } catch {
+      const nextMessage = "The password could not be updated right now.";
+      setMessage(nextMessage);
+      onStatus(nextMessage);
+    } finally {
+      setState("idle");
+    }
+  }
+
+  return (
+    <div className="video-modal-overlay">
+      <form className="video-upload-modal" onSubmit={savePassword}>
+        <div className="video-modal-header">
+          <div>
+            <p className="eyebrow">Password reset</p>
+            <h2>Set a new password</h2>
+          </div>
+          <button aria-label="Close password reset dialog" className="icon-button" onClick={onClose} type="button">×</button>
+        </div>
+        <label className="video-form-wide">
+          <span>New password</span>
+          <input
+            autoComplete="new-password"
+            autoFocus
+            onChange={(event) => setPassword(event.target.value)}
+            placeholder="Enter a new password"
+            required
+            type="password"
+            value={password}
+          />
+        </label>
+        <label className="video-form-wide">
+          <span>Confirm password</span>
+          <input
+            autoComplete="new-password"
+            onChange={(event) => setConfirmPassword(event.target.value)}
+            placeholder="Re-enter your new password"
+            required
+            type="password"
+            value={confirmPassword}
+          />
+        </label>
+        <p className="muted-copy">{message}</p>
+        <div className="video-modal-actions">
+          <span />
+          <div className="button-row">
+            <button className="secondary-action" onClick={onClose} type="button">Cancel</button>
+            <button className="primary-action" disabled={state === "saving"} type="submit">
+              {state === "saving" ? "Saving..." : "Save Password"}
             </button>
           </div>
         </div>

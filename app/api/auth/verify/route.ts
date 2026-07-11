@@ -18,6 +18,7 @@ export async function POST(request: Request) {
     const result = await consumeLoginToken(token);
     const response = Response.json({
       ok: true,
+      purpose: result.purpose,
       redirectPath: result.redirectPath,
       user: result.user,
     });

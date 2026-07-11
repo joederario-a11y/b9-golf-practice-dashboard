@@ -8,7 +8,7 @@ import {
 
 type AuthEmailOptions = {
   accountType?: "coach" | "player";
-  purpose?: "login" | "registration";
+  purpose?: "login" | "password_reset" | "registration";
 };
 
 function escapeHtml(value: string) {
@@ -26,6 +26,14 @@ function appUrl(request: Request, path: string) {
   return `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
+function loginUrlForToken(request: Request, token: string, redirectPath: string) {
+  const safeRedirectPath = redirectPath.startsWith("/") ? redirectPath : "/?tab=videos";
+  const url = new URL(appUrl(request, safeRedirectPath));
+  url.searchParams.set("login", token);
+  if (!url.searchParams.has("tab")) url.searchParams.set("tab", "videos");
+  return url.toString();
+}
+
 function canExposeLocalLoginUrl(request: Request) {
   const runtime = getPlatformEnvironment();
   const hostname = new URL(request.url).hostname;
@@ -40,6 +48,7 @@ export async function requestLoginEmail(
 ) {
   const normalizedEmail = email.trim().toLowerCase();
   const isRegistration = options.purpose === "registration";
+  const isPasswordReset = options.purpose === "password_reset";
   const accountLabel = options.accountType === "coach" ? "coach" : "player";
   const database = getRequiredDatabase();
   const existing = await database
@@ -66,14 +75,16 @@ export async function requestLoginEmail(
 
   const token = await createLoginToken({
     email: normalizedEmail,
-    purpose: "login",
+    purpose: isPasswordReset ? "password_reset" : "login",
     redirectPath,
     userId: user.id,
   });
-  const loginUrl = appUrl(request, `/?login=${encodeURIComponent(token)}${redirectPath.includes("tab=") ? "" : "&tab=videos"}`);
+  const loginUrl = loginUrlForToken(request, token, redirectPath);
   const runtime = getPlatformEnvironment();
   const emailSubject = isRegistration
     ? "Your Free Range Golf account is ready"
+    : isPasswordReset
+      ? "Reset your Free Range Golf password"
     : "Your Free Range Golf login link";
   if (!runtime.RESEND_API_KEY || !runtime.VIDEO_EMAIL_FROM) {
     const localLoginAvailable = canExposeLocalLoginUrl(request);
@@ -87,6 +98,10 @@ export async function requestLoginEmail(
         ? localLoginAvailable
           ? "Account created. Email is not configured locally, so use the secure link below."
           : "Account created, but email delivery is not configured yet."
+        : isPasswordReset
+          ? localLoginAvailable
+            ? "Email is not configured locally. Use the local password reset link below."
+            : "Password reset email delivery is not configured yet."
         : localLoginAvailable
           ? "Email is not configured locally. Use the local test login link below."
           : "Email delivery is not configured yet.",
@@ -95,8 +110,10 @@ export async function requestLoginEmail(
 
   const introCopy = isRegistration
     ? `Your Free Range Golf ${accountLabel} account has been created. Use this secure link to open your account and finish getting set up.`
+    : isPasswordReset
+      ? "Use this secure link to open your account and set a new password."
     : "Use this secure link to open your Free Range Golf video library.";
-  const buttonText = isRegistration ? "Open your new account" : "Open Free Range Golf";
+  const buttonText = isRegistration ? "Open your new account" : isPasswordReset ? "Reset password" : "Open Free Range Golf";
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -128,6 +145,8 @@ export async function requestLoginEmail(
       failureReason: result.message || "The email provider did not accept the login email.",
       publicMessage: isRegistration
         ? "Account created, but the registration email could not be sent."
+        : isPasswordReset
+          ? "The password reset email could not be sent."
         : "The login email could not be sent.",
     };
   }
@@ -139,6 +158,8 @@ export async function requestLoginEmail(
     providerId: result.id,
     publicMessage: isRegistration
       ? `Account created. We sent a secure login link to ${normalizedEmail}.`
+      : isPasswordReset
+        ? "Check your email for a password reset link."
       : "Check your email for a secure login link.",
   };
 }

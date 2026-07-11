@@ -2600,6 +2600,50 @@ button:disabled {
   padding: 18px;
 }
 
+.video-upload-modal label:not(.coach-email-toggle):not(.video-file-picker) {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.video-upload-modal label:not(.coach-email-toggle):not(.video-file-picker) > span {
+  display: block;
+}
+
+.video-upload-modal input:not([type="checkbox"]):not([type="file"]),
+.video-upload-modal select,
+.video-upload-modal textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  outline: none;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+}
+
+.video-upload-modal input:not([type="checkbox"]):not([type="file"]),
+.video-upload-modal select {
+  height: 40px;
+  padding: 0 10px;
+}
+
+.video-upload-modal textarea {
+  padding: 10px;
+}
+
+.video-upload-modal input:not([type="checkbox"]):not([type="file"]):focus,
+.video-upload-modal select:focus,
+.video-upload-modal textarea:focus {
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgba(23, 114, 69, 0.12);
+}
+
 .video-modal-header,
 .video-modal-actions {
   display: flex;
@@ -2706,6 +2750,12 @@ button:disabled {
 .login-inline-action {
   color: var(--muted);
   font-size: 12px;
+}
+
+.auth-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .login-inline-action {
@@ -4574,6 +4624,9 @@ textarea:focus-visible,
 .file-input,
 .video-filter-band input,
 .video-filter-band select,
+.video-upload-modal input:not([type="checkbox"]):not([type="file"]),
+.video-upload-modal select,
+.video-upload-modal textarea,
 .video-form-grid input,
 .video-form-grid select,
 .video-form-grid textarea,
@@ -4621,6 +4674,9 @@ input::file-selector-button {
 .csv-input:focus,
 .video-filter-band input:focus,
 .video-filter-band select:focus,
+.video-upload-modal input:not([type="checkbox"]):not([type="file"]):focus,
+.video-upload-modal select:focus,
+.video-upload-modal textarea:focus,
 .video-form-grid input:focus,
 .video-form-grid select:focus,
 .video-form-grid textarea:focus,

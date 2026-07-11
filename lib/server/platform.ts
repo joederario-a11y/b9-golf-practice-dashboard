@@ -35,10 +35,17 @@ type SessionUserRow = UserRow & {
   expires_at: string;
 };
 
+type PasswordRow = UserRow & {
+  password_hash: string;
+  password_salt: string;
+  iterations: number;
+};
+
 export const AUTH_SESSION_COOKIE = "frg-session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 const LOGIN_TOKEN_TTL_SECONDS = 60 * 30;
 const VIDEO_LINK_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 14;
+const PASSWORD_HASH_ITERATIONS = 180000;
 
 export function getPlatformEnvironment() {
   return env as unknown as PlatformEnvironment;
@@ -100,6 +107,44 @@ async function hashToken(token: string) {
   return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  return btoa(String.fromCharCode(...bytes));
+}
+
+function base64ToBytes(value: string) {
+  return Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+}
+
+function constantTimeEqual(left: Uint8Array, right: Uint8Array) {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left[index] ^ right[index];
+  }
+  return difference === 0;
+}
+
+async function derivePasswordHash(password: string, salt: Uint8Array, iterations: number) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(password),
+    "PBKDF2",
+    false,
+    ["deriveBits"],
+  );
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: "PBKDF2",
+      hash: "SHA-256",
+      salt,
+      iterations,
+    },
+    key,
+    256,
+  );
+  return new Uint8Array(bits);
 }
 
 export function makeAuthSessionCookie(token: string, maxAgeSeconds = SESSION_TTL_SECONDS) {
@@ -258,6 +303,16 @@ export async function ensurePlatformSchema(database = getRequiredDatabase()) {
         last_seen_at TEXT
       )`,
     ),
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS user_passwords (
+        user_id TEXT PRIMARY KEY,
+        password_hash TEXT NOT NULL,
+        password_salt TEXT NOT NULL,
+        iterations INTEGER NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`,
+    ),
     database.prepare("CREATE INDEX IF NOT EXISTS coach_members_member_idx ON coach_members(member_id)"),
     database.prepare("CREATE INDEX IF NOT EXISTS member_invitations_member_idx ON member_invitations(member_id, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS lesson_videos_member_idx ON lesson_videos(member_id, created_at)"),
@@ -267,6 +322,10 @@ export async function ensurePlatformSchema(database = getRequiredDatabase()) {
     database.prepare("CREATE INDEX IF NOT EXISTS auth_login_tokens_email_idx ON auth_login_tokens(email, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS auth_sessions_user_idx ON auth_sessions(user_id, expires_at)"),
   ]);
+}
+
+export function identityForUser(row: UserRow): AuthIdentity {
+  return identityFromUser(row);
 }
 
 export async function upsertUserForEmail(values: {
@@ -330,10 +389,53 @@ export async function createAuthSession(userId: string) {
   };
 }
 
+export async function setUserPassword(userId: string, password: string) {
+  const database = getRequiredDatabase();
+  await ensurePlatformSchema(database);
+  const salt = new Uint8Array(16);
+  crypto.getRandomValues(salt);
+  const hash = await derivePasswordHash(password, salt, PASSWORD_HASH_ITERATIONS);
+  await database
+    .prepare(
+      `INSERT INTO user_passwords (
+        user_id, password_hash, password_salt, iterations, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT(user_id) DO UPDATE SET
+        password_hash = excluded.password_hash,
+        password_salt = excluded.password_salt,
+        iterations = excluded.iterations,
+        updated_at = CURRENT_TIMESTAMP`,
+    )
+    .bind(userId, bytesToBase64(hash), bytesToBase64(salt), PASSWORD_HASH_ITERATIONS)
+    .run();
+}
+
+export async function verifyUserPassword(email: string, password: string) {
+  const database = getRequiredDatabase();
+  await ensurePlatformSchema(database);
+  const row = await database
+    .prepare(
+      `SELECT
+        users.id, users.role, users.first_name, users.last_name, users.email,
+        user_passwords.password_hash, user_passwords.password_salt, user_passwords.iterations
+      FROM users
+      JOIN user_passwords ON user_passwords.user_id = users.id
+      WHERE users.email = ?`,
+    )
+    .bind(email.trim().toLowerCase())
+    .first<PasswordRow>();
+
+  if (!row) return null;
+  const expected = base64ToBytes(row.password_hash);
+  const actual = await derivePasswordHash(password, base64ToBytes(row.password_salt), row.iterations);
+  if (!constantTimeEqual(actual, expected)) return null;
+  return identityFromUser(row);
+}
+
 export async function createLoginToken(values: {
   email: string;
   userId?: string | null;
-  purpose: "login" | "video";
+  purpose: "login" | "password_reset" | "video";
   redirectPath?: string;
   ttlSeconds?: number;
 }) {
@@ -365,7 +467,7 @@ export async function consumeLoginToken(token: string) {
   const tokenHash = await hashToken(token);
   const loginToken = await database
     .prepare(
-      `SELECT id, email, user_id, expires_at, used_at, redirect_path
+      `SELECT id, email, user_id, purpose, expires_at, used_at, redirect_path
        FROM auth_login_tokens WHERE token_hash = ?`,
     )
     .bind(tokenHash)
@@ -373,6 +475,7 @@ export async function consumeLoginToken(token: string) {
       id: string;
       email: string;
       user_id: string | null;
+      purpose: string;
       expires_at: string;
       used_at: string | null;
       redirect_path: string | null;
@@ -401,6 +504,7 @@ export async function consumeLoginToken(token: string) {
   const session = await createAuthSession(user.id);
   return {
     cookie: session.cookie,
+    purpose: loginToken.purpose,
     redirectPath: loginToken.redirect_path,
     user: identityFromUser(user),
   };

@@ -1,9 +1,12 @@
 import { requestLoginEmail } from "@/lib/server/auth-email";
 import {
+  createAuthSession,
   ensurePlatformSchema,
   getRequiredDatabase,
+  identityForUser,
   responseFromError,
   roleForEmail,
+  setUserPassword,
   type UserRole,
   upsertUserForEmail,
 } from "@/lib/server/platform";
@@ -23,12 +26,14 @@ export async function POST(request: Request) {
       email?: unknown;
       firstName?: unknown;
       lastName?: unknown;
+      password?: unknown;
       redirectPath?: unknown;
     };
     const accountType = text(payload.accountType, 20).toLowerCase();
     const email = text(payload.email, 254).toLowerCase();
     const firstName = text(payload.firstName, 80);
     const lastName = text(payload.lastName, 80);
+    const password = typeof payload.password === "string" ? payload.password : "";
     const redirectPath = text(payload.redirectPath, 300) || "/?tab=videos";
 
     if (accountType !== "coach" && accountType !== "player") {
@@ -40,6 +45,9 @@ export async function POST(request: Request) {
     if (!firstName || !lastName) {
       return Response.json({ error: "First and last name are required." }, { status: 400 });
     }
+    if (password.length < 8) {
+      return Response.json({ error: "Password must be at least 8 characters." }, { status: 400 });
+    }
 
     const database = getRequiredDatabase();
     await ensurePlatformSchema(database);
@@ -47,32 +55,41 @@ export async function POST(request: Request) {
       .prepare("SELECT id, role FROM users WHERE email = ?")
       .bind(email)
       .first<{ id: string; role: string }>();
+    if (existing) {
+      return Response.json(
+        {
+          error: "That email already has an account. Sign in or use password reset.",
+          publicMessage: "That email already has an account. Sign in or use password reset.",
+        },
+        { status: 409 },
+      );
+    }
 
     const staffRole = roleForEmail(email, existing?.role);
     const requestedRole: UserRole = accountType === "coach" ? "coach" : "member";
     const role = staffRole === "admin" || staffRole === "coach" ? staffRole : requestedRole;
 
-    if (!existing || existing.role === "member" || existing.role === "coach") {
-      await upsertUserForEmail({
-        email,
-        firstName,
-        lastName,
-        role,
-      });
-    }
+    const user = await upsertUserForEmail({
+      email,
+      firstName,
+      lastName,
+      role,
+    });
+    await setUserPassword(user.id, password);
 
     const result = await requestLoginEmail(request, email, redirectPath, {
       accountType: accountType === "coach" ? "coach" : "player",
       purpose: "registration",
     });
-    const status = result.status === "Failed" ? 503 : existing ? 200 : 201;
-    return Response.json(
-      {
-        ...result,
-        registered: !existing,
-      },
-      { status },
-    );
+    const session = await createAuthSession(user.id);
+    const response = Response.json({
+      ...result,
+      emailStatus: result.status,
+      registered: true,
+      user: identityForUser(user),
+    }, { status: 201 });
+    response.headers.append("Set-Cookie", session.cookie);
+    return response;
   } catch (error) {
     return responseFromError(error);
   }

@@ -195,3 +195,12 @@ export const authSessions = sqliteTable(
     index("auth_sessions_user_idx").on(table.userId, table.expiresAt),
   ],
 );
+
+export const userPasswords = sqliteTable("user_passwords", {
+  userId: text("user_id").primaryKey(),
+  passwordHash: text("password_hash").notNull(),
+  passwordSalt: text("password_salt").notNull(),
+  iterations: integer("iterations").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
