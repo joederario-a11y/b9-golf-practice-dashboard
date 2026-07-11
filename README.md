@@ -84,8 +84,8 @@ COACH_EMAILS=zac@example.com
 ADMIN_EMAILS=owner@example.com
 ```
 
-Lesson notification email uses Resend. Configure these values before publishing
-from the coach workspace:
+Registration, login, invitation, and lesson notification email use Resend.
+Configure these values before publishing from the coach workspace:
 
 ```bash
 RESEND_API_KEY=re_...
@@ -93,9 +93,9 @@ VIDEO_EMAIL_FROM=Back Nine Team <lessons@example.com>
 APP_BASE_URL=https://your-site.example
 ```
 
-`APP_BASE_URL` must be the deployed production URL. Invitation and video email
-links use it to build one-time login URLs that set an HTTP-only session cookie
-before opening the member video library.
+`APP_BASE_URL` must be the deployed production URL. Registration, invitation,
+login, and video email links use it to build one-time login URLs that set an
+HTTP-only session cookie before opening the member video library.
 
 The Sites binding names are declared in `.openai/hosting.json`:
 

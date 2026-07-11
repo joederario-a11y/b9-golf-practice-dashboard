@@ -61,19 +61,15 @@ export async function POST(request: Request) {
       });
     }
 
-    const result = await requestLoginEmail(request, email, redirectPath);
+    const result = await requestLoginEmail(request, email, redirectPath, {
+      accountType: accountType === "coach" ? "coach" : "player",
+      purpose: "registration",
+    });
     const status = result.status === "Failed" ? 503 : existing ? 200 : 201;
-    const localLinkReady = "debugLoginUrl" in result && Boolean(result.debugLoginUrl);
     return Response.json(
       {
         ...result,
         registered: !existing,
-        publicMessage:
-          result.status === "Sent"
-            ? "Account created. Check your email for your secure login link."
-            : localLinkReady
-              ? "Account created. Use the secure link below to open it."
-              : result.publicMessage,
       },
       { status },
     );
