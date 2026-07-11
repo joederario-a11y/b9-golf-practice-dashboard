@@ -117,6 +117,43 @@ button {
   object-fit: contain;
 }
 
+.rail-account-status {
+  display: grid;
+  gap: 7px;
+  margin: 0 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 11px;
+}
+
+.rail-account-status span {
+  color: var(--green);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.rail-account-status strong {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1.25;
+}
+
+.rail-account-status button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--ink);
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 900;
+}
+
 .rail-nav {
   display: grid;
   gap: 6px;
@@ -3834,6 +3871,7 @@ button:disabled {
   }
 
   .brand-lockup,
+  .rail-account-status,
   .rail-footer {
     display: none;
   }
@@ -4285,6 +4323,7 @@ textarea:focus-visible,
 }
 
 .brand-logo,
+.rail-account-status,
 .rail-footer,
 .account-pill,
 .workspace-role-switcher > div {
@@ -4304,6 +4343,18 @@ textarea:focus-visible,
 .brand-lockup span,
 .rail-footer span {
   color: var(--muted);
+}
+
+.rail-account-status button {
+  border-color: rgba(53, 242, 122, 0.32);
+  background: var(--green);
+  color: var(--deep);
+}
+
+.rail-account-status.user button {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: var(--surface-elevated);
+  color: var(--ink);
 }
 
 .rail-button {

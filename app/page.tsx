@@ -2580,6 +2580,33 @@ export default function Home() {
     }
   }
 
+  function openSignup() {
+    setShowOnboarding(false);
+    setLoginModalMode("register");
+    setShowLoginModal(true);
+    setSyncStatus("Create your account to continue.");
+  }
+
+  async function logOut() {
+    setSyncStatus("Signing out...");
+    await Promise.allSettled([
+      fetch("/api/auth/verify", { method: "DELETE" }),
+      devAuthEnabled ? fetch("/api/dev-auth", { method: "DELETE" }) : Promise.resolve(),
+    ]);
+    setAccountMode("guest");
+    setAccountUser(null);
+    setUserName(null);
+    setWorkspaceRole("user");
+    setVideoLibraryMemberId("current-user");
+    setVideoLibraryMemberName("");
+    setRequestedVideoId(null);
+    setActiveTab("videos");
+    setShowOnboarding(false);
+    setLoginModalMode("register");
+    setShowLoginModal(true);
+    setSyncStatus("Signed out. Create a new account or sign in.");
+  }
+
   function changeWorkspaceRole(role: VideoViewerRole) {
     setWorkspaceRole(role);
     if (role === "user") setVideoLibraryMemberId("current-user");
@@ -2642,6 +2669,15 @@ export default function Home() {
     importShots(parseCsv(csvText), submissionType, "CSV");
   }
 
+  const accountRoleLabel =
+    accountUser?.role === "coach"
+      ? "Coach"
+      : accountUser?.role === "admin"
+        ? "Admin"
+        : "Player";
+  const accountStatusLabel = accountMode === "user" ? `Logged In ${accountRoleLabel}:` : "Guest";
+  const accountStatusName = accountMode === "user" ? userName ?? accountUser?.displayName ?? "Signed-in user" : "Not signed in";
+
   if (showOnboarding) {
     return (
       <OnboardingFlow
@@ -2663,6 +2699,19 @@ export default function Home() {
             <strong>Free Range Golf</strong>
             <span>Sim performance</span>
           </div>
+        </div>
+        <div className={cls("rail-account-status", accountMode)}>
+          <span>{accountStatusLabel}</span>
+          <strong>{accountStatusName}</strong>
+          {accountMode === "user" ? (
+            <button onClick={() => void logOut()} type="button">
+              Log out
+            </button>
+          ) : (
+            <button onClick={openSignup} type="button">
+              Sign up
+            </button>
+          )}
         </div>
         <nav className="rail-nav">
           {NAV_ITEMS.map((item) => (
