@@ -3591,6 +3591,7 @@ function CoachVideoWorkspace({
   const [loadingVideos, setLoadingVideos] = useState(true);
   const [showAddMember, setShowAddMember] = useState(false);
   const [memberSaveState, setMemberSaveState] = useState<"idle" | "saving">("idle");
+  const [demoSeedState, setDemoSeedState] = useState<"idle" | "saving">("idle");
   const [newMember, setNewMember] = useState({
     firstName: "",
     lastName: "",
@@ -3755,6 +3756,37 @@ function CoachVideoWorkspace({
       setWorkspaceMessage(error instanceof Error ? error.message : "The member could not be added.");
     } finally {
       setMemberSaveState("idle");
+    }
+  }
+
+  async function addDemoPlayer() {
+    if (!authenticated) {
+      setWorkspaceMessage("Log in as a coach or admin before adding a demo player.");
+      return;
+    }
+    setDemoSeedState("saving");
+    try {
+      const response = await fetch("/api/demo/player", { method: "POST" });
+      const payload = await response.json().catch(() => ({})) as {
+        error?: string;
+        member?: CoachMember;
+        publicMessage?: string;
+      };
+      if (!response.ok || !payload.member) {
+        throw new Error(payload.error ?? "The demo player could not be added.");
+      }
+      const member = payload.member;
+      setMembers((current) => [
+        member,
+        ...current.filter((item) => item.id !== member.id),
+      ]);
+      setSelectedMemberId(member.id);
+      setStep(1);
+      setWorkspaceMessage(payload.publicMessage ?? `${member.name} is ready for a demo upload.`);
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "The demo player could not be added.");
+    } finally {
+      setDemoSeedState("idle");
     }
   }
 
@@ -3993,6 +4025,9 @@ function CoachVideoWorkspace({
           <article><span>Waiting to watch</span><strong>{managedVideos.filter((video) => getVideoPublicationStatus(video) === "Published" && !video.isViewedByMember).length}</strong></article>
         </div>
         <div className="button-row">
+          <button className="secondary-action" disabled={!authenticated || demoSeedState === "saving"} onClick={() => void addDemoPlayer()}>
+            {demoSeedState === "saving" ? "Adding Demo..." : "Add Demo Player"}
+          </button>
           <button className="secondary-action" disabled={!authenticated} onClick={() => setShowAddMember(true)}>＋ Add Member</button>
           <button
             className="primary-action"
