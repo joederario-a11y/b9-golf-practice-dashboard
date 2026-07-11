@@ -6296,7 +6296,7 @@ function LoginRequestModal({
 
   return (
     <div className="video-modal-overlay">
-      <form className="video-upload-modal" onSubmit={submitPasswordAuth}>
+      <form className="video-upload-modal auth-modal" onSubmit={submitPasswordAuth}>
         <div className="video-modal-header">
           <div>
             <p className="eyebrow">Secure login</p>
@@ -6379,7 +6379,7 @@ function LoginRequestModal({
           />
         </label>
         {mode === "register" && (
-          <label className="video-form-wide">
+          <label className="video-form-wide auth-confirm-password">
             <span>Confirm password</span>
             <input
               autoComplete="new-password"
@@ -6473,7 +6473,7 @@ function PasswordResetModal({
 
   return (
     <div className="video-modal-overlay">
-      <form className="video-upload-modal" onSubmit={savePassword}>
+      <form className="video-upload-modal auth-modal" onSubmit={savePassword}>
         <div className="video-modal-header">
           <div>
             <p className="eyebrow">Password reset</p>
@@ -6493,7 +6493,7 @@ function PasswordResetModal({
             value={password}
           />
         </label>
-        <label className="video-form-wide">
+        <label className="video-form-wide auth-confirm-password">
           <span>Confirm password</span>
           <input
             autoComplete="new-password"

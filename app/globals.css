@@ -2600,6 +2600,46 @@ button:disabled {
   padding: 18px;
 }
 
+.video-upload-modal.auth-modal {
+  width: min(760px, 100%);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.auth-modal > .video-modal-header,
+.auth-modal > .login-mode-switch,
+.auth-modal > .account-type-switch,
+.auth-modal > .video-form-grid,
+.auth-modal > .muted-copy,
+.auth-modal > .auth-action-row,
+.auth-modal > .login-debug-card,
+.auth-modal > .login-inline-action,
+.auth-modal > .video-modal-actions {
+  grid-column: 1 / -1;
+}
+
+.auth-modal > .video-form-wide {
+  grid-column: auto;
+}
+
+.auth-modal > .auth-confirm-password {
+  grid-column: 1 / -1;
+}
+
+.auth-modal label:not(.coach-email-toggle):not(.video-file-picker) {
+  gap: 5px;
+  font-size: 11px;
+}
+
+.auth-modal input:not([type="checkbox"]):not([type="file"]),
+.auth-modal select {
+  height: 36px;
+}
+
+.auth-modal .login-mode-switch button {
+  min-height: 36px;
+}
+
 .video-upload-modal label:not(.coach-email-toggle):not(.video-file-picker) {
   display: grid;
   gap: 8px;
@@ -2642,6 +2682,16 @@ button:disabled {
 .video-upload-modal textarea:focus {
   border-color: var(--green);
   box-shadow: 0 0 0 3px rgba(23, 114, 69, 0.12);
+}
+
+.video-upload-modal.auth-modal label:not(.coach-email-toggle):not(.video-file-picker) {
+  gap: 5px;
+  font-size: 11px;
+}
+
+.video-upload-modal.auth-modal input:not([type="checkbox"]):not([type="file"]),
+.video-upload-modal.auth-modal select {
+  height: 36px;
 }
 
 .video-modal-header,
@@ -2722,6 +2772,30 @@ button:disabled {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.35;
+}
+
+.auth-modal .account-type-switch {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.auth-modal .account-type-switch button {
+  min-height: 58px;
+  gap: 4px;
+  padding: 9px 12px;
+}
+
+.auth-modal .account-type-switch span {
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.auth-modal .video-form-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.auth-modal .muted-copy {
+  margin: 0;
 }
 
 .login-debug-card {
