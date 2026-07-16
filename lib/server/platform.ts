@@ -19,6 +19,8 @@ export type PlatformEnvironment = {
   COACH_EMAILS?: string;
   DB?: D1Database;
   DEV_AUTH_ENABLED?: string;
+  OPENAI_API_KEY?: string;
+  OPENAI_MODEL?: string;
   RESEND_API_KEY?: string;
   RESEND_FROM?: string;
   VIDEO_EMAIL_FROM?: string;
@@ -228,6 +230,41 @@ export async function ensureUserDataOwnershipSchema(database = getRequiredDataba
     ),
     database.prepare("CREATE UNIQUE INDEX IF NOT EXISTS golf_session_snapshots_user_id_unique ON golf_session_snapshots(user_id) WHERE user_id IS NOT NULL"),
     database.prepare("CREATE UNIQUE INDEX IF NOT EXISTS golf_practice_profiles_user_id_unique ON golf_practice_profiles(user_id) WHERE user_id IS NOT NULL"),
+  ]);
+}
+
+export async function ensureMaiCaddyAnalysisSchema(database = getRequiredDatabase()) {
+  await database.batch([
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS mai_caddy_session_analyses (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'processing'
+          CHECK (status IN ('processing', 'completed', 'failed', 'insufficient_data')),
+        analysis_json TEXT NOT NULL DEFAULT '{}',
+        calculated_metrics_json TEXT NOT NULL DEFAULT '{}',
+        model TEXT,
+        prompt_version TEXT NOT NULL DEFAULT 'mai-caddy-v1',
+        error_code TEXT,
+        error_message TEXT,
+        is_current INTEGER NOT NULL DEFAULT 1 CHECK (is_current IN (0, 1)),
+        started_at TEXT,
+        completed_at TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )`,
+    ),
+    database.prepare("CREATE INDEX IF NOT EXISTS mai_caddy_session_analyses_user_idx ON mai_caddy_session_analyses(user_id)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS mai_caddy_session_analyses_session_idx ON mai_caddy_session_analyses(session_id)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS mai_caddy_session_analyses_user_session_idx ON mai_caddy_session_analyses(user_id, session_id, created_at)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS mai_caddy_session_analyses_current_idx ON mai_caddy_session_analyses(user_id, session_id, is_current)"),
+    database.prepare(
+      `CREATE UNIQUE INDEX IF NOT EXISTS mai_caddy_session_analyses_one_current_unique
+       ON mai_caddy_session_analyses(user_id, session_id)
+       WHERE is_current = 1`,
+    ),
   ]);
 }
 

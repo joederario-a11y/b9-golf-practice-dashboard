@@ -49,6 +49,36 @@ export const users = sqliteTable(
   ],
 );
 
+export const maiCaddySessionAnalyses = sqliteTable(
+  "mai_caddy_session_analyses",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    sessionId: text("session_id").notNull(),
+    status: text("status").notNull().default("processing"),
+    analysisJson: text("analysis_json").notNull().default("{}"),
+    calculatedMetricsJson: text("calculated_metrics_json").notNull().default("{}"),
+    model: text("model"),
+    promptVersion: text("prompt_version").notNull().default("mai-caddy-v1"),
+    errorCode: text("error_code"),
+    errorMessage: text("error_message"),
+    isCurrent: integer("is_current", { mode: "boolean" }).notNull().default(true),
+    startedAt: text("started_at"),
+    completedAt: text("completed_at"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("mai_caddy_session_analyses_user_idx").on(table.userId),
+    index("mai_caddy_session_analyses_session_idx").on(table.sessionId),
+    index("mai_caddy_session_analyses_user_session_idx").on(table.userId, table.sessionId, table.createdAt),
+    index("mai_caddy_session_analyses_current_idx").on(table.userId, table.sessionId, table.isCurrent),
+    uniqueIndex("mai_caddy_session_analyses_one_current_unique")
+      .on(table.userId, table.sessionId)
+      .where(sql`${table.isCurrent} = 1`),
+  ],
+);
+
 export const coachMembers = sqliteTable(
   "coach_members",
   {

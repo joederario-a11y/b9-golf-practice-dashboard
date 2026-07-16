@@ -911,10 +911,66 @@ button {
   min-height: 42px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #fff;
+  background: var(--field);
   color: var(--ink);
   font-weight: 850;
   padding: 0 12px;
+}
+
+.performance-review-controls {
+  align-items: flex-end;
+}
+
+.performance-filter-group {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.custom-date-range {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.custom-date-range label {
+  display: grid;
+  gap: 6px;
+}
+
+.custom-date-range span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.custom-date-range input {
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+  color: var(--ink);
+  font-weight: 850;
+  padding: 0 10px;
+}
+
+.performance-empty-state {
+  display: grid;
+  gap: 12px;
+  max-width: 680px;
+}
+
+.performance-empty-state h2,
+.performance-empty-state p {
+  margin: 0;
+}
+
+.performance-empty-state p:not(.eyebrow) {
+  color: var(--muted);
 }
 
 .dashboard-grid,
@@ -2309,6 +2365,271 @@ dd {
   min-width: 1040px;
 }
 
+.panel-header-actions {
+  margin-top: 0;
+  flex-wrap: wrap;
+}
+
+.mai-caddy-action {
+  min-height: 38px;
+}
+
+.mai-analysis-panel {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+  border: 1px solid rgba(53, 242, 122, 0.26);
+  border-radius: 8px;
+  background:
+    linear-gradient(145deg, rgba(53, 242, 122, 0.1), rgba(8, 17, 13, 0.78) 58%),
+    rgba(8, 17, 13, 0.84);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.22);
+  padding: 18px;
+}
+
+.mai-analysis-panel.loading {
+  border-color: rgba(250, 204, 21, 0.3);
+}
+
+.mai-analysis-panel.error {
+  border-color: rgba(239, 68, 68, 0.38);
+}
+
+.mai-analysis-heading,
+.mai-analysis-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mai-analysis-heading h3,
+.mai-analysis-heading p {
+  margin: 0;
+}
+
+.mai-analysis-heading h3 {
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 850;
+}
+
+.mai-analysis-heading > span,
+.mai-analysis-meta span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border: 1px solid rgba(53, 242, 122, 0.28);
+  border-radius: 999px;
+  background: rgba(53, 242, 122, 0.1);
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 850;
+  padding: 4px 9px;
+}
+
+.mai-analysis-meta {
+  justify-content: flex-start;
+}
+
+.mai-analysis-body,
+.mai-analysis-status {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.62;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.mai-analysis-status {
+  color: var(--muted);
+}
+
+.mai-analysis-status.error {
+  color: #ffb4b4;
+}
+
+.mai-analysis-body.structured {
+  display: grid;
+  gap: 16px;
+  white-space: normal;
+}
+
+.mai-analysis-body h4,
+.mai-analysis-body h5,
+.mai-analysis-body p,
+.mai-analysis-body ul,
+.mai-analysis-body dl {
+  margin: 0;
+}
+
+.mai-analysis-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.mai-analysis-hero h4 {
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: 900;
+  line-height: 1.15;
+  max-width: 780px;
+}
+
+.mai-analysis-hero span {
+  border: 1px solid rgba(53, 242, 122, 0.28);
+  border-radius: 999px;
+  color: var(--green);
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 900;
+  padding: 5px 10px;
+  text-transform: uppercase;
+}
+
+.mai-analysis-callout,
+.mai-analysis-grid section,
+.mai-practice-plan article,
+.mai-analysis-footer {
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+  padding: 14px;
+}
+
+.mai-analysis-callout {
+  border-color: rgba(250, 204, 21, 0.32);
+}
+
+.mai-analysis-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.mai-analysis-grid h5,
+.mai-practice-plan h5 {
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0;
+  margin-bottom: 10px;
+  text-transform: uppercase;
+}
+
+.mai-analysis-body ul {
+  display: grid;
+  gap: 10px;
+  padding-left: 18px;
+}
+
+.mai-analysis-body li strong,
+.mai-practice-plan article > strong {
+  color: var(--ink);
+  display: block;
+  font-weight: 900;
+  margin-bottom: 4px;
+}
+
+.mai-analysis-body li span {
+  color: var(--muted);
+  display: block;
+  font-weight: 650;
+}
+
+.mai-practice-plan {
+  display: grid;
+  gap: 12px;
+}
+
+.mai-practice-plan article {
+  display: grid;
+  gap: 10px;
+}
+
+.mai-practice-plan dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 14px;
+}
+
+.mai-practice-plan dl div {
+  min-width: 0;
+}
+
+.mai-practice-plan dt {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.mai-practice-plan dd {
+  color: var(--ink);
+  margin: 2px 0 0;
+}
+
+.mai-analysis-footer {
+  display: grid;
+  gap: 8px;
+}
+
+@media (max-width: 860px) {
+  .mai-analysis-grid,
+  .mai-practice-plan dl {
+    grid-template-columns: 1fr;
+  }
+
+  .mai-analysis-hero {
+    flex-direction: column;
+  }
+}
+
+.shot-delete-table {
+  margin-top: 22px;
+  overflow-x: auto;
+}
+
+.shot-delete-table-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.shot-delete-table-heading h3,
+.shot-delete-table-heading p {
+  margin: 0;
+}
+
+.shot-delete-table-heading h3 {
+  color: var(--ink);
+  font-size: 17px;
+  font-weight: 850;
+}
+
+.shot-delete-table-heading > span {
+  max-width: 320px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: right;
+}
+
+.shot-delete-table .table-row.shot-row {
+  grid-template-columns: 0.55fr 1fr repeat(6, minmax(88px, 0.75fr)) 72px;
+  min-width: 1050px;
+}
+
+.shot-delete-table .shot-row span:last-child {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .table-row span {
   padding: 12px 10px;
   color: var(--ink);
@@ -2321,6 +2642,29 @@ dd {
   font-size: 11px;
   font-weight: 900;
   text-transform: uppercase;
+}
+
+@media (max-width: 760px) {
+  .performance-review-controls,
+  .shot-delete-table-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .performance-filter-group,
+  .custom-date-range {
+    width: 100%;
+  }
+
+  .performance-filter-group .select-control,
+  .custom-date-range label {
+    min-width: 100%;
+  }
+
+  .shot-delete-table-heading > span {
+    max-width: none;
+    text-align: left;
+  }
 }
 
 .quality-pill {

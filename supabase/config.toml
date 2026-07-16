@@ -2,3 +2,6 @@ project_id = "b9-golf-practice-dashboard"
 
 [functions.send-signup-email]
 verify_jwt = false
+
+[functions.analyze-session]
+verify_jwt = true

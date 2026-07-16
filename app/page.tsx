@@ -198,6 +198,86 @@ type LastImport = {
   shots: Shot[];
 };
 
+type MaiCaddyAnalysis = {
+  headline: string;
+  dataQuality: {
+    confidence: "low" | "medium" | "high";
+    usableShotCount: number;
+    limitations: string[];
+  };
+  sessionSummary: string;
+  measuredFindings: Array<{
+    metric: string;
+    value: string;
+    meaning: string;
+  }>;
+  strengths: Array<{
+    title: string;
+    evidence: string;
+  }>;
+  primaryPriority: {
+    title: string;
+    whyItMatters: string;
+    evidence: string;
+  };
+  issues: Array<{
+    metric: string;
+    finding: string;
+    severity: "low" | "medium" | "high";
+    evidence: string;
+    certainty: "measured" | "strongly_suggested" | "possible";
+    possibleCause: string | null;
+  }>;
+  practicePlan: Array<{
+    drill: string;
+    problemAddressed: string;
+    whyThisFits: string;
+    setup: string;
+    feel: string;
+    metricToMonitor: string;
+    measurableTarget: string;
+    durationOrSwingCount: string;
+    progressionRule: string;
+  }>;
+  nextSessionGoal: string;
+  progressComparison: {
+    available: boolean;
+    summary: string;
+  };
+  courseRelevance: string;
+  followUpQuestion: string | null;
+  confidence: number;
+};
+
+type SessionAnalysisResponse = {
+  analysisId?: string;
+  sessionId: string;
+  status: "processing" | "completed" | "failed" | "insufficient_data" | "not_analyzed";
+  analysis?: MaiCaddyAnalysis | null;
+  calculatedMetrics?: Record<string, unknown> | null;
+  model?: string | null;
+  promptVersion?: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  generatedAt?: string;
+  error?: {
+    code: string;
+    message: string;
+  } | null;
+  contextSummary?: {
+    shotCount: number;
+    validShotCount: number;
+    clubs: string[];
+    missingMetrics: string[];
+  } | null;
+};
+
+type SessionAnalysisState = {
+  status: "idle" | "loading" | "ready" | "error";
+  message: string;
+  result?: SessionAnalysisResponse;
+};
+
 type PhotoImportMetadata = {
   location?: string;
   capturedAt?: string;
@@ -4202,13 +4282,7 @@ export default function Home() {
   const selectedSessionHasClub = selectedSession.shots.some((shot) => shot.club === activeClub);
   const selectedClubShots = (selectedSessionHasClub ? selectedSession.shots : allShots)
     .filter((shot) => shot.club === activeClub);
-  const avgCarry = selectedClubSummary?.carry ?? round(averageMetric(allShots, "carry"));
-  const avgSmash = selectedClubSummary?.smash ?? round(averageMetric(allShots, "smash"), 2);
-  const avgDispersion = selectedClubSummary?.dispersion ?? round(standardDeviation(metricValues(allShots, "offline")));
-  const qualityValues = clubs.map((club) => club.quality).filter(Number.isFinite);
-  const performanceIndex = qualityValues.length ? Math.round(average(qualityValues)) : Number.NaN;
   const ballCountLabel = `${allShots.length.toLocaleString()} ${allShots.length === 1 ? "ball" : "balls"}`;
-  const topInsight = selectedSessionInsights[0];
   const performanceSessions = useMemo(
     () => filterSessionsByPerformanceTimeframe(sessions, performanceTimeframe),
     [sessions, performanceTimeframe],
@@ -4452,24 +4526,53 @@ export default function Home() {
     }
   }
 
+  function practiceProfileTimestamp(profile: UserPracticeProfile | null | undefined, fallback?: string | null) {
+    const completedAt = profile?.completedAt ? Date.parse(profile.completedAt) : Number.NaN;
+    if (Number.isFinite(completedAt)) return completedAt;
+    const fallbackAt = fallback ? Date.parse(fallback) : Number.NaN;
+    return Number.isFinite(fallbackAt) ? fallbackAt : 0;
+  }
+
+  function shouldSaveLocalPracticeProfile(localProfile: UserPracticeProfile | null, serverProfile: UserPracticeProfile | null, serverUpdatedAt?: string | null) {
+    if (!localProfile) return false;
+    if (!serverProfile) return true;
+    return practiceProfileTimestamp(localProfile) > practiceProfileTimestamp(serverProfile, serverUpdatedAt);
+  }
+
   async function loadUserPracticeProfile() {
     try {
       const response = await fetch("/api/profile");
-      if (!response.ok) return;
-      const payload = await response.json();
+      if (!response.ok) return { profile: null, updatedAt: null };
+      const payload = await response.json() as { profile?: UserPracticeProfile | null; updatedAt?: string | null };
       if (payload.profile) {
         setPracticeProfile(payload.profile);
         storePracticeProfile(payload.profile);
+        return { profile: payload.profile, updatedAt: payload.updatedAt ?? null };
       } else {
         setPracticeProfile(null);
-        try {
-          window.localStorage.removeItem(PRACTICE_PROFILE_STORAGE_KEY);
-        } catch {
-          // Browser storage is optional.
-        }
+        return { profile: null, updatedAt: payload.updatedAt ?? null };
       }
     } catch {
       // The dashboard can still run without a saved profile.
+    }
+    return { profile: null, updatedAt: null };
+  }
+
+  async function syncUserPracticeProfileAfterSignIn() {
+    const localProfile = readStoredPracticeProfile();
+    const serverProfile = await loadUserPracticeProfile();
+
+    if (!localProfile || !shouldSaveLocalPracticeProfile(localProfile, serverProfile.profile, serverProfile.updatedAt)) {
+      return;
+    }
+
+    const saved = await saveUserPracticeProfile(localProfile);
+    if (saved) {
+      setPracticeProfile(localProfile);
+      storePracticeProfile(localProfile);
+    } else if (localProfile && !serverProfile.profile) {
+      setPracticeProfile(localProfile);
+      storePracticeProfile(localProfile);
     }
   }
 
@@ -4598,7 +4701,7 @@ export default function Home() {
           : `${signedInRole === "admin" ? "Admin" : "Coach"} workspace ready.`,
       );
 
-      await loadUserPracticeProfile();
+      await syncUserPracticeProfileAfterSignIn();
       return true;
     } catch {
       setAccountMode("guest");
@@ -4684,6 +4787,7 @@ export default function Home() {
   function finishOnboarding(profile: UserPracticeProfile, draft?: RegistrationDraft) {
     setPracticeProfile(profile);
     storePracticeProfile(profile);
+    if (accountMode === "user") void saveUserPracticeProfile(profile);
     clearOnboardingDraft();
     clearOnboardingSkipped();
     setShowOnboarding(false);
@@ -4925,6 +5029,7 @@ export default function Home() {
 
         {activeTab === "sessions" && (
           <SessionsView
+            canAnalyzeSession={accountMode === "user"}
             onDeleteSession={deleteSession}
             onDeleteShot={deleteShot}
             selectedSession={selectedSession}
@@ -5075,7 +5180,9 @@ function DashboardView({
   avgDispersion,
   avgSmash,
   clubs,
+  hasAnySessions,
   insights,
+  onTimeframeChange,
   performanceIndex,
   practiceProfile,
   selectedClub,
@@ -5086,13 +5193,17 @@ function DashboardView({
   setActiveTab,
   setSelectedClub,
   shots,
+  timeframe,
+  timeframeSummary,
   topInsight,
 }: {
   avgCarry: number;
   avgDispersion: number;
   avgSmash: number;
   clubs: ClubSummary[];
+  hasAnySessions: boolean;
   insights: Insight[];
+  onTimeframeChange: (timeframe: PerformanceTimeframe) => void;
   performanceIndex: number;
   practiceProfile?: UserPracticeProfile | null;
   selectedClub: string;
@@ -5101,6 +5212,8 @@ function DashboardView({
   selectedSession: Session;
   sessions: Session[];
   shots: Shot[];
+  timeframe: PerformanceTimeframe;
+  timeframeSummary: string;
   topInsight?: Insight;
   setActiveTab: (tab: Tab) => void;
   setSelectedClub: (club: string) => void;
@@ -5130,28 +5243,42 @@ function DashboardView({
   const activeMetricId = expandedMetricId ?? dashboardMetrics[0]?.id ?? null;
 
   if (!sessions.length) {
-    return <FirstSessionEmptyState setActiveTab={setActiveTab} />;
+    return (
+      <div className="view-stack">
+        <PerformanceReviewControls
+          clubs={clubs}
+          onTimeframeChange={onTimeframeChange}
+          selectedClub={selectedClub}
+          selectedClubLabel={selectedClubLabel}
+          selectedClubShots={selectedClubShots.length}
+          setSelectedClub={setSelectedClub}
+          timeframe={timeframe}
+          timeframeSummary={timeframeSummary}
+        />
+        {hasAnySessions ? (
+          <TimeframeEmptyState
+            onReset={() => onTimeframeChange(DEFAULT_PERFORMANCE_TIMEFRAME)}
+            timeframeLabel={getPerformanceTimeframeLabel(timeframe)}
+          />
+        ) : (
+          <FirstSessionEmptyState setActiveTab={setActiveTab} />
+        )}
+      </div>
+    );
   }
 
   return (
     <div className="view-stack">
-      <section className="control-strip">
-        <div>
-          <p className="eyebrow">Club selection</p>
-          <h2>{selectedClubLabel} view</h2>
-          <span>{selectedClubShots.length} shots matched to this club</span>
-        </div>
-        <label className="select-control">
-          <span>Club</span>
-          <select value={selectedClub} onChange={(event) => setSelectedClub(event.target.value)}>
-            {clubs.map((club) => (
-              <option key={club.club} value={club.club}>
-                {getClubDisplayName(club.club)}
-              </option>
-            ))}
-          </select>
-        </label>
-      </section>
+      <PerformanceReviewControls
+        clubs={clubs}
+        onTimeframeChange={onTimeframeChange}
+        selectedClub={selectedClub}
+        selectedClubLabel={selectedClubLabel}
+        selectedClubShots={selectedClubShots.length}
+        setSelectedClub={setSelectedClub}
+        timeframe={timeframe}
+        timeframeSummary={timeframeSummary}
+      />
 
       <HomepageDashboardHero
         opportunity={dashboardOpportunity}
@@ -5224,6 +5351,106 @@ function DashboardView({
         </article>
       </section>
     </div>
+  );
+}
+
+function PerformanceReviewControls({
+  clubs,
+  onTimeframeChange,
+  selectedClub,
+  selectedClubLabel,
+  selectedClubShots,
+  setSelectedClub,
+  timeframe,
+  timeframeSummary,
+}: {
+  clubs: ClubSummary[];
+  onTimeframeChange: (timeframe: PerformanceTimeframe) => void;
+  selectedClub: string;
+  selectedClubLabel: string;
+  selectedClubShots: number;
+  setSelectedClub: (club: string) => void;
+  timeframe: PerformanceTimeframe;
+  timeframeSummary: string;
+}) {
+  function updateTimeframe(next: Partial<PerformanceTimeframe>) {
+    onTimeframeChange({ ...timeframe, ...next });
+  }
+
+  return (
+    <section className="control-strip performance-review-controls">
+      <div>
+        <p className="eyebrow">Performance Review</p>
+        <h2>{selectedClubLabel} view</h2>
+        <span>{timeframeSummary} · {selectedClubShots} {selectedClubShots === 1 ? "shot" : "shots"} matched</span>
+      </div>
+      <div className="performance-filter-group">
+        <label className="select-control">
+          <span>Timeframe</span>
+          <select
+            value={timeframe.preset}
+            onChange={(event) => updateTimeframe({ preset: event.target.value as PerformanceTimeframePreset })}
+          >
+            {PERFORMANCE_TIMEFRAME_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        {timeframe.preset === "custom" && (
+          <div className="custom-date-range">
+            <label>
+              <span>Start</span>
+              <input
+                onChange={(event) => updateTimeframe({ startDate: event.target.value })}
+                type="date"
+                value={timeframe.startDate}
+              />
+            </label>
+            <label>
+              <span>End</span>
+              <input
+                onChange={(event) => updateTimeframe({ endDate: event.target.value })}
+                type="date"
+                value={timeframe.endDate}
+              />
+            </label>
+          </div>
+        )}
+        {clubs.length > 0 && (
+          <label className="select-control">
+            <span>Club</span>
+            <select value={selectedClub} onChange={(event) => setSelectedClub(event.target.value)}>
+              {clubs.map((club) => (
+                <option key={club.club} value={club.club}>
+                  {getClubDisplayName(club.club)}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function TimeframeEmptyState({
+  onReset,
+  timeframeLabel,
+}: {
+  onReset: () => void;
+  timeframeLabel: string;
+}) {
+  return (
+    <section className="panel performance-empty-state">
+      <p className="eyebrow">No matching sessions</p>
+      <h2>No data in {timeframeLabel}</h2>
+      <p>Choose a wider timeframe to bring existing sessions back into the Performance Review.</p>
+      <button className="primary-action" onClick={onReset} type="button">
+        Show All Time
+      </button>
+    </section>
   );
 }
 
@@ -5606,6 +5833,9 @@ function PlaneMetricVisual({ metric }: { metric: DashboardMetricDetail }) {
 }
 
 function SessionsView({
+  canAnalyzeSession,
+  onDeleteSession,
+  onDeleteShot,
   selectedSession,
   selectedSessionId,
   sessions,
@@ -5613,6 +5843,9 @@ function SessionsView({
   setSelectedClub,
   setSelectedSessionId,
 }: {
+  canAnalyzeSession: boolean;
+  onDeleteSession: (sessionId: string) => void;
+  onDeleteShot: (sessionId: string, shotId: string) => void;
   selectedSession: Session;
   selectedSessionId: string;
   sessions: Session[];
@@ -5621,6 +5854,152 @@ function SessionsView({
   setSelectedSessionId: (id: string) => void;
 }) {
   const selectedClubs = summarizeClubs([selectedSession]);
+  const [analysisBySessionId, setAnalysisBySessionId] = useState<Record<string, SessionAnalysisState>>({});
+  const selectedAnalysis = analysisBySessionId[selectedSession.id] ?? { status: "idle", message: "" };
+  const structuredAnalysis = selectedAnalysis.result?.analysis ?? null;
+  const canRequestAnalysis =
+    canAnalyzeSession &&
+    selectedSession.id !== EMPTY_SESSION.id &&
+    selectedSession.shots.length > 0 &&
+    selectedAnalysis.status !== "loading";
+
+  useEffect(() => {
+    if (!canAnalyzeSession || selectedSession.id === EMPTY_SESSION.id || !selectedSession.shots.length) return;
+
+    let cancelled = false;
+    const sessionId = selectedSession.id;
+    setAnalysisBySessionId((current) => {
+      if (current[sessionId]) return current;
+      return {
+        ...current,
+        [sessionId]: {
+          status: "loading",
+          message: "Checking for a saved MAI Caddy analysis...",
+        },
+      };
+    });
+
+    async function loadSavedAnalysis() {
+      try {
+        const response = await fetch(`/api/session-analysis?sessionId=${encodeURIComponent(sessionId)}`, {
+          cache: "no-store",
+        });
+        const payload = await response.json().catch(() => ({})) as Partial<SessionAnalysisResponse> & { message?: string; error?: { message?: string } };
+        if (cancelled) return;
+
+        if (response.status === 404 && payload.status === "not_analyzed") {
+          setAnalysisBySessionId((current) => ({
+            ...current,
+            [sessionId]: { status: "idle", message: payload.message ?? "" },
+          }));
+          return;
+        }
+
+        if (!response.ok || !payload.sessionId || !payload.status) {
+          throw new Error(payload.error?.message ?? "Saved MAI Caddy analysis could not be loaded.");
+        }
+
+        setAnalysisBySessionId((current) => ({
+          ...current,
+          [sessionId]: {
+            status: payload.status === "failed" ? "error" : payload.status === "processing" ? "loading" : "ready",
+            message:
+              payload.status === "failed"
+                ? payload.error?.message ?? "MAI Caddy could not complete this analysis."
+                : payload.status === "processing"
+                  ? "MAI Caddy is still analyzing this session."
+                  : payload.status === "insufficient_data"
+                    ? "More usable shot data needed"
+                    : "Saved analysis loaded",
+            result: payload as SessionAnalysisResponse,
+          },
+        }));
+      } catch (error) {
+        if (cancelled) return;
+        setAnalysisBySessionId((current) => ({
+          ...current,
+          [sessionId]: {
+            status: "error",
+            message: error instanceof Error ? error.message : "Saved MAI Caddy analysis could not be loaded.",
+          },
+        }));
+      }
+    }
+
+    void loadSavedAnalysis();
+    return () => {
+      cancelled = true;
+    };
+  }, [canAnalyzeSession, selectedSession.id, selectedSession.shots.length]);
+
+  async function analyzeSelectedSession() {
+    if (!canAnalyzeSession) {
+      setAnalysisBySessionId((current) => ({
+        ...current,
+        [selectedSession.id]: {
+          status: "error",
+          message: "Sign in before running MAI Caddy. This first version only analyzes saved account sessions.",
+        },
+      }));
+      return;
+    }
+    if (selectedSession.id === EMPTY_SESSION.id || !selectedSession.shots.length) {
+      setAnalysisBySessionId((current) => ({
+        ...current,
+        [selectedSession.id]: {
+          status: "error",
+          message: "Save a session with shot data before running MAI Caddy.",
+        },
+      }));
+      return;
+    }
+
+    setAnalysisBySessionId((current) => ({
+      ...current,
+      [selectedSession.id]: {
+        status: "loading",
+        message: "MAI Caddy is reading your stored session data...",
+      },
+    }));
+
+    try {
+      const response = await fetch("/api/session-analysis", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: selectedSession.id }),
+      });
+      const payload = await response.json().catch(() => ({})) as Partial<SessionAnalysisResponse> & { error?: string | { message?: string } };
+      const errorMessage =
+        typeof payload.error === "string"
+          ? payload.error
+          : payload.error?.message ?? "MAI Caddy could not analyze this saved session.";
+      if (!response.ok || !payload.sessionId || !payload.status) {
+        throw new Error(errorMessage);
+      }
+
+      setAnalysisBySessionId((current) => ({
+        ...current,
+        [selectedSession.id]: {
+          status: payload.status === "failed" ? "error" : payload.status === "processing" ? "loading" : "ready",
+          message:
+            payload.status === "insufficient_data"
+              ? "More usable shot data needed"
+              : payload.status === "failed"
+                ? errorMessage
+                : "Analysis complete",
+          result: payload as SessionAnalysisResponse,
+        },
+      }));
+    } catch (error) {
+      setAnalysisBySessionId((current) => ({
+        ...current,
+        [selectedSession.id]: {
+          status: "error",
+          message: error instanceof Error ? error.message : "MAI Caddy could not analyze this session.",
+        },
+      }));
+    }
+  }
 
   return (
     <section className="split-view">
@@ -5660,9 +6039,161 @@ function SessionsView({
           kicker={selectedSession.focus}
           title={selectedSession.title}
           meta={`${selectedSession.shots.length} shots · ${selectedSession.source}${selectedSession.location ? ` · ${selectedSession.location}` : ""}`}
-          action={<button className="text-button" onClick={() => setActiveTab("coach")}>Coach notes</button>}
+          action={
+            <div className="button-row panel-header-actions">
+              <button
+                className="primary-action mai-caddy-action"
+                disabled={!canRequestAnalysis}
+                onClick={() => void analyzeSelectedSession()}
+                title={canAnalyzeSession ? "Analyze this saved session with MAI Caddy" : "Sign in to analyze a saved session"}
+                type="button"
+              >
+                Analyze Session
+              </button>
+              <button className="text-button" onClick={() => setActiveTab("coach")} type="button">Coach notes</button>
+              {selectedSession.id !== EMPTY_SESSION.id && (
+                <button className="text-button danger-text-button" onClick={() => onDeleteSession(selectedSession.id)} type="button">
+                  Delete session
+                </button>
+              )}
+            </div>
+          }
         />
         <ShotMap shots={selectedSession.shots} />
+        {selectedAnalysis.status !== "idle" && (
+          <div className={cls("mai-analysis-panel", selectedAnalysis.status)}>
+            <div className="mai-analysis-heading">
+              <div>
+                <p className="eyebrow">MAI Caddy</p>
+                <h3>Session analysis</h3>
+              </div>
+              <span>
+                {selectedAnalysis.status === "loading"
+                    ? "Reading data"
+                    : selectedAnalysis.status === "error"
+                      ? "Needs attention"
+                      : selectedAnalysis.result?.status === "insufficient_data"
+                        ? "More data needed"
+                        : "Ready"}
+              </span>
+            </div>
+            {selectedAnalysis.status === "loading" ? (
+              <p className="mai-analysis-status">{selectedAnalysis.message}</p>
+            ) : selectedAnalysis.status === "error" ? (
+              <p className="mai-analysis-status error">{selectedAnalysis.message}</p>
+            ) : (
+              <>
+                {selectedAnalysis.result?.contextSummary && (
+                  <div className="mai-analysis-meta">
+                    <span>{selectedAnalysis.result.contextSummary.shotCount} stored shots</span>
+                    <span>{selectedAnalysis.result.contextSummary.validShotCount} usable shots</span>
+                    <span>{selectedAnalysis.result.contextSummary.clubs.join(", ") || "Club NA"}</span>
+                    <span>
+                      {selectedAnalysis.result.contextSummary.missingMetrics.length
+                        ? `${selectedAnalysis.result.contextSummary.missingMetrics.length} unavailable metrics`
+                        : "Core metrics available"}
+                    </span>
+                  </div>
+                )}
+                {structuredAnalysis ? (
+                  <div className="mai-analysis-body structured">
+                    <div className="mai-analysis-hero">
+                      <h4>{structuredAnalysis.headline}</h4>
+                      <span>{structuredAnalysis.dataQuality.confidence} confidence · {Math.round(structuredAnalysis.confidence * 100)}%</span>
+                    </div>
+                    <p>{structuredAnalysis.sessionSummary}</p>
+                    {structuredAnalysis.dataQuality.limitations.length > 0 && (
+                      <div className="mai-analysis-callout">
+                        <strong>Data quality</strong>
+                        <ul>
+                          {structuredAnalysis.dataQuality.limitations.map((limitation) => (
+                            <li key={limitation}>{limitation}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    <div className="mai-analysis-grid">
+                      <section>
+                        <h5>Measured findings</h5>
+                        <ul>
+                          {structuredAnalysis.measuredFindings.map((finding) => (
+                            <li key={`${finding.metric}-${finding.value}`}>
+                              <strong>{finding.metric}: {finding.value}</strong>
+                              <span>{finding.meaning}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </section>
+                      <section>
+                        <h5>What worked</h5>
+                        {structuredAnalysis.strengths.length ? (
+                          <ul>
+                            {structuredAnalysis.strengths.map((strength) => (
+                              <li key={strength.title}>
+                                <strong>{strength.title}</strong>
+                                <span>{strength.evidence}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p>MAI Caddy needs more usable shots before calling out a reliable strength.</p>
+                        )}
+                      </section>
+                      <section>
+                        <h5>Primary priority</h5>
+                        <p><strong>{structuredAnalysis.primaryPriority.title}</strong></p>
+                        <p>{structuredAnalysis.primaryPriority.whyItMatters}</p>
+                        <p>{structuredAnalysis.primaryPriority.evidence}</p>
+                      </section>
+                      <section>
+                        <h5>Issues and certainty</h5>
+                        {structuredAnalysis.issues.length ? (
+                          <ul>
+                            {structuredAnalysis.issues.map((issue) => (
+                              <li key={`${issue.metric}-${issue.finding}`}>
+                                <strong>{issue.metric} · {issue.severity} · {issue.certainty.replace("_", " ")}</strong>
+                                <span>{issue.finding}</span>
+                                <span>{issue.evidence}</span>
+                                {issue.possibleCause && <span>Possible cause: {issue.possibleCause}</span>}
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p>No measured issue is reliable enough to call from this sample.</p>
+                        )}
+                      </section>
+                    </div>
+                    <section className="mai-practice-plan">
+                      <h5>Practice plan</h5>
+                      {structuredAnalysis.practicePlan.map((drill) => (
+                        <article key={drill.drill}>
+                          <strong>{drill.drill}</strong>
+                          <p>{drill.whyThisFits}</p>
+                          <dl>
+                            <div><dt>Setup</dt><dd>{drill.setup}</dd></div>
+                            <div><dt>Feel</dt><dd>{drill.feel}</dd></div>
+                            <div><dt>Monitor</dt><dd>{drill.metricToMonitor}</dd></div>
+                            <div><dt>Target</dt><dd>{drill.measurableTarget}</dd></div>
+                            <div><dt>Workload</dt><dd>{drill.durationOrSwingCount}</dd></div>
+                          </dl>
+                          <p>{drill.progressionRule}</p>
+                        </article>
+                      ))}
+                    </section>
+                    <div className="mai-analysis-footer">
+                      <p><strong>Next goal:</strong> {structuredAnalysis.nextSessionGoal}</p>
+                      <p><strong>Progress:</strong> {structuredAnalysis.progressComparison.summary}</p>
+                      <p><strong>Course relevance:</strong> {structuredAnalysis.courseRelevance}</p>
+                      {structuredAnalysis.followUpQuestion && <p><strong>Follow-up:</strong> {structuredAnalysis.followUpQuestion}</p>}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="mai-analysis-status">{selectedAnalysis.message || "No saved MAI Caddy analysis yet."}</p>
+                )}
+              </>
+            )}
+          </div>
+        )}
         <div className="club-table compact-table">
           <div className="table-row table-head">
             <span>Club</span>
@@ -5691,6 +6222,53 @@ function SessionsView({
             </div>
           ))}
         </div>
+        {selectedSession.shots.length > 0 && (
+          <div className="shot-delete-table">
+            <div className="shot-delete-table-heading">
+              <div>
+                <p className="eyebrow">Shot data</p>
+                <h3>Review and remove individual shots</h3>
+              </div>
+              <span>Deleting a shot recalculates every dashboard number immediately.</span>
+            </div>
+            <div className="compact-table">
+              <div className="table-row shot-row table-head">
+                <span>Shot</span>
+                <span>Club</span>
+                <span>Carry</span>
+                <span>Total</span>
+                <span>Ball speed</span>
+                <span>Club path</span>
+                <span>Face to path</span>
+                <span>Shape</span>
+                <span>Action</span>
+              </div>
+              {selectedSession.shots.map((shot, index) => (
+                <div className="table-row shot-row" key={shot.id}>
+                  <span>{shot.sourceShotNumber ? `#${shot.sourceShotNumber}` : `#${index + 1}`}</span>
+                  <span>{getClubDisplayName(shot.club)}</span>
+                  <span>{formatAvailableMetric(getShotMetric(shot, "carry") ?? Number.NaN, "yd")}</span>
+                  <span>{formatAvailableMetric(getShotMetric(shot, "total") ?? Number.NaN, "yd")}</span>
+                  <span>{formatAvailableMetric(getShotMetric(shot, "ballSpeed") ?? Number.NaN, "mph")}</span>
+                  <span>{formatSignedMetric(getShotMetric(shot, "clubPath"), "deg")}</span>
+                  <span>{formatSignedMetric(getShotMetric(shot, "faceToPath"), "deg")}</span>
+                  <span>{shot.shape || "NA"}</span>
+                  <span>
+                    <button
+                      aria-label={`Delete ${shot.sourceShotNumber ? `shot ${shot.sourceShotNumber}` : `${getClubDisplayName(shot.club)} shot ${index + 1}`}`}
+                      className="icon-button danger-text-button"
+                      onClick={() => onDeleteShot(selectedSession.id, shot.id)}
+                      title="Delete shot"
+                      type="button"
+                    >
+                      ×
+                    </button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -9866,18 +10444,9 @@ function OnboardingFlow({
     updateValue("goals", nextGoals);
   }
 
-  function splitName(name: string) {
-    const parts = name.trim().split(/\s+/).filter(Boolean);
-    return {
-      firstName: parts[0] ?? "",
-      lastName: parts.slice(1).join(" ") || (role === "coach" ? "Coach" : "Golfer"),
-    };
-  }
-
   function submitSetup(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!canSubmit) return;
-    const name = splitName(displayName);
     const profileAnswers: OnboardingAnswers = {
       ...answers,
       accountRole: role,
@@ -9897,8 +10466,8 @@ function OnboardingFlow({
       accountType: role === "coach" ? "coach" : "player",
       confirmPassword,
       email: email.trim().toLowerCase(),
-      firstName: name.firstName,
-      lastName: name.lastName,
+      firstName: "",
+      lastName: "",
       password,
     });
   }
@@ -10253,8 +10822,9 @@ function LoginRequestModal({
               <label>
                 <span>First name</span>
                 <input
+                  autoComplete="given-name"
                   onChange={(event) => setFirstName(event.target.value)}
-                  placeholder="Joe"
+                  placeholder="First name"
                   required
                   type="text"
                   value={firstName}
@@ -10263,8 +10833,9 @@ function LoginRequestModal({
               <label>
                 <span>Last name</span>
                 <input
+                  autoComplete="family-name"
                   onChange={(event) => setLastName(event.target.value)}
-                  placeholder="Derario"
+                  placeholder="Last name"
                   required
                   type="text"
                   value={lastName}

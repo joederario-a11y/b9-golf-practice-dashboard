@@ -36,7 +36,7 @@
     "DEV_AUTH_ENABLED": "false",
     "COACH_EMAILS": "",
     "ADMIN_EMAILS": "",
-    "OPENAI_MODEL": "gpt-5.5",
+    "OPENAI_MODEL": "gpt-5.6-terra",
     "RESEND_FROM": "notifications@n3xconsulting.com",
     "VIDEO_EMAIL_FROM": "notifications@n3xconsulting.com"
   }

@@ -57,6 +57,13 @@
       "when": 1784157500000,
       "tag": "0007_password_reset_required",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1784240251506,
+      "tag": "0008_mai_caddy_session_analyses",
+      "breakpoints": true
     }
   ]
 }
