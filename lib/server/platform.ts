@@ -20,6 +20,7 @@ export type PlatformEnvironment = {
   DB?: D1Database;
   DEV_AUTH_ENABLED?: string;
   RESEND_API_KEY?: string;
+  RESEND_FROM?: string;
   VIDEO_EMAIL_FROM?: string;
   VIDEO_STORAGE?: R2Bucket;
 };
@@ -52,6 +53,11 @@ const PASSWORD_HASH_ITERATIONS = 100000;
 
 export function getPlatformEnvironment() {
   return env as unknown as PlatformEnvironment;
+}
+
+export function getEmailFromAddress() {
+  const runtime = getPlatformEnvironment();
+  return runtime.VIDEO_EMAIL_FROM || runtime.RESEND_FROM || "";
 }
 
 export function getRequiredDatabase() {

@@ -6,6 +6,16 @@ type Tab = "dashboard" | "sessions" | "clubs" | "videos" | "coach" | "admin" | "
 type AccountMode = "pending" | "user" | "guest";
 type LoginModalMode = "login" | "register";
 type RegisterAccountType = "player" | "coach";
+type OnboardingRole = "golfer" | "coach";
+
+type RegistrationDraft = {
+  accountType: RegisterAccountType;
+  confirmPassword?: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  password?: string;
+};
 
 type Shot = {
   id: string;
@@ -31,6 +41,7 @@ type Shot = {
   sideTotal?: number;
   curve?: number;
   detectedMetrics?: NumericShotMetric[];
+  sourceShotNumber?: string;
 };
 
 type Session = {
@@ -40,6 +51,8 @@ type Session = {
   source: string;
   focus: string;
   location?: string;
+  importNotes?: string;
+  missingMetrics?: NumericShotMetric[];
   shots: Shot[];
 };
 
@@ -114,6 +127,48 @@ type SwingGaugeMetric = {
   centerMarker?: number;
 };
 
+type DashboardMetricTone = "good" | "watch" | "needs-work" | "neutral";
+
+type DashboardSummary = {
+  benchmarkLabel: string;
+  benchmarkNotice: string;
+  carry: number;
+  contact: number;
+  contactLabel: string;
+  contactTone: DashboardMetricTone;
+  dispersion: number;
+  dispersionWidth: number;
+  sessionScore: number;
+  summaryText: string;
+};
+
+type DashboardOpportunity = {
+  action: string;
+  body: string;
+  metricId: string;
+  title: string;
+  tone: DashboardMetricTone;
+};
+
+type DashboardMetricDetail = {
+  aimFor: string;
+  compare: string;
+  decimals: number;
+  description: string;
+  howToImprove: string;
+  id: string;
+  label: string;
+  meaning: string;
+  rawValue: number;
+  status: string;
+  tone: DashboardMetricTone;
+  tourBenchmark?: string;
+  unit: string;
+  value: string;
+  visual: "speed" | "energy" | "range" | "pattern" | "arc" | "spin" | "path" | "plane";
+  what: string;
+};
+
 type ProTourStats = {
   carry: number;
   total: number;
@@ -129,6 +184,8 @@ type ProTourStats = {
 type LastImport = {
   date: string;
   location: string;
+  missingMetrics?: NumericShotMetric[];
+  notes?: string;
   simulator: string;
   submissionType: "API feed" | "CSV / Excel" | "Photo" | "Manual entry";
   shots: Shot[];
@@ -139,6 +196,22 @@ type PhotoImportMetadata = {
   capturedAt?: string;
   latitude?: number;
   longitude?: number;
+  fileNames?: string[];
+};
+
+type ImportReview = {
+  id: string;
+  date: string;
+  detectedMetrics: NumericShotMetric[];
+  inferredClub?: string;
+  location: string;
+  metadata: PhotoImportMetadata;
+  missingMetrics: NumericShotMetric[];
+  notes: string;
+  shots: Shot[];
+  simulator: string;
+  submissionType: LastImport["submissionType"];
+  warnings: string[];
 };
 
 type NumericShotMetric =
@@ -169,6 +242,8 @@ type PhotoScanResult =
       status: "ready";
       simulator: string;
       shot: Shot;
+      shots: Shot[];
+      csvText: string;
       confidence: number;
       metadata: PhotoImportMetadata;
     }
@@ -400,6 +475,16 @@ type VideoLibraryItem = VideoLibraryRecord & {
 };
 
 type OnboardingQuestionId =
+  | "accountRole"
+  | "displayName"
+  | "email"
+  | "facilityName"
+  | "coachBio"
+  | "specialties"
+  | "location"
+  | "profilePhotoName"
+  | "firstGolferName"
+  | "firstGolferEmail"
   | "ageRange"
   | "handedness"
   | "skillLevel"
@@ -434,6 +519,16 @@ type OnboardingQuestion = {
 type OnboardingAnswers = Partial<Record<OnboardingQuestionId, string | string[]>>;
 
 type UserPracticeProfile = {
+  role: OnboardingRole;
+  displayName?: string;
+  email?: string;
+  facilityName?: string;
+  coachBio?: string;
+  specialties?: string[];
+  location?: string;
+  profilePhotoName?: string;
+  firstGolferName?: string;
+  firstGolferEmail?: string;
   ageRange?: string;
   handedness?: string;
   skillLevel: string;
@@ -583,7 +678,9 @@ const CLUB_ORDER = [
   "LW",
 ];
 
-const NAV_ITEMS: { id: Tab; label: string; icon: string }[] = [
+type NavItem = { id: Tab; label: string; icon: string };
+
+const NAV_ITEMS: NavItem[] = [
   { id: "dashboard", label: "Dashboard", icon: "⌁" },
   { id: "sessions", label: "Sessions", icon: "◫" },
   { id: "clubs", label: "Clubs", icon: "▥" },
@@ -621,12 +718,24 @@ function pathForTab(tab: Tab) {
   return tab === "dashboard" ? "/" : `/${tab}`;
 }
 
-function navItemsForAccount(accountMode: AccountMode, accountUser: AccountUser | null) {
+function navItemsForAccount(accountMode: AccountMode, accountUser: AccountUser | null): NavItem[] {
+  const item = (id: Tab, label?: string) => {
+    const base = NAV_ITEMS.find((navItem) => navItem.id === id)!;
+    return label ? { ...base, label } : base;
+  };
+
   if (accountMode === "user" && accountUser?.role === "member") {
     return NAV_ITEMS.filter((item) => item.id !== "coach" && item.id !== "admin");
   }
   if (accountMode === "user" && accountUser?.role === "coach") {
-    return NAV_ITEMS.filter((item) => item.id !== "admin");
+    return [
+      item("coach", "Coach Dashboard"),
+      item("videos", "Videos"),
+      item("import", "Session Imports"),
+      item("practice", "Practice Plans"),
+      item("sessions", "Player Sessions"),
+      item("dashboard", "Player Data"),
+    ];
   }
   if (accountMode === "user" && accountUser?.role === "admin") {
     return NAV_ITEMS;
@@ -958,6 +1067,10 @@ const METRIC_DEFINITIONS: Record<string, { title: string; description: string; b
     benchmark: (club) => `${club} target: under ${CLUB_TARGETS[club]?.proximity ?? "tracked"} ft.`,
   },
 };
+
+const DASHBOARD_BENCHMARK_LABEL = "Golfers like you";
+const DASHBOARD_BENCHMARK_NOTICE =
+  "Comparison ranges use sample app targets until validated profile benchmarks are connected.";
 
 const SHOT_PATTERNS: Record<string, { carryBias: number; offline: number[]; smashBias: number; launchBias: number; spinBias: number }> = {
   Driver: { carryBias: -5, offline: [18, -24, 10, 6, -16, 26, 4, -7, 13, -20, 9, 18], smashBias: -0.02, launchBias: -1.1, spinBias: 420 },
@@ -1512,10 +1625,14 @@ function makeLastImport(
   date = getTodayDateString(),
   simulator = DEFAULT_SIMULATOR,
   location = LOCATION_UNAVAILABLE,
+  notes = "",
+  missingMetrics: NumericShotMetric[] = [],
 ): LastImport {
   return {
     date,
     location,
+    missingMetrics,
+    notes: notes.trim() || undefined,
     simulator,
     submissionType,
     shots,
@@ -1673,6 +1790,525 @@ function computeInsights(clubs: ClubSummary[], sessions: Session[]): Insight[] {
   return insights.sort((a, b) => getSeverityScore(b.severity) - getSeverityScore(a.severity)).slice(0, 7);
 }
 
+function dashboardMetricValue(value: number, unit = "", digits = 1) {
+  return Number.isFinite(value) ? formatAvailableMetric(value, unit, digits) : "NA";
+}
+
+function targetStatus(
+  value: number,
+  target: number,
+  goodWindow: number,
+  watchWindow: number,
+  labels: { good: string; watch: string; needsWork: string },
+) {
+  if (!Number.isFinite(value)) return { label: "NA", tone: "neutral" as const };
+  const gap = Math.abs(value - target);
+  if (gap <= goodWindow) return { label: labels.good, tone: "good" as const };
+  if (gap <= watchWindow) return { label: labels.watch, tone: "watch" as const };
+  return { label: labels.needsWork, tone: "needs-work" as const };
+}
+
+function minimumStatus(
+  value: number,
+  target: number,
+  watchFloor: number,
+  labels: { good: string; watch: string; needsWork: string },
+) {
+  if (!Number.isFinite(value)) return { label: "NA", tone: "neutral" as const };
+  if (value >= target) return { label: labels.good, tone: "good" as const };
+  if (value >= watchFloor) return { label: labels.watch, tone: "watch" as const };
+  return { label: labels.needsWork, tone: "needs-work" as const };
+}
+
+function maximumStatus(
+  value: number,
+  target: number,
+  watchMax: number,
+  labels: { good: string; watch: string; needsWork: string },
+) {
+  if (!Number.isFinite(value)) return { label: "NA", tone: "neutral" as const };
+  if (value <= target) return { label: labels.good, tone: "good" as const };
+  if (value <= watchMax) return { label: labels.watch, tone: "watch" as const };
+  return { label: labels.needsWork, tone: "needs-work" as const };
+}
+
+function buildDashboardSummary(
+  selectedClub: string,
+  selectedClubSummary: ClubSummary | undefined,
+  selectedClubShots: Shot[],
+  fallbackCarry: number,
+  fallbackDispersion: number,
+  fallbackSmash: number,
+  performanceIndex: number,
+): DashboardSummary {
+  const target = CLUB_TARGETS[selectedClub] ?? CLUB_TARGETS["7-Iron"];
+  const carry = Number.isFinite(selectedClubSummary?.carry) ? selectedClubSummary!.carry : fallbackCarry;
+  const dispersion = Number.isFinite(selectedClubSummary?.dispersion) ? selectedClubSummary!.dispersion : fallbackDispersion;
+  const smash = Number.isFinite(selectedClubSummary?.smash) ? selectedClubSummary!.smash : fallbackSmash;
+  const clubSpeed = Number.isFinite(selectedClubSummary?.clubSpeed)
+    ? selectedClubSummary!.clubSpeed
+    : averageMetric(selectedClubShots, "clubSpeed");
+  const score = Number.isFinite(selectedClubSummary?.quality)
+    ? selectedClubSummary!.quality
+    : Number.isFinite(performanceIndex) ? performanceIndex : Number.NaN;
+  const contactStatus = minimumStatus(
+    smash,
+    target.smash - 0.02,
+    target.smash - 0.06,
+    {
+      good: "Good",
+      watch: "Playable",
+      needsWork: "Needs center contact",
+    },
+  );
+
+  let summaryText = "Upload more shots with this club to build a clearer performance read.";
+  if (Number.isFinite(clubSpeed) && clubSpeed >= target.clubSpeed - 3 && Number.isFinite(smash) && smash < target.smash - 0.03) {
+    summaryText = "Strong speed. More centered contact could improve distance consistency.";
+  } else if (Number.isFinite(dispersion) && dispersion > Math.max(10, target.sideCarry * 1.8)) {
+    summaryText = "Distance is usable, but the shot pattern is wider than the current target window.";
+  } else if (Number.isFinite(carry) && carry >= target.carry - 8 && Number.isFinite(smash) && smash >= target.smash - 0.03) {
+    summaryText = "Solid carry and contact. The next step is making the pattern repeat more often.";
+  } else if (Number.isFinite(carry)) {
+    summaryText = "Good baseline. A cleaner launch and strike pattern can make the carry number more reliable.";
+  }
+
+  return {
+    benchmarkLabel: DASHBOARD_BENCHMARK_LABEL,
+    benchmarkNotice: DASHBOARD_BENCHMARK_NOTICE,
+    carry,
+    contact: smash,
+    contactLabel: contactStatus.label,
+    contactTone: contactStatus.tone,
+    dispersion,
+    dispersionWidth: Number.isFinite(dispersion) ? round(dispersion * 2) : Number.NaN,
+    sessionScore: score,
+    summaryText,
+  };
+}
+
+function buildDashboardOpportunity(
+  selectedClub: string,
+  selectedClubSummary: ClubSummary | undefined,
+  selectedClubShots: Shot[],
+  topInsight?: Insight,
+): DashboardOpportunity {
+  const target = CLUB_TARGETS[selectedClub] ?? CLUB_TARGETS["7-Iron"];
+  if (!selectedClubSummary) {
+    return {
+      action: "Upload Your First Session",
+      body: "Add more shots for this club so the app can identify a real priority instead of guessing.",
+      metricId: "data",
+      title: "Build your first baseline",
+      tone: "neutral",
+    };
+  }
+
+  const clubPath = averageMetric(selectedClubShots, "clubPath");
+  const faceAngle = averageMetric(selectedClubShots, "faceAngle");
+  const candidates: Array<DashboardOpportunity & { score: number }> = [];
+
+  if (Number.isFinite(selectedClubSummary.smash) && selectedClubSummary.smash < target.smash - 0.02) {
+    candidates.push({
+      action: "View Recommended Drill",
+      body: "Your swing speed is already useful. More centered contact may help you produce more reliable ball speed and carry distance.",
+      metricId: "smash",
+      score: (target.smash - selectedClubSummary.smash) * 1000,
+      title: "Improve center-face contact",
+      tone: selectedClubSummary.smash < target.smash - 0.06 ? "needs-work" : "watch",
+    });
+  }
+
+  if (Number.isFinite(selectedClubSummary.dispersion) && selectedClubSummary.dispersion > Math.max(9, target.sideCarry * 1.4)) {
+    candidates.push({
+      action: "Start Practice",
+      body: `Most shots are grouping wider than the sample window for this club. Tightening start line can make your ${getClubDisplayName(selectedClub)} easier to trust.`,
+      metricId: "dispersion",
+      score: (selectedClubSummary.dispersion - Math.max(9, target.sideCarry * 1.4)) * 18,
+      title: "Tighten the shot pattern",
+      tone: selectedClubSummary.dispersion > Math.max(13, target.sideCarry * 2) ? "needs-work" : "watch",
+    });
+  }
+
+  if (Number.isFinite(selectedClubSummary.launch) && Math.abs(selectedClubSummary.launch - target.launch) > 2.5) {
+    candidates.push({
+      action: "See How to Improve",
+      body: "A launch window closer to this club's current target can make carry and landing angle easier to predict.",
+      metricId: "launch",
+      score: Math.abs(selectedClubSummary.launch - target.launch) * 12,
+      title: "Match launch to the club",
+      tone: "watch",
+    });
+  }
+
+  if (Number.isFinite(selectedClubSummary.faceToPath) && Math.abs(selectedClubSummary.faceToPath) > target.faceToPath) {
+    candidates.push({
+      action: "View Recommended Drill",
+      body: "Face-to-path is the curve-control number. Bringing the face and path closer together can reduce left-right movement.",
+      metricId: "faceToPath",
+      score: Math.abs(selectedClubSummary.faceToPath) * 10,
+      title: "Reduce curve at impact",
+      tone: Math.abs(selectedClubSummary.faceToPath) > target.faceToPath * 1.6 ? "needs-work" : "watch",
+    });
+  } else if (Number.isFinite(clubPath) && Number.isFinite(faceAngle) && Math.abs(clubPath - faceAngle) > 4) {
+    candidates.push({
+      action: "See How to Improve",
+      body: "The path and face are separated enough to create curve. A smaller gap should make the start line and curve more predictable.",
+      metricId: "clubPath",
+      score: Math.abs(clubPath - faceAngle) * 9,
+      title: "Match face and path",
+      tone: "watch",
+    });
+  }
+
+  if (!candidates.length && topInsight) {
+    return {
+      action: "Start Practice",
+      body: topInsight.action,
+      metricId: topInsight.id,
+      title: topInsight.title,
+      tone: topInsight.severity === "high" ? "needs-work" : topInsight.severity === "medium" ? "watch" : "good",
+    };
+  }
+
+  return candidates.sort((a, b) => b.score - a.score)[0] ?? {
+    action: "Start Practice",
+    body: "The core numbers are inside a playable range. Keep working on repeatable contact and target commitment.",
+    metricId: "repeatability",
+    title: "Make the good pattern repeat",
+    tone: "good",
+  };
+}
+
+function getPlayerContextCopy(profile?: UserPracticeProfile | null) {
+  if (!profile) {
+    return {
+      compareLabel: DASHBOARD_BENCHMARK_LABEL,
+      practiceCue: "Use the number as a starting point, not a judgment.",
+      rangePrefix: "Start with",
+    };
+  }
+
+  if (profile.role === "coach") {
+    return {
+      compareLabel: "Coaching window",
+      practiceCue: "Use the player context and ball flight before prescribing a drill.",
+      rangePrefix: "Coach toward",
+    };
+  }
+
+  if (profile.path === "Beginner" || profile.handicap === "25+" || profile.skillLevel === "Brand new") {
+    return {
+      compareLabel: "Starter window",
+      practiceCue: "Keep the explanation simple and prioritize contact before speed.",
+      rangePrefix: "Build toward",
+    };
+  }
+
+  if (profile.path === "Competitive") {
+    return {
+      compareLabel: "Performance window",
+      practiceCue: "Treat this as a scoring window and confirm it under randomized targets.",
+      rangePrefix: "Fine-tune toward",
+    };
+  }
+
+  return {
+    compareLabel: "Player window",
+    practiceCue: "Connect the number to the shot pattern before changing technique.",
+    rangePrefix: "Work toward",
+  };
+}
+
+function buildDashboardMetricDetails(
+  selectedClub: string,
+  selectedClubSummary: ClubSummary | undefined,
+  selectedClubShots: Shot[],
+  practiceProfile?: UserPracticeProfile | null,
+): DashboardMetricDetail[] {
+  const target = CLUB_TARGETS[selectedClub] ?? CLUB_TARGETS["7-Iron"];
+  const tour = PRO_REFERENCE_STATS[selectedClub];
+  const playerContext = getPlayerContextCopy(practiceProfile);
+  const clubPath = averageMetric(selectedClubShots, "clubPath");
+  const faceAngle = averageMetric(selectedClubShots, "faceAngle");
+  const attackWindow = getAttackWindow(selectedClub);
+  const swingPlaneWindow = getSwingPlaneWindow(selectedClub);
+  const carryStatus = targetStatus(
+    selectedClubSummary?.carry ?? Number.NaN,
+    target.carry,
+    8,
+    22,
+    { good: "On target", watch: "Near range", needsWork: "Needs review" },
+  );
+  const dispersionStatus = maximumStatus(
+    selectedClubSummary?.dispersion ?? Number.NaN,
+    Math.max(7, target.sideCarry * 1.25),
+    Math.max(12, target.sideCarry * 2),
+    { good: "Tight", watch: "Playable", needsWork: "Wide" },
+  );
+  const smashStatus = minimumStatus(
+    selectedClubSummary?.smash ?? Number.NaN,
+    target.smash - 0.02,
+    target.smash - 0.06,
+    { good: "Good", watch: "Playable", needsWork: "Leaking speed" },
+  );
+  const launchStatus = targetStatus(
+    selectedClubSummary?.launch ?? Number.NaN,
+    target.launch,
+    2,
+    5,
+    { good: "In window", watch: "Near window", needsWork: "Out of window" },
+  );
+  const spinStatus = targetStatus(
+    selectedClubSummary?.spin ?? Number.NaN,
+    target.spin,
+    Math.max(450, target.spin * 0.09),
+    Math.max(950, target.spin * 0.18),
+    { good: "In window", watch: "Watch spin", needsWork: "Off target" },
+  );
+  const faceToPathStatus = maximumStatus(
+    Math.abs(selectedClubSummary?.faceToPath ?? Number.NaN),
+    target.faceToPath,
+    target.faceToPath * 1.8,
+    { good: "Controlled", watch: "Watch curve", needsWork: "Big curve risk" },
+  );
+  const clubPathStatus = targetStatus(clubPath, 0, 2, 5, { good: "Neutral", watch: "Manageable", needsWork: "Directional bias" });
+  const faceStatus = targetStatus(faceAngle, 0, 1.5, 4, { good: "Square", watch: "Manageable", needsWork: "Start-line risk" });
+
+  return [
+    {
+      aimFor: `${playerContext.rangePrefix} around ${target.clubSpeed} mph for this ${getClubDisplayName(selectedClub)} window.`,
+      compare: `${playerContext.compareLabel}: target ${target.clubSpeed} mph.`,
+      decimals: 1,
+      description: "How fast the clubhead was moving at impact.",
+      howToImprove: `${playerContext.practiceCue} Build speed only after contact stays centered. Use three smooth swings, then one full-speed swing.`,
+      id: "clubSpeed",
+      label: "Club Speed",
+      meaning: Number.isFinite(selectedClubSummary?.clubSpeed)
+        ? `Your club speed is ${dashboardMetricValue(selectedClubSummary!.clubSpeed, "mph")}. Speed is useful when contact efficiency stays stable.`
+        : "Club speed was not captured for this club in the selected data.",
+      rawValue: selectedClubSummary?.clubSpeed ?? Number.NaN,
+      status: targetStatus(selectedClubSummary?.clubSpeed ?? Number.NaN, target.clubSpeed, 5, 12, { good: "Solid speed", watch: "Near range", needsWork: "Build speed gradually" }).label,
+      tone: targetStatus(selectedClubSummary?.clubSpeed ?? Number.NaN, target.clubSpeed, 5, 12, { good: "Solid speed", watch: "Near range", needsWork: "Build speed gradually" }).tone,
+      tourBenchmark: tour ? `Tour reference: PGA ${tour.pga.clubSpeed} mph / LPGA ${tour.lpga.clubSpeed} mph.` : undefined,
+      unit: "mph",
+      value: dashboardMetricValue(selectedClubSummary?.clubSpeed ?? Number.NaN, "mph"),
+      visual: "speed",
+      what: "Club speed is the speed of the clubhead at impact.",
+    },
+    {
+      aimFor: `${playerContext.rangePrefix} around ${target.ballSpeed} mph for the current target.`,
+      compare: `${playerContext.compareLabel}: target ${target.ballSpeed} mph.`,
+      decimals: 1,
+      description: "How fast the ball left the clubface.",
+      howToImprove: "Centered contact usually raises ball speed before a swing change does.",
+      id: "ballSpeed",
+      label: "Ball Speed",
+      meaning: Number.isFinite(selectedClubSummary?.ballSpeed)
+        ? `The ball is leaving at ${dashboardMetricValue(selectedClubSummary!.ballSpeed, "mph")}. Compare it with club speed to understand strike quality.`
+        : "Ball speed was not captured for this club.",
+      rawValue: selectedClubSummary?.ballSpeed ?? Number.NaN,
+      status: targetStatus(selectedClubSummary?.ballSpeed ?? Number.NaN, target.ballSpeed, 6, 15, { good: "Strong", watch: "Near range", needsWork: "Needs review" }).label,
+      tone: targetStatus(selectedClubSummary?.ballSpeed ?? Number.NaN, target.ballSpeed, 6, 15, { good: "Strong", watch: "Near range", needsWork: "Needs review" }).tone,
+      tourBenchmark: tour ? `Tour reference: PGA ${tour.pga.ballSpeed} mph / LPGA ${tour.lpga.ballSpeed} mph.` : undefined,
+      unit: "mph",
+      value: dashboardMetricValue(selectedClubSummary?.ballSpeed ?? Number.NaN, "mph"),
+      visual: "speed",
+      what: "Ball speed is measured immediately after impact.",
+    },
+    {
+      aimFor: `Approximately ${target.smash.toFixed(2)} for this club window.`,
+      compare: `${DASHBOARD_BENCHMARK_LABEL}: sample target ${target.smash.toFixed(2)}.`,
+      decimals: 2,
+      description: "How efficiently your club speed becomes ball speed.",
+      howToImprove: "Use foot spray or impact tape and score center strikes before chasing more speed.",
+      id: "smash",
+      label: "Smash Factor",
+      meaning: Number.isFinite(selectedClubSummary?.smash)
+        ? `Your contact efficiency is ${selectedClubSummary!.smash.toFixed(2)}. Moving it toward about ${target.smash.toFixed(2)} may help carry become more reliable; any distance gain is only an estimate.`
+        : "Smash factor was not captured for this club.",
+      rawValue: selectedClubSummary?.smash ?? Number.NaN,
+      status: smashStatus.label,
+      tone: smashStatus.tone,
+      tourBenchmark: tour ? `Tour reference: PGA ${tour.pga.smash.toFixed(2)} / LPGA ${tour.lpga.smash.toFixed(2)}.` : undefined,
+      unit: "",
+      value: dashboardMetricValue(selectedClubSummary?.smash ?? Number.NaN, "", 2),
+      visual: "energy",
+      what: "Smash factor is ball speed divided by club speed.",
+    },
+    {
+      aimFor: `${playerContext.rangePrefix} a carry window near ${target.carry} yd, then smaller variation around that number.`,
+      compare: `${playerContext.compareLabel}: target ${target.carry} yd.`,
+      decimals: 1,
+      description: "How far the ball flew before landing.",
+      howToImprove: "Use the carry number for target planning. If it jumps around, start with strike location and launch.",
+      id: "carry",
+      label: "Carry Distance",
+      meaning: Number.isFinite(selectedClubSummary?.carry)
+        ? `Your average carry is ${dashboardMetricValue(selectedClubSummary!.carry, "yd")}. This is the number to trust for hazards and landing zones.`
+        : "Carry distance was not captured for this club.",
+      rawValue: selectedClubSummary?.carry ?? Number.NaN,
+      status: carryStatus.label,
+      tone: carryStatus.tone,
+      tourBenchmark: tour ? `Tour reference: PGA ${tour.pga.carry} yd / LPGA ${tour.lpga.carry} yd.` : undefined,
+      unit: "yd",
+      value: dashboardMetricValue(selectedClubSummary?.carry ?? Number.NaN, "yd"),
+      visual: "range",
+      what: "Carry is the distance the ball travels in the air before first landing.",
+    },
+    {
+      aimFor: `Keep the typical spread under about ${Math.max(7, target.sideCarry * 1.25).toFixed(0)} yd when possible.`,
+      compare: `${DASHBOARD_BENCHMARK_LABEL}: sample spread target under ${Math.max(7, target.sideCarry * 1.25).toFixed(0)} yd.`,
+      decimals: 1,
+      description: "How tightly your shots grouped around the target.",
+      howToImprove: "Use a start-line gate and count how many shots begin on the intended side of the target.",
+      id: "dispersion",
+      label: "Dispersion",
+      meaning: Number.isFinite(selectedClubSummary?.dispersion)
+        ? `Most of your shots finished within an approximately ${round(selectedClubSummary!.dispersion * 2)}-yard-wide area.`
+        : "Dispersion needs at least a small shot group to be meaningful.",
+      rawValue: selectedClubSummary?.dispersion ?? Number.NaN,
+      status: dispersionStatus.label,
+      tone: dispersionStatus.tone,
+      unit: "yd",
+      value: Number.isFinite(selectedClubSummary?.dispersion) ? `${round(selectedClubSummary!.dispersion)} yd spread` : "NA",
+      visual: "pattern",
+      what: "Dispersion is the typical left-right spread of the shot group.",
+    },
+    {
+      aimFor: `Around ${target.launch} deg for this club sample window.`,
+      compare: `${DASHBOARD_BENCHMARK_LABEL}: sample target ${target.launch} deg.`,
+      decimals: 1,
+      description: "The initial upward angle of the ball flight.",
+      howToImprove: "Check ball position and strike height first; both can change launch without a full swing rebuild.",
+      id: "launch",
+      label: "Launch Angle",
+      meaning: Number.isFinite(selectedClubSummary?.launch)
+        ? `Your launch is ${dashboardMetricValue(selectedClubSummary!.launch, "deg")}. The right window helps carry and stopping power.`
+        : "Launch angle was not captured for this club.",
+      rawValue: selectedClubSummary?.launch ?? Number.NaN,
+      status: launchStatus.label,
+      tone: launchStatus.tone,
+      tourBenchmark: tour ? `Tour reference: PGA ${tour.pga.launch} deg / LPGA ${tour.lpga.launch} deg.` : undefined,
+      unit: "deg",
+      value: dashboardMetricValue(selectedClubSummary?.launch ?? Number.NaN, "deg"),
+      visual: "arc",
+      what: "Launch angle is the vertical angle the ball starts on.",
+    },
+    {
+      aimFor: `Near ${target.spin} rpm, with room for club and shot type.`,
+      compare: `${DASHBOARD_BENCHMARK_LABEL}: sample target ${target.spin} rpm.`,
+      decimals: 0,
+      description: "Backspin immediately after impact.",
+      howToImprove: "If spin is high, check strike location and dynamic loft. If low, check contact quality and launch.",
+      id: "spin",
+      label: "Spin Rate",
+      meaning: Number.isFinite(selectedClubSummary?.spin)
+        ? `Your spin is ${dashboardMetricValue(selectedClubSummary!.spin, "rpm", 0)}. Spin helps the ball stay in the air, but too much or too little can cost control.`
+        : "Spin rate was not captured for this club.",
+      rawValue: selectedClubSummary?.spin ?? Number.NaN,
+      status: spinStatus.label,
+      tone: spinStatus.tone,
+      tourBenchmark: tour ? `Tour reference: PGA ${tour.pga.spin} rpm / LPGA ${tour.lpga.spin} rpm.` : undefined,
+      unit: "rpm",
+      value: dashboardMetricValue(selectedClubSummary?.spin ?? Number.NaN, "rpm", 0),
+      visual: "spin",
+      what: "Spin rate is the ball's backspin right after impact.",
+    },
+    {
+      aimFor: `Within about ${target.faceToPath} deg either direction for this sample window.`,
+      compare: `${DASHBOARD_BENCHMARK_LABEL}: sample goal within ${target.faceToPath} deg.`,
+      decimals: 1,
+      description: "How much the face and path disagree at impact.",
+      howToImprove: "Work with a start-line gate and curve target. Make the ball start closer to the intended line first.",
+      id: "faceToPath",
+      label: "Face to Path",
+      meaning: Number.isFinite(selectedClubSummary?.faceToPath)
+        ? `Face-to-path is ${dashboardMetricValue(selectedClubSummary!.faceToPath, "deg")}. Larger gaps usually create more curve.`
+        : "Face-to-path was not captured for this club.",
+      rawValue: selectedClubSummary?.faceToPath ?? Number.NaN,
+      status: faceToPathStatus.label,
+      tone: faceToPathStatus.tone,
+      unit: "deg",
+      value: dashboardMetricValue(selectedClubSummary?.faceToPath ?? Number.NaN, "deg"),
+      visual: "path",
+      what: "Face-to-path compares the clubface direction to the swing path.",
+    },
+    {
+      aimFor: "A path close to neutral unless you are intentionally shaping shots.",
+      compare: `${DASHBOARD_BENCHMARK_LABEL}: sample neutral window within 2 deg.`,
+      decimals: 1,
+      description: "The direction the clubhead traveled through impact.",
+      howToImprove: "Use alignment sticks to separate body aim from actual club path.",
+      id: "clubPath",
+      label: "Club Path",
+      meaning: Number.isFinite(clubPath)
+        ? `Your club path averages ${dashboardMetricValue(clubPath, "deg")}. Negative is left and positive is right in a right-handed reference.`
+        : "Club path was not captured for this club.",
+      rawValue: clubPath,
+      status: clubPathStatus.label,
+      tone: clubPathStatus.tone,
+      unit: "deg",
+      value: dashboardMetricValue(clubPath, "deg"),
+      visual: "path",
+      what: "Club path is the direction the club is moving through impact.",
+    },
+    {
+      aimFor: "A face close to the intended start line.",
+      compare: `${DASHBOARD_BENCHMARK_LABEL}: sample square window within 1.5 deg.`,
+      decimals: 1,
+      description: "The direction the clubface pointed at impact.",
+      howToImprove: "Start with grip, setup, and slow-motion face control before changing path.",
+      id: "faceAngle",
+      label: "Face Angle",
+      meaning: Number.isFinite(faceAngle)
+        ? `Your face angle averages ${dashboardMetricValue(faceAngle, "deg")}. This heavily influences where the ball starts.`
+        : "Face angle was not captured for this club.",
+      rawValue: faceAngle,
+      status: faceStatus.label,
+      tone: faceStatus.tone,
+      unit: "deg",
+      value: dashboardMetricValue(faceAngle, "deg"),
+      visual: "path",
+      what: "Face angle is where the clubface points at impact.",
+    },
+    {
+      aimFor: `${attackWindow.target[0]} to ${attackWindow.target[1]} deg for this club type when measured.`,
+      compare: `${DASHBOARD_BENCHMARK_LABEL}: sample attack window only, not validated.`,
+      decimals: 1,
+      description: "Whether the club was moving up or down at impact.",
+      howToImprove: "Connect a launch monitor that reports attack angle before acting on this number.",
+      id: "attackAngle",
+      label: "Attack Angle",
+      meaning: "Attack angle is not available in this session, so the app is not scoring it.",
+      rawValue: Number.NaN,
+      status: "NA",
+      tone: "neutral",
+      unit: "deg",
+      value: "NA",
+      visual: "path",
+      what: "Attack angle shows if the club is traveling upward or downward at impact.",
+    },
+    {
+      aimFor: `${swingPlaneWindow.target[0]} to ${swingPlaneWindow.target[1]} deg for this club type when measured.`,
+      compare: `${DASHBOARD_BENCHMARK_LABEL}: sample swing-plane window only, not validated.`,
+      decimals: 1,
+      description: "The general angle of the swing arc.",
+      howToImprove: "Use video or a launch monitor that captures swing plane before making changes from this row.",
+      id: "swingPlane",
+      label: "Swing Plane",
+      meaning: "Swing plane is not available in this session, so the app is not scoring it.",
+      rawValue: Number.NaN,
+      status: "NA",
+      tone: "neutral",
+      unit: "deg",
+      value: "NA",
+      visual: "plane",
+      what: "Swing plane describes the angle of the club's arc around the body.",
+    },
+  ];
+}
+
 function parseCsvRows(text: string) {
   const rows: string[][] = [];
   let row: string[] = [];
@@ -1752,6 +2388,110 @@ function getClubDisplayName(club: string) {
     SW: "Sand Wedge",
     LW: "Lob Wedge",
   }[club] ?? club;
+}
+
+const REVIEW_IMPORT_METRICS: NumericShotMetric[] = [
+  "carry",
+  "total",
+  "ballSpeed",
+  "clubSpeed",
+  "smash",
+  "launch",
+  "spin",
+  "offline",
+  "apex",
+  "descent",
+  "faceAngle",
+  "clubPath",
+  "faceToPath",
+];
+
+function inferClubFromImportNotes(notes: string) {
+  const text = notes.toLowerCase();
+  const patterns: Array<[RegExp, string]> = [
+    [/\bdriver\b|\b1\s*w(?:ood)?\b/, "Driver"],
+    [/\b3\s*w(?:ood)?\b|\bthree\s*wood\b/, "3-Wood"],
+    [/\b5\s*w(?:ood)?\b|\bfive\s*wood\b/, "5-Wood"],
+    [/\b7\s*w(?:ood)?\b|\bseven\s*wood\b/, "7-Wood"],
+    [/\b5\s*i(?:ron)?\b|\bfive\s*iron\b/, "5-Iron"],
+    [/\b6\s*i(?:ron)?\b|\bsix\s*iron\b/, "6-Iron"],
+    [/\b7\s*i(?:ron)?\b|\bseven\s*iron\b/, "7-Iron"],
+    [/\b8\s*i(?:ron)?\b|\beight\s*iron\b/, "8-Iron"],
+    [/\b9\s*i(?:ron)?\b|\bnine\s*iron\b/, "9-Iron"],
+    [/\bp(?:itching)?\s*wedge\b|\bpw\b/, "PW"],
+    [/\bg(?:ap)?\s*wedge\b|\bapproach\s*wedge\b|\bgw\b|\baw\b/, "GW"],
+    [/\bs(?:and)?\s*wedge\b|\bsw\b/, "SW"],
+    [/\bl(?:ob)?\s*wedge\b|\blw\b/, "LW"],
+  ];
+  return patterns.find(([pattern]) => pattern.test(text))?.[1];
+}
+
+function shotNeedsClubInference(shot: Shot) {
+  const normalized = normalizeDataLabel(shot.club);
+  return !normalized || normalized === "unknownclub" || normalized === "club";
+}
+
+function applyImportNotesToShots(shots: Shot[], notes: string) {
+  const inferredClub = inferClubFromImportNotes(notes);
+  if (!inferredClub) return { shots, inferredClub: undefined };
+
+  return {
+    inferredClub,
+    shots: shots.map((shot) => (
+      shotNeedsClubInference(shot)
+        ? { ...shot, club: inferredClub }
+        : shot
+    )),
+  };
+}
+
+function getDetectedImportMetrics(shots: Shot[]) {
+  const detected = new Set<NumericShotMetric>();
+  shots.forEach((shot) => {
+    REVIEW_IMPORT_METRICS.forEach((metric) => {
+      if (hasShotMetric(shot, metric)) detected.add(metric);
+    });
+  });
+  return REVIEW_IMPORT_METRICS.filter((metric) => detected.has(metric));
+}
+
+function getMissingImportMetrics(shots: Shot[]) {
+  const detected = new Set(getDetectedImportMetrics(shots));
+  return REVIEW_IMPORT_METRICS.filter((metric) => !detected.has(metric));
+}
+
+function buildImportReview(
+  shots: Shot[],
+  submissionType: LastImport["submissionType"],
+  simulator = DEFAULT_SIMULATOR,
+  metadata: PhotoImportMetadata = {},
+  notes = "",
+): ImportReview {
+  const normalized = applyImportNotesToShots(shots, notes);
+  const detectedMetrics = getDetectedImportMetrics(normalized.shots);
+  const missingMetrics = getMissingImportMetrics(normalized.shots);
+  const clubNames = Array.from(new Set(normalized.shots.map((shot) => getClubDisplayName(shot.club))));
+  const warnings = [
+    ...(missingMetrics.length ? [`${missingMetrics.length} metrics were not found and will show as NA.`] : []),
+    ...(clubNames.some((club) => normalizeDataLabel(club) === "unknownclub") && !normalized.inferredClub
+      ? ["Club was not detected. Add it in the notes or choose it before saving."]
+      : []),
+  ];
+
+  return {
+    id: `review-${Date.now()}`,
+    date: metadata.capturedAt ?? getTodayDateString(),
+    detectedMetrics,
+    inferredClub: normalized.inferredClub,
+    location: metadata.location ?? LOCATION_UNAVAILABLE,
+    metadata,
+    missingMetrics,
+    notes: notes.trim(),
+    shots: normalized.shots,
+    simulator,
+    submissionType,
+    warnings,
+  };
 }
 
 function parseDirectionalNumber(value: string) {
@@ -1988,6 +2728,381 @@ function parsePhotoAverageRow(tsv?: string) {
   ) as Partial<Record<NumericShotMetric, number>>;
 }
 
+type OcrWord = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  text: string;
+  confidence: number;
+};
+
+type ShotHistoryPageKind = "distance" | "delivery";
+
+const SHOT_HISTORY_DISTANCE_COLUMNS: NumericShotMetric[] = [
+  "proximity",
+  "carry",
+  "total",
+  "ballSpeed",
+  "clubSpeed",
+  "smash",
+  "apex",
+  "spin",
+  "spinAxis",
+];
+
+const SHOT_HISTORY_DELIVERY_COLUMNS: NumericShotMetric[] = [
+  "launch",
+  "descent",
+  "horizontalAngle",
+  "faceAngle",
+  "clubPath",
+  "faceToPath",
+  "sideCarry",
+  "sideTotal",
+];
+
+const SHOT_HISTORY_COLUMN_RATIOS: Record<ShotHistoryPageKind, Record<NumericShotMetric, number>> = {
+  distance: {
+    proximity: 0.18,
+    carry: 0.27,
+    total: 0.37,
+    ballSpeed: 0.49,
+    clubSpeed: 0.60,
+    smash: 0.70,
+    apex: 0.79,
+    spin: 0.88,
+    spinAxis: 0.98,
+    launch: 0,
+    descent: 0,
+    horizontalAngle: 0,
+    faceAngle: 0,
+    clubPath: 0,
+    faceToPath: 0,
+    sideCarry: 0,
+    sideTotal: 0,
+    offline: 0,
+    curve: 0,
+  },
+  delivery: {
+    launch: 0.13,
+    descent: 0.24,
+    horizontalAngle: 0.35,
+    faceAngle: 0.46,
+    clubPath: 0.57,
+    faceToPath: 0.68,
+    sideCarry: 0.79,
+    sideTotal: 0.90,
+    carry: 0,
+    total: 0,
+    ballSpeed: 0,
+    clubSpeed: 0,
+    smash: 0,
+    spin: 0,
+    offline: 0,
+    proximity: 0,
+    apex: 0,
+    spinAxis: 0,
+    curve: 0,
+  },
+};
+
+const SHOT_HISTORY_CSV_COLUMNS: Array<"shot" | NumericShotMetric> = [
+  "shot",
+  "proximity",
+  "carry",
+  "total",
+  "ballSpeed",
+  "clubSpeed",
+  "smash",
+  "apex",
+  "spin",
+  "spinAxis",
+  "launch",
+  "descent",
+  "horizontalAngle",
+  "faceAngle",
+  "clubPath",
+  "faceToPath",
+  "sideCarry",
+  "sideTotal",
+  "offline",
+];
+
+function parseOcrWords(tsv?: string): OcrWord[] {
+  if (!tsv) return [];
+  return tsv.split(/\r?\n/).slice(1).flatMap((line) => {
+    const columns = line.split("\t");
+    const text = columns[11]?.trim();
+    if (columns[0] !== "5" || !text) return [];
+    const left = Number(columns[6]);
+    const top = Number(columns[7]);
+    const width = Number(columns[8]);
+    const height = Number(columns[9]);
+    const confidence = Number(columns[10]);
+    if (![left, top, width, height].every(Number.isFinite)) return [];
+    return [{ left, top, width, height, text, confidence: Number.isFinite(confidence) ? confidence : 0 }];
+  });
+}
+
+function detectShotHistoryPageKind(words: OcrWord[], text: string): ShotHistoryPageKind | undefined {
+  const normalized = normalizeOcrText(`${text} ${words.map((word) => word.text).join(" ")}`);
+  const hasDistancePage =
+    /proximity|carry|garry|ball|bal|club speed|smash|apex|spin rate|spin axis/.test(normalized);
+  const hasDeliveryPage =
+    /horiz|horizontal|descent|face angle|club path|face to path|side carry|side total/.test(normalized);
+  if (hasDeliveryPage && !hasDistancePage) return "delivery";
+  if (hasDistancePage && !hasDeliveryPage) return "distance";
+  if (hasDeliveryPage && /side carry|side total|horiz/.test(normalized)) return "delivery";
+  if (hasDistancePage) return "distance";
+  return undefined;
+}
+
+function groupOcrWordsIntoRows(words: OcrWord[]) {
+  const rows: Array<{ y: number; words: OcrWord[] }> = [];
+
+  words
+    .filter((word) => word.confidence > 10 && word.text.length <= 24)
+    .sort((a, b) => a.top - b.top || a.left - b.left)
+    .forEach((word) => {
+      const centerY = word.top + word.height / 2;
+      const match = rows.find((row) => Math.abs(row.y - centerY) <= Math.max(26, word.height * 1.45));
+      if (match) {
+        match.words.push(word);
+        match.y = (match.y * (match.words.length - 1) + centerY) / match.words.length;
+      } else {
+        rows.push({ y: centerY, words: [word] });
+      }
+    });
+
+  return rows
+    .map((row) => ({ ...row, words: row.words.sort((a, b) => a.left - b.left) }))
+    .sort((a, b) => a.y - b.y);
+}
+
+function cleanShotHistoryNumberText(value: string) {
+  return value
+    .replace(/[Oo]/g, "0")
+    .replace(/[Il|]/g, "1")
+    .replace(/[Ss]/g, "5")
+    .replace(/[–—−]/g, "-")
+    .replace(/,/g, ".")
+    .trim();
+}
+
+function parseShotNumberFromWords(words: OcrWord[], maxLeft?: number) {
+  const shotColumnWords = maxLeft === undefined
+    ? words
+    : words.filter((word) => word.left + word.width / 2 <= maxLeft);
+  if (!shotColumnWords.length) return undefined;
+
+  const candidate = words
+    .filter((word) => shotColumnWords.includes(word))
+    .map((word) => cleanShotHistoryNumberText(word.text))
+    .join(" ")
+    .match(/\b(?:[A-Za-z]?)(\d{1,3})\b/);
+  if (!candidate) return undefined;
+  const shotNumber = Number(candidate[1]);
+  if (!Number.isFinite(shotNumber) || shotNumber <= 0 || shotNumber > 999) return undefined;
+  return String(shotNumber);
+}
+
+function parseShotHistoryMetricValue(value: string, metric: NumericShotMetric) {
+  const cleaned = cleanShotHistoryNumberText(value);
+  const direction = /(^|[^A-Z])L\b/i.test(value) ? -1 : /(^|[^A-Z])R\b/i.test(value) ? 1 : 0;
+  const match = cleaned.match(/[-+]?\d+(?:\.\d+)?/);
+  if (!match) return undefined;
+
+  const hasDecimal = match[0].includes(".");
+  let parsed = Number(match[0]);
+  if (!Number.isFinite(parsed)) return undefined;
+
+  const abs = Math.abs(parsed);
+  if (metric === "spin") {
+    if (abs < 100 && /^\d{2}$/.test(match[0])) return undefined;
+    parsed = Math.round(parsed);
+  } else if (metric === "smash") {
+    if (abs > 20) parsed /= 100;
+    else if (abs > 2) parsed /= 10;
+  } else if (["carry", "total", "ballSpeed", "clubSpeed", "apex", "proximity"].includes(metric)) {
+    if (!hasDecimal && abs >= 1000) parsed /= 10;
+  } else if (["launch", "descent", "horizontalAngle", "faceAngle", "clubPath", "faceToPath", "sideCarry", "sideTotal", "spinAxis", "offline"].includes(metric)) {
+    while (Math.abs(parsed) > 45 && metric !== "sideCarry" && metric !== "sideTotal" && metric !== "offline") parsed /= 10;
+    while (Math.abs(parsed) > 200) parsed /= 10;
+  }
+
+  if (direction) parsed = direction * Math.abs(parsed);
+  return round(parsed, metric === "smash" ? 2 : metric === "spin" ? 0 : 1);
+}
+
+function metricRangeForShotHistory(metric: NumericShotMetric) {
+  return PHOTO_METRIC_SPECS.find((spec) => spec.key === metric) ?? { min: -1000, max: 1000 };
+}
+
+function isMetricValuePlausible(metric: NumericShotMetric, value: number | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return false;
+  const range = metricRangeForShotHistory(metric);
+  return value >= range.min && value <= range.max;
+}
+
+function parseShotHistoryRows(text: string, fileName: string, fileIndex: number, tsv?: string) {
+  const words = parseOcrWords(tsv);
+  const pageKind = detectShotHistoryPageKind(words, text);
+  if (!pageKind || words.length < 12) return [];
+
+  const bodyWords = words.filter((word) => {
+    const normalized = normalizeOcrText(word.text);
+    return (
+      !["shot", "yards", "feet", "mph", "rpm", "angle", "factor", "path", "carry", "total", "speed"].includes(normalized) &&
+      !normalized.includes("shot history") &&
+      !normalized.includes("shot dispersion")
+    );
+  });
+  const minX = Math.min(...bodyWords.map((word) => word.left));
+  const maxX = Math.max(...bodyWords.map((word) => word.left + word.width));
+  if (!Number.isFinite(minX) || !Number.isFinite(maxX) || maxX <= minX) return [];
+
+  const tableWidth = maxX - minX;
+  const columns = pageKind === "distance" ? SHOT_HISTORY_DISTANCE_COLUMNS : SHOT_HISTORY_DELIVERY_COLUMNS;
+  const centers = Object.fromEntries(
+    columns.map((metric) => [metric, minX + tableWidth * SHOT_HISTORY_COLUMN_RATIOS[pageKind][metric]]),
+  ) as Partial<Record<NumericShotMetric, number>>;
+  const rows = groupOcrWordsIntoRows(words);
+  const valueRows = rows.filter((row) => {
+    const rowText = row.words.map((word) => word.text).join(" ");
+    const normalized = normalizeOcrText(rowText);
+    const numericCount = row.words.filter((word) => /[-+]?\d/.test(cleanShotHistoryNumberText(word.text))).length;
+    return numericCount >= 3 && !/avg|proximity|carry|yards|mph|rpm|angle|factor|path|speed|shot history/.test(normalized);
+  });
+
+  return valueRows.flatMap((row, rowIndex) => {
+    const shotNumber = parseShotNumberFromWords(row.words, minX + tableWidth * 0.09);
+    const values: Partial<Record<NumericShotMetric, number>> = {};
+
+    columns.forEach((metric) => {
+      const center = centers[metric];
+      if (!center) return;
+      const candidates = row.words
+        .map((word) => {
+          const value = parseShotHistoryMetricValue(word.text, metric);
+          return {
+            distance: Math.abs(word.left + word.width / 2 - center),
+            value,
+            word,
+          };
+        })
+        .filter((candidate): candidate is { distance: number; value: number; word: OcrWord } =>
+          isMetricValuePlausible(metric, candidate.value),
+        )
+        .sort((a, b) => a.distance - b.distance);
+      const threshold = Math.max(70, tableWidth * 0.045);
+      if (candidates[0] && candidates[0].distance <= threshold) values[metric] = candidates[0].value;
+    });
+
+    if (values.sideTotal !== undefined && values.offline === undefined) values.offline = values.sideTotal;
+    if (values.sideCarry !== undefined && values.offline === undefined) values.offline = values.sideCarry;
+
+    const detectedMetrics = Object.entries(values)
+      .filter((entry): entry is [NumericShotMetric, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]))
+      .map(([metric]) => metric);
+    const coreMetrics = detectedMetrics.filter((metric) =>
+      ["carry", "total", "ballSpeed", "clubSpeed", "smash", "launch", "spin", "clubPath", "faceAngle", "faceToPath"].includes(metric),
+    );
+    if (coreMetrics.length < 2) return [];
+
+    const metric = (key: NumericShotMetric) => values[key] ?? 0;
+    const offline = metric("offline");
+
+    return [{
+      id: `photo-table-${Date.now()}-${fileIndex}-${shotNumber ?? rowIndex}`,
+      club: detectPhotoClub(text),
+      carry: metric("carry"),
+      total: metric("total"),
+      ballSpeed: metric("ballSpeed"),
+      clubSpeed: metric("clubSpeed"),
+      smash: metric("smash"),
+      launch: metric("launch"),
+      spin: Math.round(metric("spin")),
+      offline,
+      proximity: metric("proximity"),
+      apex: metric("apex"),
+      spinAxis: metric("spinAxis"),
+      descent: metric("descent"),
+      horizontalAngle: metric("horizontalAngle"),
+      faceAngle: metric("faceAngle"),
+      clubPath: metric("clubPath"),
+      faceToPath: metric("faceToPath"),
+      sideCarry: metric("sideCarry"),
+      sideTotal: metric("sideTotal"),
+      curve: metric("curve"),
+      shape: detectedMetrics.some((item) => ["offline", "sideTotal", "sideCarry"].includes(item))
+        ? offline < -12 ? "Draw" : offline > 12 ? "Fade" : "Straight"
+        : "Not recorded",
+      detectedMetrics,
+      sourceShotNumber: shotNumber,
+    }];
+  });
+}
+
+function mergePhotoShotsByShotNumber(shots: Shot[]) {
+  const grouped = new Map<string, Shot>();
+  const standalone: Shot[] = [];
+
+  shots.forEach((shot, index) => {
+    const key = shot.sourceShotNumber;
+    if (!key) {
+      standalone.push(shot);
+      return;
+    }
+
+    const current = grouped.get(key);
+    if (!current) {
+      grouped.set(key, { ...shot, id: `photo-shot-${key}-${index}` });
+      return;
+    }
+
+    const detectedMetrics = Array.from(new Set([...(current.detectedMetrics ?? []), ...(shot.detectedMetrics ?? [])]));
+    const merged: Shot = {
+      ...current,
+      club: shotNeedsClubInference(current) && !shotNeedsClubInference(shot) ? shot.club : current.club,
+      detectedMetrics,
+    };
+
+    detectedMetrics.forEach((metric) => {
+      if (hasShotMetric(shot, metric)) {
+        (merged[metric] as number) = shot[metric] as number;
+      }
+    });
+    if (hasShotMetric(merged, "sideTotal")) merged.offline = merged.sideTotal ?? merged.offline;
+    else if (hasShotMetric(merged, "sideCarry")) merged.offline = merged.sideCarry ?? merged.offline;
+    grouped.set(key, merged);
+  });
+
+  return [...grouped.entries()]
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([, shot]) => shot)
+    .concat(standalone);
+}
+
+function csvEscape(value: string | number | undefined) {
+  const stringValue = value === undefined ? "" : String(value);
+  return /[",\n\r]/.test(stringValue) ? `"${stringValue.replaceAll('"', '""')}"` : stringValue;
+}
+
+function shotsToCsv(shots: Shot[]) {
+  const headers = ["club", ...SHOT_HISTORY_CSV_COLUMNS];
+  const rows = shots.map((shot, index) => {
+    const rowValues = headers.map((header) => {
+      if (header === "club") return getClubDisplayName(shot.club);
+      if (header === "shot") return shot.sourceShotNumber ?? String(index + 1);
+      const metric = header as NumericShotMetric;
+      return hasShotMetric(shot, metric) ? shot[metric] : undefined;
+    });
+    return rowValues.map(csvEscape).join(",");
+  });
+  return [headers.join(","), ...rows].join("\n");
+}
+
 function detectPhotoClub(text: string) {
   const normalized = normalizeOcrText(text);
   const clubPatterns: Array<[string, RegExp]> = [
@@ -2053,6 +3168,56 @@ function getPhotoMetadataText(metadata: Record<string, unknown>, keys: string[])
   return undefined;
 }
 
+async function preparePhotoForOcr(file: File): Promise<Blob | File> {
+  if (!file.type.startsWith("image/")) return file;
+
+  try {
+    const image = await createImageBitmap(file);
+    const portraitPhonePhoto = image.height > image.width * 1.15;
+    const crop = portraitPhonePhoto
+      ? {
+          x: image.width * 0.05,
+          y: image.height * 0.24,
+          width: image.width * 0.9,
+          height: image.height * 0.56,
+        }
+      : {
+          x: image.width * 0.02,
+          y: image.height * 0.10,
+          width: image.width * 0.96,
+          height: image.height * 0.84,
+        };
+    const targetWidth = Math.min(2800, Math.max(1800, crop.width));
+    const scale = targetWidth / crop.width;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(crop.width * scale);
+    canvas.height = Math.round(crop.height * scale);
+    const context = canvas.getContext("2d");
+    if (!context) return file;
+
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.filter = "grayscale(1) contrast(1.75) brightness(1.08)";
+    context.drawImage(
+      image,
+      crop.x,
+      crop.y,
+      crop.width,
+      crop.height,
+      0,
+      0,
+      canvas.width,
+      canvas.height,
+    );
+
+    return await new Promise<Blob | File>((resolve) => {
+      canvas.toBlob((blob) => resolve(blob ?? file), "image/jpeg", 0.92);
+    });
+  } catch {
+    return file;
+  }
+}
+
 async function readPhotoMetadata(file: File): Promise<PhotoImportMetadata> {
   try {
     const exifr = (await import("exifr")).default;
@@ -2101,6 +3266,17 @@ async function readPhotoMetadata(file: File): Promise<PhotoImportMetadata> {
 }
 
 function parsePhotoOcr(text: string, fileName: string, fileIndex: number, tsv?: string) {
+  const tableShots = parseShotHistoryRows(text, fileName, fileIndex, tsv);
+  if (tableShots.length) {
+    const mergedTableShots = mergePhotoShotsByShotNumber(tableShots);
+    return {
+      shot: mergedTableShots[0],
+      shots: mergedTableShots,
+      csvText: shotsToCsv(mergedTableShots),
+      simulator: detectPhotoSimulator(text, fileName),
+    };
+  }
+
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const parsedMetrics: Partial<Record<NumericShotMetric, number>> = parsePhotoAverageRow(tsv);
 
@@ -2156,6 +3332,8 @@ function parsePhotoOcr(text: string, fileName: string, fileIndex: number, tsv?: 
 
   return {
     shot,
+    shots: [shot],
+    csvText: shotsToCsv([shot]),
     simulator: detectPhotoSimulator(text, fileName),
   };
 }
@@ -2165,6 +3343,8 @@ function buildImportedSession(
   submissionType: LastImport["submissionType"],
   simulator = DEFAULT_SIMULATOR,
   metadata: PhotoImportMetadata = {},
+  notes = "",
+  missingMetrics: NumericShotMetric[] = [],
 ): Session {
   const clubNames = Array.from(new Set(shots.map((shot) => shot.club)));
   const subject = clubNames.length === 1 ? getClubDisplayName(clubNames[0]) : `${clubNames.length}-club`;
@@ -2184,6 +3364,8 @@ function buildImportedSession(
     source,
     focus: "New data",
     location: metadata.location ?? LOCATION_UNAVAILABLE,
+    importNotes: notes.trim() || undefined,
+    missingMetrics,
     shots,
   };
 }
@@ -2297,6 +3479,8 @@ function parseStoredLastImport(value: string | null): LastImport | null {
         typeof stored.location === "string" && stored.location.trim()
           ? stored.location
           : LOCATION_UNAVAILABLE,
+      missingMetrics: Array.isArray(stored.missingMetrics) ? stored.missingMetrics as NumericShotMetric[] : [],
+      notes: typeof stored.notes === "string" && stored.notes.trim() ? stored.notes : undefined,
       simulator: typeof stored.simulator === "string" && stored.simulator.trim() ? stored.simulator : DEFAULT_SIMULATOR,
       submissionType,
       shots: stored.shots as Shot[],
@@ -2666,6 +3850,8 @@ function inferExperienceStyle(practiceRhythm: string[], simulatorGoals: string[]
 }
 
 function getPracticePath(profile: Omit<UserPracticeProfile, "path">): UserPracticeProfile["path"] {
+  if (profile.role === "coach") return "Competitive";
+
   if (profile.ageRange === "Under 13" || profile.ageRange === "13-17" || profile.skillLevel === "Junior player") {
     return "Junior";
   }
@@ -2701,6 +3887,7 @@ function buildUserPracticeProfile(answers: OnboardingAnswers): UserPracticeProfi
     simulatorUse?: string | string[];
     practiceRhythm?: string | string[];
   };
+  const role = (typeof rawAnswers.accountRole === "string" ? rawAnswers.accountRole : "golfer") as OnboardingRole;
   const gameProfile = typeof rawAnswers.gameProfile === "string" ? rawAnswers.gameProfile : undefined;
   const game = gameProfile ? GAME_PROFILE_MAP[gameProfile] : undefined;
   const simulatorGoals = asArray(rawAnswers.simulatorGoals ?? rawAnswers.simulatorUse);
@@ -2708,10 +3895,26 @@ function buildUserPracticeProfile(answers: OnboardingAnswers): UserPracticeProfi
   const practiceStyle = asArray(rawAnswers.practiceStyle);
   const experienceStyle = asArray(rawAnswers.experienceStyle);
   const coachNotes = typeof rawAnswers.coachNotes === "string" ? rawAnswers.coachNotes.trim() : "";
+  const splitList = (value: unknown) => {
+    if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+    return typeof value === "string"
+      ? value.split(",").map((item) => item.trim()).filter(Boolean)
+      : [];
+  };
   const profileBase = {
+    role,
+    displayName: typeof answers.displayName === "string" ? answers.displayName.trim() : undefined,
+    email: typeof answers.email === "string" ? answers.email.trim().toLowerCase() : undefined,
+    facilityName: typeof answers.facilityName === "string" ? answers.facilityName.trim() : undefined,
+    coachBio: typeof answers.coachBio === "string" ? answers.coachBio.trim() : undefined,
+    specialties: splitList(answers.specialties),
+    location: typeof answers.location === "string" ? answers.location.trim() : undefined,
+    profilePhotoName: typeof answers.profilePhotoName === "string" ? answers.profilePhotoName.trim() : undefined,
+    firstGolferName: typeof answers.firstGolferName === "string" ? answers.firstGolferName.trim() : undefined,
+    firstGolferEmail: typeof answers.firstGolferEmail === "string" ? answers.firstGolferEmail.trim().toLowerCase() : undefined,
     ageRange: typeof answers.ageRange === "string" ? answers.ageRange : undefined,
     handedness: typeof answers.handedness === "string" ? answers.handedness : undefined,
-    skillLevel: asStringAnswer(rawAnswers.skillLevel, game?.skillLevel ?? "Casual golfer"),
+    skillLevel: role === "coach" ? "Coach" : asStringAnswer(rawAnswers.skillLevel, game?.skillLevel ?? "Casual golfer"),
     handicap: asStringAnswer(rawAnswers.handicap, game?.handicap ?? "I don't know"),
     simExperience: asStringAnswer(rawAnswers.simExperience, inferSimExperience(simulatorGoals)),
     simulatorGoals,
@@ -2827,8 +4030,9 @@ export default function Home() {
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [selectedClub, setSelectedClub] = useState("6-Iron");
   const [csvText, setCsvText] = useState(DEMO_CSV);
-  const [importMessage, setImportMessage] = useState("Demo CSV loaded");
+  const [importMessage, setImportMessage] = useState("Sample CSV rows ready");
   const [importConfirmation, setImportConfirmation] = useState<string | null>(null);
+  const [pendingImportReview, setPendingImportReview] = useState<ImportReview | null>(null);
   const [accountMode, setAccountMode] = useState<AccountMode>("pending");
   const [workspaceRole, setWorkspaceRole] = useState<VideoViewerRole>("user");
   const [videoLibraryMemberId, setVideoLibraryMemberId] = useState("current-user");
@@ -2845,6 +4049,7 @@ export default function Home() {
   const [forcePasswordReset, setForcePasswordReset] = useState(false);
   const [showAccountGate, setShowAccountGate] = useState(false);
   const [loginModalMode, setLoginModalMode] = useState<LoginModalMode>("login");
+  const [registrationDraft, setRegistrationDraft] = useState<RegistrationDraft | null>(null);
   const [syncStatus, setSyncStatus] = useState("Choose how you want to use Free Range Golf.");
 
   const clubs = useMemo(() => summarizeClubs(sessions), [sessions]);
@@ -2872,7 +4077,7 @@ export default function Home() {
   const ballCountLabel = `${allShots.length.toLocaleString()} ${allShots.length === 1 ? "ball" : "balls"}`;
   const topInsight = selectedSessionInsights[0];
   const visibleNavItems = navItemsForAccount(accountMode, accountUser);
-  const activeNavItem = NAV_ITEMS.find((item) => item.id === activeTab);
+  const activeNavItem = visibleNavItems.find((item) => item.id === activeTab) ?? NAV_ITEMS.find((item) => item.id === activeTab);
 
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
@@ -3119,6 +4324,7 @@ export default function Home() {
       setSelectedClub(savedSessions[0]?.shots?.[0]?.club ?? "6-Iron");
       setLastImport(EMPTY_LAST_IMPORT);
       setImportConfirmation(null);
+      setPendingImportReview(null);
       setForcePasswordReset(requiresPasswordReset);
       if (requiresPasswordReset) setShowPasswordResetModal(true);
       const requestedTab =
@@ -3155,6 +4361,7 @@ export default function Home() {
   }
 
   function openSignup() {
+    setRegistrationDraft(null);
     setShowOnboarding(false);
     setShowAccountGate(false);
     setShowPasswordResetModal(false);
@@ -3175,6 +4382,7 @@ export default function Home() {
     setSelectedSessionId("");
     setSelectedClub("6-Iron");
     setLastImport(EMPTY_LAST_IMPORT);
+    setPendingImportReview(null);
     setSyncStatus("Using guest mode. Create an account anytime to save your work.");
   }
 
@@ -3197,6 +4405,7 @@ export default function Home() {
     setPracticeProfile(null);
     setLastImport(EMPTY_LAST_IMPORT);
     setImportConfirmation(null);
+    setPendingImportReview(null);
     clearStoredImportState();
     setActiveTab("videos");
     setShowOnboarding(false);
@@ -3220,7 +4429,7 @@ export default function Home() {
     );
   }
 
-  function finishOnboarding(profile: UserPracticeProfile) {
+  function finishOnboarding(profile: UserPracticeProfile, draft?: RegistrationDraft) {
     setPracticeProfile(profile);
     storePracticeProfile(profile);
     clearOnboardingDraft();
@@ -3228,9 +4437,11 @@ export default function Home() {
     setShowOnboarding(false);
     setShowAccountGate(false);
     setAccountMode((current) => current === "pending" ? "guest" : current);
+    setRegistrationDraft(draft ?? null);
+    setActiveTab(profile.role === "coach" ? "coach" : "import");
     setLoginModalMode("register");
     setShowLoginModal(true);
-    setSyncStatus("Create your account to save your practice profile.");
+    setSyncStatus(profile.role === "coach" ? "Create your coach account to manage players." : "Create your account to save your practice profile.");
   }
 
   function skipOnboarding() {
@@ -3250,40 +4461,80 @@ export default function Home() {
     submissionType: LastImport["submissionType"],
     simulator = DEFAULT_SIMULATOR,
     metadata: PhotoImportMetadata = {},
+    notes = "",
   ) {
     if (!shots.length) {
       setImportMessage("No shot data detected");
       return;
     }
-    const nextSession = buildImportedSession(shots, submissionType, simulator, metadata);
+    const review = buildImportReview(shots, submissionType, simulator, metadata, notes);
+    setPendingImportReview(review);
+    setActiveTab("import");
+    setImportMessage(
+      `${review.shots.length} ${review.shots.length === 1 ? "shot is" : "shots are"} ready for review. ` +
+      `${review.missingMetrics.length ? "Unavailable values will show as NA." : "All core values were detected."}`,
+    );
+    setImportConfirmation(null);
+  }
+
+  function updatePendingImportReview(updater: (review: ImportReview) => ImportReview) {
+    setPendingImportReview((current) => {
+      if (!current) return current;
+      const updated = updater(current);
+      return {
+        ...updated,
+        detectedMetrics: getDetectedImportMetrics(updated.shots),
+        missingMetrics: getMissingImportMetrics(updated.shots),
+      };
+    });
+  }
+
+  function confirmPendingImport() {
+    if (!pendingImportReview) {
+      setImportMessage("No import is waiting for review.");
+      return;
+    }
+    const review = pendingImportReview;
+    const nextSession = buildImportedSession(
+      review.shots,
+      review.submissionType,
+      review.simulator,
+      review.metadata,
+      review.notes,
+      review.missingMetrics,
+    );
     const nextSessions = [nextSession, ...sessions];
     const nextLastImport = makeLastImport(
-      submissionType,
-      shots,
+      review.submissionType,
+      review.shots,
       nextSession.date,
-      simulator,
-      metadata.location ?? LOCATION_UNAVAILABLE,
+      review.simulator,
+      review.location,
+      review.notes,
+      review.missingMetrics,
     );
     setSessions(nextSessions);
     setSelectedSessionId(nextSession.id);
-    setSelectedClub(shots[0]?.club ?? selectedClub);
+    setSelectedClub(review.shots[0]?.club ?? selectedClub);
     setActiveTab("dashboard");
     setLastImport(nextLastImport);
+    setPendingImportReview(null);
     if (accountMode !== "user") {
       storeImportState(nextSessions, nextLastImport);
     }
-    const importedClubNames = Array.from(new Set(shots.map((shot) => getClubDisplayName(shot.club))));
+    const importedClubNames = Array.from(new Set(review.shots.map((shot) => getClubDisplayName(shot.club))));
     const clubLabel = importedClubNames.length === 1 ? importedClubNames[0] : `${importedClubNames.length} clubs`;
     const successMessage =
-      `${shots.length} ${clubLabel} ${shots.length === 1 ? "shot" : "shots"} successfully uploaded and analyzed. ` +
-      `Location: ${nextSession.location ?? LOCATION_UNAVAILABLE}. Missing metrics display as NA.`;
+      `${review.shots.length} ${clubLabel} ${review.shots.length === 1 ? "shot" : "shots"} successfully uploaded and analyzed. ` +
+      `Location: ${nextSession.location ?? LOCATION_UNAVAILABLE}. ` +
+      `${review.missingMetrics.length ? "Unavailable metrics display as NA." : "Core metrics are ready across the app."}`;
     setImportMessage(successMessage);
     setImportConfirmation(successMessage);
     void saveUserSessions(nextSessions);
   }
 
-  function importCsv(submissionType: LastImport["submissionType"] = "CSV / Excel") {
-    importShots(parseCsv(csvText), submissionType, "CSV");
+  function importCsv(submissionType: LastImport["submissionType"] = "CSV / Excel", notes = "") {
+    importShots(parseCsv(csvText), submissionType, "CSV", {}, notes);
   }
 
   function navigateToTab(tab: Tab) {
@@ -3369,16 +4620,6 @@ export default function Home() {
             <p className="page-description">{PAGE_DESCRIPTIONS[activeTab]}</p>
           </div>
           <div className="topbar-actions" aria-label="Session controls">
-            {accountMode !== "user" && (
-              <div className="workspace-role-switcher" aria-label="Workspace preview role">
-                <span>Workspace preview</span>
-                <div>
-                  <button className={workspaceRole === "user" ? "active" : ""} onClick={() => changeWorkspaceRole("user")}>Member</button>
-                  <button className={workspaceRole === "coach" ? "active" : ""} onClick={() => changeWorkspaceRole("coach")}>Coach</button>
-                  <button className={workspaceRole === "admin" ? "active" : ""} onClick={() => changeWorkspaceRole("admin")}>Admin</button>
-                </div>
-              </div>
-            )}
             <div className={cls("account-pill", accountMode)}>
               <span>{accountMode === "user" ? "Saved" : accountMode === "guest" ? "Guest" : "Not set"}</span>
               <strong>{accountMode === "user" ? userName : syncStatus}</strong>
@@ -3413,6 +4654,7 @@ export default function Home() {
             clubs={clubs}
             insights={selectedSessionInsights}
             performanceIndex={performanceIndex}
+            practiceProfile={practiceProfile}
             selectedClub={activeClub}
             selectedClubShots={selectedClubShots}
             selectedClubSummary={selectedClubSummary}
@@ -3491,17 +4733,24 @@ export default function Home() {
           />
         )}
 
-        {activeTab === "practice" && <PracticeView insights={insights} />}
+        {activeTab === "practice" && <PracticeView insights={insights} practiceProfile={practiceProfile} />}
 
         {activeTab === "import" && (
           <ImportView
             csvText={csvText}
             importCsv={importCsv}
-            importManualShot={(shot, metadata) => importShots([shot], "Manual entry", "Manual entry", metadata)}
-            importPhotoShots={(shots, simulator, metadata) => importShots(shots, "Photo", simulator, metadata)}
+            cancelImportReview={() => {
+              setPendingImportReview(null);
+              setImportMessage("Import review cleared.");
+            }}
+            confirmImportReview={confirmPendingImport}
+            importManualShot={(shot, metadata, notes) => importShots([shot], "Manual entry", "Manual entry", metadata, notes)}
+            importPhotoShots={(shots, simulator, metadata, notes) => importShots(shots, "Photo", simulator, metadata, notes)}
             importMessage={importMessage}
             lastImport={lastImport}
+            pendingImportReview={pendingImportReview}
             setCsvText={setCsvText}
+            updateImportReview={updatePendingImportReview}
           />
         )}
       </section>
@@ -3531,6 +4780,7 @@ export default function Home() {
           onAuthenticated={() => connectAccount()}
           onClose={() => setShowLoginModal(false)}
           onStatus={setSyncStatus}
+          registrationDraft={registrationDraft}
         />
       )}
 
@@ -3569,6 +4819,7 @@ function DashboardView({
   clubs,
   insights,
   performanceIndex,
+  practiceProfile,
   selectedClub,
   selectedClubShots,
   selectedClubSummary,
@@ -3585,6 +4836,7 @@ function DashboardView({
   clubs: ClubSummary[];
   insights: Insight[];
   performanceIndex: number;
+  practiceProfile?: UserPracticeProfile | null;
   selectedClub: string;
   selectedClubShots: Shot[];
   selectedClubSummary?: ClubSummary;
@@ -3596,10 +4848,28 @@ function DashboardView({
   setSelectedClub: (club: string) => void;
 }) {
   const selectedClubLabel = getClubDisplayName(selectedClub);
-  const swingGaugeMetrics = useMemo(
-    () => buildSwingGaugeMetrics(selectedClub, selectedClubSummary, selectedClubShots, avgCarry, avgSmash),
-    [avgCarry, avgSmash, selectedClub, selectedClubShots, selectedClubSummary],
+  const dashboardSummary = useMemo(
+    () => buildDashboardSummary(
+      selectedClub,
+      selectedClubSummary,
+      selectedClubShots,
+      avgCarry,
+      avgDispersion,
+      avgSmash,
+      performanceIndex,
+    ),
+    [avgCarry, avgDispersion, avgSmash, performanceIndex, selectedClub, selectedClubShots, selectedClubSummary],
   );
+  const dashboardOpportunity = useMemo(
+    () => buildDashboardOpportunity(selectedClub, selectedClubSummary, selectedClubShots, topInsight),
+    [selectedClub, selectedClubShots, selectedClubSummary, topInsight],
+  );
+  const dashboardMetrics = useMemo(
+    () => buildDashboardMetricDetails(selectedClub, selectedClubSummary, selectedClubShots, practiceProfile),
+    [practiceProfile, selectedClub, selectedClubShots, selectedClubSummary],
+  );
+  const [expandedMetricId, setExpandedMetricId] = useState<string | null>(null);
+  const activeMetricId = expandedMetricId ?? dashboardMetrics[0]?.id ?? null;
 
   if (!sessions.length) {
     return <FirstSessionEmptyState setActiveTab={setActiveTab} />;
@@ -3625,28 +4895,21 @@ function DashboardView({
         </label>
       </section>
 
-      <SwingGaugeCluster
-        avgDispersion={avgDispersion}
-        metrics={swingGaugeMetrics}
-        performanceIndex={selectedClubSummary?.quality ?? performanceIndex}
+      <HomepageDashboardHero
+        opportunity={dashboardOpportunity}
         selectedClubLabel={selectedClubLabel}
-        shotCount={selectedClubShots.length}
+        selectedClubShots={selectedClubShots}
+        selectedSession={selectedSession}
+        setActiveTab={setActiveTab}
+        summary={dashboardSummary}
       />
 
-      <section className="dashboard-grid comparison-grid">
-        <article className="panel">
-          <PanelHeader kicker="Selected club detail" title={`${selectedClubLabel} delivery`} meta="Available session data" />
-          <MetricMatrix summary={selectedClubSummary} />
-        </article>
-        <article className="panel">
-          <PanelHeader kicker="Benchmark guide" title={`${selectedClubLabel} windows`} meta="Hover cards use these targets" />
-          <BenchmarkList club={selectedClub} />
-        </article>
-        <article className="panel">
-          <PanelHeader kicker="Pro comparison" title={`${selectedClubLabel} tour stats`} meta="PGA + LPGA reference" />
-          <ProStatsList club={selectedClub} />
-        </article>
-      </section>
+      <DashboardMetricAccordion
+        activeMetricId={activeMetricId}
+        benchmarkNotice={dashboardSummary.benchmarkNotice}
+        metrics={dashboardMetrics}
+        onToggle={(metricId) => setExpandedMetricId((current) => current === metricId ? null : metricId)}
+      />
 
       <section className="dashboard-grid">
         <article className="panel panel-large">
@@ -3703,6 +4966,384 @@ function DashboardView({
         </article>
       </section>
     </div>
+  );
+}
+
+function HomepageDashboardHero({
+  opportunity,
+  selectedClubLabel,
+  selectedClubShots,
+  selectedSession,
+  setActiveTab,
+  summary,
+}: {
+  opportunity: DashboardOpportunity;
+  selectedClubLabel: string;
+  selectedClubShots: Shot[];
+  selectedSession: Session;
+  setActiveTab: (tab: Tab) => void;
+  summary: DashboardSummary;
+}) {
+  const carryValue = dashboardMetricValue(summary.carry, "yd");
+  const dispersionValue = Number.isFinite(summary.dispersionWidth) ? `${summary.dispersionWidth} yd` : "NA";
+  const scoreValue = Number.isFinite(summary.sessionScore) ? Math.round(summary.sessionScore).toString() : "NA";
+
+  return (
+    <section className="home-dashboard-shell">
+      <div className="home-dashboard-header">
+        <div>
+          <p className="eyebrow">Your Performance</p>
+          <h2>Your {selectedClubLabel}</h2>
+          <span>
+            {selectedClubShots.length} {selectedClubShots.length === 1 ? "shot" : "shots"} analyzed
+            {selectedSession.title ? ` from ${selectedSession.title}` : ""}
+          </span>
+          <p>{summary.summaryText}</p>
+        </div>
+        <div className="session-score-ring" aria-label={`Session score ${scoreValue} out of 100`}>
+          <strong>{scoreValue}</strong>
+          <span>Session Score</span>
+        </div>
+      </div>
+
+      <div className="home-dashboard-main">
+        <article className="home-visual-card">
+          <div className="home-visual-copy">
+            <span>Shot Summary</span>
+            <strong>{selectedClubLabel} pattern</strong>
+            <p>Distance grid and left-right finish pattern for the selected club.</p>
+          </div>
+          <DashboardHeroVisual shots={selectedClubShots.length ? selectedClubShots : selectedSession.shots} />
+        </article>
+
+        <div className="home-results-stack">
+          <div className="home-result-grid">
+            <DashboardResultCard
+              label="Average Carry"
+              note="How far the ball flew before landing."
+              tone="good"
+              value={carryValue}
+            />
+            <DashboardResultCard
+              label="Contact"
+              note={Number.isFinite(summary.contact) ? `Smash ${summary.contact.toFixed(2)} contact efficiency.` : "Smash factor is NA."}
+              tone={summary.contactTone}
+              value={summary.contactLabel}
+            />
+            <DashboardResultCard
+              label="Typical Shot Spread"
+              note="Approximate width of the shot group."
+              tone={Number.isFinite(summary.dispersion) && summary.dispersion > 15 ? "watch" : "good"}
+              value={dispersionValue}
+            />
+          </div>
+
+          <DashboardOpportunityPanel opportunity={opportunity} setActiveTab={setActiveTab} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function DashboardResultCard({
+  label,
+  note,
+  tone,
+  value,
+}: {
+  label: string;
+  note: string;
+  tone: DashboardMetricTone;
+  value: string;
+}) {
+  return (
+    <article className={cls("home-result-card", tone)}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <p>{note}</p>
+      <i aria-hidden="true" />
+    </article>
+  );
+}
+
+function DashboardOpportunityPanel({
+  opportunity,
+  setActiveTab,
+}: {
+  opportunity: DashboardOpportunity;
+  setActiveTab: (tab: Tab) => void;
+}) {
+  return (
+    <article className={cls("home-opportunity-card", opportunity.tone)}>
+      <div>
+        <p className="eyebrow">Your Biggest Opportunity</p>
+        <h3>{opportunity.title}</h3>
+        <p>{opportunity.body}</p>
+      </div>
+      <button className="primary-action" onClick={() => setActiveTab("practice")} type="button">
+        {opportunity.action}
+      </button>
+    </article>
+  );
+}
+
+function DashboardHeroVisual({ shots }: { shots: Shot[] }) {
+  const availableShots = shots.filter((shot) => Number.isFinite(getShotMetric(shot, "carry")) || Number.isFinite(getShotMetric(shot, "offline")));
+  const carryValues = availableShots.map((shot) => getShotMetric(shot, "carry")).filter((value): value is number => typeof value === "number");
+  const offlineValues = availableShots.map((shot) => getShotMetric(shot, "offline")).filter((value): value is number => typeof value === "number");
+  const minCarry = carryValues.length ? Math.min(...carryValues) : 0;
+  const maxCarry = carryValues.length ? Math.max(...carryValues) : 180;
+  const maxOffline = Math.max(12, ...offlineValues.map((value) => Math.abs(value)));
+  const carryRange = Math.max(1, maxCarry - minCarry);
+  const gridCarries = [minCarry, minCarry + carryRange / 2, maxCarry].map((value) => Math.round(value));
+
+  function pointForShot(shot: Shot) {
+    const carry = getShotMetric(shot, "carry");
+    const offline = getShotMetric(shot, "offline");
+    const x = 230 + clamp((offline ?? 0) / maxOffline, -1, 1) * 165;
+    const y = 220 - clamp(((carry ?? minCarry) - minCarry) / carryRange, 0, 1) * 150;
+    return { x, y };
+  }
+
+  return (
+    <svg className="home-shot-visual" role="img" viewBox="0 0 460 260" aria-label="Shot distance and dispersion grid">
+      <defs>
+        <linearGradient id="homeShotGlow" x1="0" x2="1" y1="0" y2="1">
+          <stop offset="0%" stopColor="#35f27a" stopOpacity="0.32" />
+          <stop offset="100%" stopColor="#38bdf8" stopOpacity="0.14" />
+        </linearGradient>
+      </defs>
+      <rect className="home-shot-field" fill="url(#homeShotGlow)" x="28" y="22" width="404" height="210" rx="8" />
+      {[0, 1, 2].map((index) => (
+        <g key={`carry-grid-${index}`}>
+          <line className="home-shot-grid" x1="52" x2="408" y1={70 + index * 62} y2={70 + index * 62} />
+          <text className="home-shot-label" x="56" y={64 + index * 62}>{gridCarries[2 - index]} yd</text>
+        </g>
+      ))}
+      {[-1, 0, 1].map((position) => (
+        <line
+          className={cls("home-shot-grid", position === 0 && "target")}
+          key={`offline-grid-${position}`}
+          x1={230 + position * 130}
+          x2={230 + position * 130}
+          y1="46"
+          y2="218"
+        />
+      ))}
+      <path className="home-shot-arc" d="M230 220 C246 174 249 123 230 48" />
+      <ellipse className="home-shot-group" cx="230" cy="138" rx="84" ry="132" />
+      {availableShots.slice(0, 24).map((shot) => {
+        const point = pointForShot(shot);
+        return <circle className="home-shot-dot" cx={point.x} cy={point.y} key={shot.id} r="5" />;
+      })}
+      <text className="home-shot-target" x="238" y="214">Target line</text>
+      <text className="home-shot-footer" x="52" y="246">Left miss</text>
+      <text className="home-shot-footer" x="350" y="246">Right miss</text>
+    </svg>
+  );
+}
+
+function DashboardMetricAccordion({
+  activeMetricId,
+  benchmarkNotice,
+  metrics,
+  onToggle,
+}: {
+  activeMetricId: string | null;
+  benchmarkNotice: string;
+  metrics: DashboardMetricDetail[];
+  onToggle: (metricId: string) => void;
+}) {
+  return (
+    <section className="panel dashboard-metric-panel">
+      <div className="dashboard-metric-heading">
+        <div>
+          <p className="eyebrow">Your Stats</p>
+          <h2>What the numbers mean</h2>
+          <span>{benchmarkNotice}</span>
+        </div>
+      </div>
+      <div className="dashboard-metric-list">
+        {metrics.map((metric) => (
+          <DashboardMetricRow
+            expanded={activeMetricId === metric.id}
+            key={metric.id}
+            metric={metric}
+            onToggle={() => onToggle(metric.id)}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function DashboardMetricRow({
+  expanded,
+  metric,
+  onToggle,
+}: {
+  expanded: boolean;
+  metric: DashboardMetricDetail;
+  onToggle: () => void;
+}) {
+  return (
+    <article className={cls("dashboard-metric-row", metric.tone, expanded && "expanded")}>
+      <button aria-expanded={expanded} onClick={onToggle} type="button">
+        <DashboardMetricVisual metric={metric} />
+        <span className="dashboard-metric-main">
+          <strong>{metric.label}</strong>
+          <small>{metric.description}</small>
+        </span>
+        <span className="dashboard-metric-value">
+          <strong>{metric.value}</strong>
+          <small>{metric.status}</small>
+        </span>
+        <span className="dashboard-metric-chevron" aria-hidden="true">&gt;</span>
+      </button>
+      {expanded && (
+        <div className="dashboard-metric-detail">
+          <div>
+            <span>What is it?</span>
+            <p>{metric.what}</p>
+          </div>
+          <div>
+            <span>What does my number mean?</span>
+            <p>{metric.meaning}</p>
+          </div>
+          <div>
+            <span>What should I aim for?</span>
+            <p>{metric.aimFor}</p>
+          </div>
+          <div>
+            <span>How can I improve it?</span>
+            <p>{metric.howToImprove}</p>
+          </div>
+          <div>
+            <span>How do I compare?</span>
+            <p>{metric.compare}</p>
+          </div>
+          {metric.tourBenchmark && (
+            <div>
+              <span>Optional tour benchmark</span>
+              <p>{metric.tourBenchmark}</p>
+            </div>
+          )}
+        </div>
+      )}
+    </article>
+  );
+}
+
+function DashboardMetricVisual({ metric }: { metric: DashboardMetricDetail }) {
+  switch (metric.visual) {
+    case "energy":
+      return <EnergyTransferVisual metric={metric} />;
+    case "range":
+      return <RangeMetricVisual metric={metric} />;
+    case "pattern":
+      return <PatternMetricVisual metric={metric} />;
+    case "arc":
+      return <LaunchMetricVisual metric={metric} />;
+    case "spin":
+      return <SpinMetricVisual metric={metric} />;
+    case "path":
+      return <PathMetricVisual metric={metric} />;
+    case "plane":
+      return <PlaneMetricVisual metric={metric} />;
+    case "speed":
+    default:
+      return <SpeedMetricVisual metric={metric} />;
+  }
+}
+
+function SpeedMetricVisual({ metric }: { metric: DashboardMetricDetail }) {
+  const needle = Number.isFinite(metric.rawValue) ? clamp(metric.rawValue / 150, 0.12, 0.88) : 0.5;
+  return (
+    <svg className="metric-mini-visual" aria-hidden="true" viewBox="0 0 80 54">
+      <path className="mini-track" d="M14 42 A26 26 0 0 1 66 42" />
+      <path className={cls("mini-progress", metric.tone)} d="M14 42 A26 26 0 0 1 66 42" pathLength={100} strokeDasharray={`${needle * 100} ${100 - needle * 100}`} />
+      <line className="mini-needle" x1="40" y1="42" x2={18 + needle * 44} y2="21" />
+      <circle className="mini-hub" cx="40" cy="42" r="4" />
+    </svg>
+  );
+}
+
+function EnergyTransferVisual({ metric }: { metric: DashboardMetricDetail }) {
+  return (
+    <svg className="metric-mini-visual" aria-hidden="true" viewBox="0 0 88 54">
+      <circle className="mini-energy-node" cx="15" cy="28" r="7" />
+      <path className="mini-energy-line" d="M24 28h15" />
+      <circle className={cls("mini-energy-node", metric.tone)} cx="45" cy="28" r="10" />
+      <path className="mini-energy-line" d="M56 28h15" />
+      <circle className="mini-energy-node" cx="78" cy="28" r="7" />
+      <text x="45" y="32">{Number.isFinite(metric.rawValue) ? metric.rawValue.toFixed(2) : "NA"}</text>
+    </svg>
+  );
+}
+
+function RangeMetricVisual({ metric }: { metric: DashboardMetricDetail }) {
+  const position = Number.isFinite(metric.rawValue) ? clamp((metric.rawValue % 220) / 220, 0.12, 0.9) : 0.5;
+  return (
+    <svg className="metric-mini-visual" aria-hidden="true" viewBox="0 0 88 54">
+      <line className="mini-range-line" x1="10" x2="78" y1="30" y2="30" />
+      {[10, 32, 56, 78].map((x) => <line className="mini-range-tick" key={x} x1={x} x2={x} y1="24" y2="36" />)}
+      <circle className={cls("mini-marker", metric.tone)} cx={10 + position * 68} cy="30" r="6" />
+    </svg>
+  );
+}
+
+function PatternMetricVisual({ metric }: { metric: DashboardMetricDetail }) {
+  return (
+    <svg className="metric-mini-visual" aria-hidden="true" viewBox="0 0 88 54">
+      <circle className="mini-target" cx="44" cy="27" r="21" />
+      <circle className="mini-target" cx="44" cy="27" r="9" />
+      <line className="mini-target-line" x1="44" x2="44" y1="5" y2="49" />
+      {[28, 38, 45, 54, 60].map((x, index) => <circle className={cls("mini-shot", metric.tone)} cx={x} cy={18 + (index % 3) * 7} key={x} r="3.5" />)}
+    </svg>
+  );
+}
+
+function LaunchMetricVisual({ metric }: { metric: DashboardMetricDetail }) {
+  return (
+    <svg className="metric-mini-visual" aria-hidden="true" viewBox="0 0 88 54">
+      <line className="mini-ground" x1="12" x2="78" y1="42" y2="42" />
+      <path className={cls("mini-arc", metric.tone)} d="M16 41 C32 17 53 13 76 25" />
+      <circle className="mini-ball" cx="16" cy="41" r="4" />
+      <path className="mini-angle" d="M20 39l24-16" />
+    </svg>
+  );
+}
+
+function SpinMetricVisual({ metric }: { metric: DashboardMetricDetail }) {
+  return (
+    <svg className="metric-mini-visual" aria-hidden="true" viewBox="0 0 88 54">
+      <circle className="mini-spin-ball" cx="44" cy="27" r="14" />
+      <path className={cls("mini-spin", metric.tone)} d="M33 18a15 15 0 0 1 24 5" />
+      <path className={cls("mini-spin", metric.tone)} d="M55 36a15 15 0 0 1-24-5" />
+      <path className="mini-spin-arrow" d="M56 17l4 8-9-1" />
+      <path className="mini-spin-arrow" d="M32 37l-4-8 9 1" />
+    </svg>
+  );
+}
+
+function PathMetricVisual({ metric }: { metric: DashboardMetricDetail }) {
+  return (
+    <svg className="metric-mini-visual" aria-hidden="true" viewBox="0 0 88 54">
+      <line className="mini-target-line" x1="44" x2="44" y1="7" y2="48" />
+      <path className={cls("mini-path-line", metric.tone)} d="M18 43 C35 24 55 19 74 12" />
+      <rect className="mini-clubface" x="34" y="31" width="24" height="7" rx="2" transform="rotate(-18 46 34)" />
+      <circle className="mini-ball" cx="44" cy="28" r="4" />
+    </svg>
+  );
+}
+
+function PlaneMetricVisual({ metric }: { metric: DashboardMetricDetail }) {
+  return (
+    <svg className="metric-mini-visual" aria-hidden="true" viewBox="0 0 88 54">
+      <ellipse className="mini-plane" cx="44" cy="29" rx="30" ry="11" transform="rotate(-22 44 29)" />
+      <line className={cls("mini-plane-line", metric.tone)} x1="22" x2="66" y1="43" y2="13" />
+      <circle className="mini-ball" cx="44" cy="36" r="4" />
+    </svg>
   );
 }
 
@@ -5854,26 +7495,61 @@ function CoachVideoWorkspace({
   );
 }
 
-function PracticeView({ insights }: { insights: Insight[] }) {
+function PracticeView({ insights, practiceProfile }: { insights: Insight[]; practiceProfile?: UserPracticeProfile | null }) {
   const priority = insights[0];
+  const [expandedBlock, setExpandedBlock] = useState<string | null>("calibration");
+  const skill = practiceProfile?.path ?? "Casual";
+  const skillNote =
+    skill === "Beginner"
+      ? "Keep the targets simple and reward solid contact first."
+      : skill === "Competitive"
+        ? "Run the block with randomized targets and score every rep."
+        : "Balance feedback with a small scoring challenge.";
   const practiceBlocks = [
     {
+      id: "calibration",
       time: "10 min",
       title: "Calibration",
       body: "Half-speed swings with face tape, then record launch and smash only.",
+      club: priority ? getClubDisplayName(priority.club) : "Any club",
+      difficulty: skill === "Beginner" ? "Easy" : "Moderate",
       metric: "Contact cluster",
+      shotCount: skill === "Beginner" ? "12 shots" : "15 shots",
+      target: "Center-face contact on at least 7 of 10 scored swings.",
+      success: "Contact pattern tightens and smash stays inside a small repeatable band.",
+      why: "Selected first because cleaner contact makes every later metric easier to trust.",
+      easier: "Use half swings and ignore distance.",
+      harder: "Alternate target lines while keeping strike quality.",
     },
     {
+      id: "priority",
       time: "20 min",
       title: priority?.club === "Driver" ? "Start-line gate" : "Carry window ladder",
       body: priority?.action ?? "Alternate target yardages and keep dispersion inside the working window.",
+      club: priority ? getClubDisplayName(priority.club) : "Primary club",
+      difficulty: skill === "Competitive" ? "Advanced" : "Moderate",
       metric: priority?.metric ?? "Dispersion",
+      shotCount: "24 shots",
+      target: priority?.target ?? "Keep most shots inside the selected carry or start-line window.",
+      success: "At least 60% of shots meet the target window before moving on.",
+      why: priority ? `This addresses the current ${priority.metric.toLowerCase()} priority.` : "This creates a measurable baseline for the next upload.",
+      easier: "Make the window wider or use a shorter club.",
+      harder: "Randomize target, club, or shot shape every three balls.",
     },
     {
+      id: "transfer",
       time: "15 min",
       title: "Transfer set",
       body: "Randomize clubs and commit to one target before stepping into each ball.",
+      club: "Mixed",
+      difficulty: skill === "Competitive" ? "Advanced" : "Moderate",
       metric: "Decision quality",
+      shotCount: "15 shots",
+      target: "Name target, club, and shot shape before every swing.",
+      success: "Keep routine consistent and log one note after every five shots.",
+      why: "Transfer practice connects the technical work to actual golf decisions.",
+      easier: "Use one club and two targets.",
+      harder: "Play a simulated hole and count penalties for poor commitment.",
     },
   ];
 
@@ -5883,17 +7559,34 @@ function PracticeView({ insights }: { insights: Insight[] }) {
         <PanelHeader
           kicker="Next session"
           title={priority ? priority.title : "Maintenance block"}
-          meta={priority ? `${getClubDisplayName(priority.club)} · ${priority.metric}` : "Balanced practice"}
+          meta={priority ? `${getClubDisplayName(priority.club)} · ${priority.metric} · ${skill} plan` : `${skill} balanced practice`}
         />
+        <p className="practice-skill-note">{skillNote}</p>
         <div className="practice-track">
           {practiceBlocks.map((block, index) => (
-            <article className="practice-step" key={block.title}>
+            <article className={cls("practice-step", expandedBlock === block.id && "expanded")} key={block.title}>
               <span className="step-index">{index + 1}</span>
               <div>
                 <small>{block.time}</small>
                 <h3>{block.title}</h3>
                 <p>{block.body}</p>
                 <strong>{block.metric}</strong>
+                <button className="text-button practice-expand-button" onClick={() => setExpandedBlock((current) => current === block.id ? null : block.id)} type="button">
+                  {expandedBlock === block.id ? "Hide details" : "Show drill details"}
+                </button>
+                {expandedBlock === block.id && (
+                  <dl className="practice-drill-detail">
+                    <div><dt>Club</dt><dd>{block.club}</dd></div>
+                    <div><dt>Shot count</dt><dd>{block.shotCount}</dd></div>
+                    <div><dt>Skill level</dt><dd>{skill}</dd></div>
+                    <div><dt>Difficulty</dt><dd>{block.difficulty}</dd></div>
+                    <div><dt>Target</dt><dd>{block.target}</dd></div>
+                    <div><dt>Success</dt><dd>{block.success}</dd></div>
+                    <div><dt>Why selected</dt><dd>{block.why}</dd></div>
+                    <div><dt>Easier</dt><dd>{block.easier}</dd></div>
+                    <div><dt>Harder</dt><dd>{block.harder}</dd></div>
+                  </dl>
+                )}
               </div>
             </article>
           ))}
@@ -6743,28 +8436,37 @@ const MANUAL_SHOT_FIELDS: Array<{ key: NumericShotMetric; label: string; unit: s
 ];
 
 function ImportView({
+  cancelImportReview,
+  confirmImportReview,
   csvText,
   importCsv,
   importManualShot,
   importPhotoShots,
   importMessage,
   lastImport,
+  pendingImportReview,
   setCsvText,
+  updateImportReview,
 }: {
+  cancelImportReview: () => void;
+  confirmImportReview: () => void;
   csvText: string;
-  importCsv: (submissionType?: LastImport["submissionType"]) => void;
-  importManualShot: (shot: Shot, metadata: PhotoImportMetadata) => void;
-  importPhotoShots: (shots: Shot[], simulator: string, metadata: PhotoImportMetadata) => void;
+  importCsv: (submissionType?: LastImport["submissionType"], notes?: string) => void;
+  importManualShot: (shot: Shot, metadata: PhotoImportMetadata, notes: string) => void;
+  importPhotoShots: (shots: Shot[], simulator: string, metadata: PhotoImportMetadata, notes: string) => void;
   importMessage: string;
   lastImport: LastImport;
+  pendingImportReview: ImportReview | null;
   setCsvText: (value: string) => void;
+  updateImportReview: (updater: (review: ImportReview) => ImportReview) => void;
 }) {
   const [importMode, setImportMode] = useState<"api" | "file" | "photo" | "manual">("api");
+  const [importNotes, setImportNotes] = useState("");
   const [photoScans, setPhotoScans] = useState<PhotoScanResult[]>([]);
   const [photoScanState, setPhotoScanState] = useState<"idle" | "scanning" | "ready" | "error">("idle");
   const [photoProgress, setPhotoProgress] = useState(0);
-  const [photoStatus, setPhotoStatus] = useState("Choose up to five TrackMan or simulator screenshots.");
-  const [csvFileName, setCsvFileName] = useState("Demo rows");
+  const [photoStatus, setPhotoStatus] = useState("Choose up to five launch monitor screenshots or result photos.");
+  const [csvFileName, setCsvFileName] = useState("Sample rows");
   const [csvFileStatus, setCsvFileStatus] = useState("Choose a CSV file or paste exported rows.");
   const [manualStatus, setManualStatus] = useState("Enter at least one metric. Missing fields will display as NA.");
   const [manualForm, setManualForm] = useState<Record<string, string>>({
@@ -6831,11 +8533,11 @@ function ImportView({
       shot.shape = shot.offline < -8 ? "Draw" : shot.offline > 8 ? "Fade" : "Straight";
     }
     shot.detectedMetrics = detectedMetrics;
-    setManualStatus(`${getClubDisplayName(shot.club)} entry is being saved and analyzed.`);
+    setManualStatus(`${getClubDisplayName(shot.club)} entry is ready for review.`);
     importManualShot(shot, {
       capturedAt: manualForm.date || getTodayDateString(),
       location: manualForm.location.trim() || LOCATION_UNAVAILABLE,
-    });
+    }, importNotes);
   }
 
   async function readCsvFile(file: File | undefined) {
@@ -6865,7 +8567,7 @@ function ImportView({
     if (!selectedFiles.length) return;
 
     const supportedFiles = selectedFiles.filter((file) =>
-      ["image/png", "image/jpeg", "image/webp"].includes(file.type) && file.size <= 15 * 1024 * 1024,
+      ["image/png", "image/jpeg", "image/webp", "application/pdf"].includes(file.type) && file.size <= 15 * 1024 * 1024,
     );
     const rejectedFiles: PhotoScanResult[] = selectedFiles
       .filter((file) => !supportedFiles.includes(file))
@@ -6873,7 +8575,7 @@ function ImportView({
         id: `rejected-${Date.now()}-${index}`,
         fileName: file.name,
         status: "error",
-        message: "Use a PNG, JPG, or WebP image smaller than 15 MB.",
+        message: "Use PNG, JPG, JPEG, WebP, PDF, or CSV files under the listed size limit.",
       }));
 
     setPhotoScans(rejectedFiles);
@@ -6913,14 +8615,19 @@ function ImportView({
         setPhotoStatus(`Reading ${file.name} (${index + 1} of ${supportedFiles.length})...`);
 
         try {
-          const [recognition, metadata] = await Promise.all([
-            worker.recognize(
-              file,
-              { rotateAuto: true },
-              { text: true, tsv: true },
-            ),
+          if (file.type === "application/pdf") {
+            throw new Error("PDF selected. Export the visible report page as PNG or JPG for OCR review in this browser preview.");
+          }
+
+          const [ocrSource, metadata] = await Promise.all([
+            preparePhotoForOcr(file),
             readPhotoMetadata(file),
           ]);
+          const recognition = await worker.recognize(
+            ocrSource,
+            { rotateAuto: true },
+            { text: true, tsv: true },
+          );
           const parsed = parsePhotoOcr(recognition.data.text, file.name, index, recognition.data.tsv ?? undefined);
           results.push({
             id: `scan-${Date.now()}-${index}`,
@@ -6928,6 +8635,8 @@ function ImportView({
             status: "ready",
             simulator: parsed.simulator,
             shot: parsed.shot,
+            shots: parsed.shots,
+            csvText: parsed.csvText,
             confidence: Math.round(recognition.data.confidence),
             metadata,
           });
@@ -6948,13 +8657,24 @@ function ImportView({
       await worker?.terminate();
     }
 
-    const readyCount = results.filter((result) => result.status === "ready").length;
+    const readyResults = results.filter(
+      (result): result is Extract<PhotoScanResult, { status: "ready" }> => result.status === "ready",
+    );
+    const mergedPhotoShots = mergePhotoShotsByShotNumber(readyResults.flatMap((result) => result.shots));
+    if (mergedPhotoShots.length) {
+      setCsvText(shotsToCsv(mergedPhotoShots));
+      setCsvFileName("Converted photo CSV");
+      setCsvFileStatus(`${mergedPhotoShots.length} photo ${mergedPhotoShots.length === 1 ? "row was" : "rows were"} converted to CSV format.`);
+    }
+
+    const readyCount = readyResults.length;
+    const shotCount = mergedPhotoShots.length;
     setPhotoScans(results);
     setPhotoProgress(100);
     setPhotoScanState(readyCount ? "ready" : "error");
     setPhotoStatus(
       readyCount
-        ? `${readyCount} ${readyCount === 1 ? "photo is" : "photos are"} ready to review.`
+        ? `${readyCount} ${readyCount === 1 ? "photo is" : "photos are"} readable. ${shotCount} ${shotCount === 1 ? "shot row" : "shot rows"} converted for review.`
         : "No readable shot data was found. Try a sharper, tighter crop.",
     );
   }
@@ -6962,10 +8682,12 @@ function ImportView({
   const readyPhotoScans = photoScans.filter(
     (result): result is Extract<PhotoScanResult, { status: "ready" }> => result.status === "ready",
   );
+  const mergedPhotoShots = mergePhotoShotsByShotNumber(readyPhotoScans.flatMap((result) => result.shots));
   const detectedSimulators = [...new Set(readyPhotoScans.map((result) => result.simulator))];
   const photoSimulator = detectedSimulators.length === 1 ? detectedSimulators[0] : "Simulator photos";
   const photoMetadata = readyPhotoScans.reduce<PhotoImportMetadata>(
     (combined, result) => ({
+      fileNames: [...(combined.fileNames ?? []), result.fileName],
       location: combined.location ?? result.metadata.location,
       capturedAt: combined.capturedAt ?? result.metadata.capturedAt,
       latitude: combined.latitude ?? result.metadata.latitude,
@@ -6973,16 +8695,113 @@ function ImportView({
     }),
     {},
   );
+  const reviewClubNames = pendingImportReview
+    ? Array.from(new Set(pendingImportReview.shots.map((shot) => getClubDisplayName(shot.club))))
+    : [];
+  const reviewClubValue = reviewClubNames.length === 1 ? reviewClubNames[0] : reviewClubNames.join(", ");
 
   return (
     <section className="import-grid">
       <div className="panel panel-large">
         <PanelHeader kicker="Import" title="Add simulator data" meta={importMessage} />
+        <label className="import-notes-field">
+          <span>Anything we should know about this session?</span>
+          <textarea
+            maxLength={220}
+            onChange={(event) => setImportNotes(event.target.value)}
+            placeholder="Example: I used a 7 wood, these were half swings, or I was working on a fade."
+            value={importNotes}
+          />
+          <small>Notes help identify session context like club, intent, or shot type. Missing numbers still stay NA.</small>
+        </label>
+
+        {pendingImportReview && (
+          <div className="import-review-card" role="status">
+            <div className="import-review-heading">
+              <div>
+                <p className="eyebrow">Review before save</p>
+                <h3>{pendingImportReview.shots.length} detected {pendingImportReview.shots.length === 1 ? "shot" : "shots"}</h3>
+                <span>{pendingImportReview.simulator} · {pendingImportReview.submissionType} · {pendingImportReview.location}</span>
+              </div>
+              <span className="scan-status ready">Ready</span>
+            </div>
+
+            <div className="import-review-grid">
+              <label>
+                <span>Detected club</span>
+                <input
+                  onChange={(event) => {
+                    const nextClub = normalizeClubName(event.target.value);
+                    updateImportReview((review) => ({
+                      ...review,
+                      inferredClub: nextClub,
+                      shots: review.shots.map((shot) => ({ ...shot, club: nextClub })),
+                    }));
+                  }}
+                  placeholder="Sand Wedge"
+                  value={reviewClubValue}
+                />
+              </label>
+              <label>
+                <span>Session notes</span>
+                <textarea
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setImportNotes(value);
+                    updateImportReview((review) => ({ ...review, notes: value }));
+                  }}
+                  value={pendingImportReview.notes}
+                />
+              </label>
+            </div>
+
+            <div className="import-review-metrics">
+              <div>
+                <strong>Detected metrics</strong>
+                <span>{pendingImportReview.detectedMetrics.map((metric) => PHOTO_METRIC_LABELS[metric] ?? metric).join(", ") || "NA"}</span>
+              </div>
+              <div>
+                <strong>Unavailable metrics</strong>
+                <span>{pendingImportReview.missingMetrics.map((metric) => PHOTO_METRIC_LABELS[metric] ?? metric).join(", ") || "None"}</span>
+              </div>
+            </div>
+
+            {pendingImportReview.warnings.length > 0 && (
+              <ul className="import-review-warnings">
+                {pendingImportReview.warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            )}
+
+            <div className="import-review-table">
+              {pendingImportReview.shots.slice(0, 6).map((shot, index) => (
+                <div key={shot.id}>
+                  <span>{shot.sourceShotNumber ? `#${shot.sourceShotNumber}` : `#${index + 1}`}</span>
+                  <strong>{getClubDisplayName(shot.club)}</strong>
+                  <span>Carry {formatAvailableMetric(getShotMetric(shot, "carry") ?? Number.NaN, "yd")}</span>
+                  <span>Ball {formatAvailableMetric(getShotMetric(shot, "ballSpeed") ?? Number.NaN, "mph")}</span>
+                  <span>Launch {formatAvailableMetric(getShotMetric(shot, "launch") ?? Number.NaN, "deg")}</span>
+                  <span>Spin {formatAvailableMetric(getShotMetric(shot, "spin") ?? Number.NaN, "rpm", 0)}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="button-row">
+              <button className="secondary-action" onClick={cancelImportReview} type="button">Cancel review</button>
+              <button className="primary-action" onClick={confirmImportReview} type="button">
+                <span>✓</span>
+                Save session
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="import-mode-grid">
           {[
-            { id: "api", label: "API feed", body: "Connect TrackMan, Full Swing, GCQuad, SkyTrak, or Mevo+." },
+            { id: "api", label: "Simulator feed", body: "Connect a supported launch monitor or simulator when a live integration is available." },
             { id: "file", label: "CSV file", body: "Paste exported rows or upload a CSV from your simulator." },
-            { id: "photo", label: "Session photos", body: "Upload TrackMan or other simulator screenshots." },
+            { id: "photo", label: "Session photos", body: "Upload clear launch monitor screenshots, result photos, or page exports." },
             { id: "manual", label: "Manual entry", body: "Type the club and any metrics you captured from a launch monitor." },
           ].map((mode) => (
             <button
@@ -7044,20 +8863,20 @@ function ImportView({
                 className="secondary-action"
                 onClick={() => {
                   setCsvText(DEMO_CSV);
-                  setCsvFileName("Demo rows");
-                  setCsvFileStatus(`${parseCsv(DEMO_CSV).length} demo shot rows are ready to analyze.`);
+                  setCsvFileName("Sample rows");
+                  setCsvFileStatus(`${parseCsv(DEMO_CSV).length} sample shot rows are ready to analyze.`);
                 }}
               >
-                Load Full Swing demo rows
+                Load sample CSV rows
               </button>
-              <button className="primary-action" onClick={() => importCsv("CSV / Excel")}>
+              <button className="primary-action" onClick={() => importCsv("CSV / Excel", importNotes)}>
                 <span>⇧</span>
                 Analyze rows
               </button>
             </div>
             <p className="muted-copy">
               Accepted format: CSV under 5 MB. Include at least club plus one shot metric such as carry, total,
-              ball speed, launch, spin, offline, club path, or face angle.
+              ball speed, launch, spin, offline, club path, or face angle. PNG/JPG/PDF result exports can be added in Session photos.
             </p>
           </div>
         )}
@@ -7067,7 +8886,7 @@ function ImportView({
             <input
               className="file-input"
               type="file"
-              accept="image/png,image/jpeg,image/webp"
+              accept="image/png,image/jpeg,image/webp,application/pdf,.pdf"
               multiple
               disabled={photoScanState === "scanning"}
               onChange={(event) => {
@@ -7077,7 +8896,7 @@ function ImportView({
               }}
             />
             <div className="photo-drop">
-              <strong>{photoScanState === "scanning" ? "Reading your data" : "TrackMan photo reader"}</strong>
+              <strong>{photoScanState === "scanning" ? "Reading your data" : "Session photo reader"}</strong>
               <span>{photoStatus}</span>
               {photoScanState === "scanning" && (
                 <progress aria-label="Photo scan progress" max="100" value={photoProgress} />
@@ -7091,25 +8910,26 @@ function ImportView({
                     <div className="photo-scan-heading">
                       <div>
                         <strong>{result.fileName}</strong>
-                        <span>{result.status === "ready" ? `${result.simulator} · OCR confidence ${result.confidence}%` : "Needs another photo"}</span>
+                        <span>{result.status === "ready" ? `${result.simulator} · ${result.shots.length} CSV ${result.shots.length === 1 ? "row" : "rows"} · OCR confidence ${result.confidence}%` : "Needs another photo"}</span>
                       </div>
-                      <span className={cls("scan-status", result.status)}>{result.status === "ready" ? "Ready" : "Unreadable"}</span>
+                      <span className={cls("scan-status", result.status)}>{result.status === "ready" ? "Converted" : "Unreadable"}</span>
                     </div>
 
                     {result.status === "ready" ? (
                       <>
                         <div className="photo-metric-list">
                           <div><span>Club</span><strong>{result.shot.club}</strong></div>
-                          {result.shot.detectedMetrics?.map((metric) => (
+                          <div><span>Rows</span><strong>{result.shots.length}</strong></div>
+                          {Array.from(new Set(result.shots.flatMap((shot) => shot.detectedMetrics ?? []))).slice(0, 8).map((metric) => (
                             <div key={metric}>
                               <span>{PHOTO_METRIC_LABELS[metric]}</span>
                               <strong>{formatPhotoMetric(metric, result.shot[metric])}</strong>
                             </div>
                           ))}
                         </div>
-                        {result.shot.detectedMetrics && result.shot.detectedMetrics.length < 7 && (
-                          <p className="scan-note">Only detected values are shown. Missing dashboard fields will display as NA.</p>
-                        )}
+                        <p className="scan-note">
+                          Converted to CSV-style rows. Missing dashboard fields will display as NA.
+                        </p>
                         <p className="scan-note">
                           Photo location: {result.metadata.location ?? LOCATION_UNAVAILABLE}
                         </p>
@@ -7130,29 +8950,28 @@ function ImportView({
                     setPhotoScans([]);
                     setPhotoScanState("idle");
                     setPhotoProgress(0);
-                    setPhotoStatus("Choose up to five TrackMan or simulator screenshots.");
+                    setPhotoStatus("Choose up to five launch monitor screenshots or result photos.");
                   }}
                 >
                   Clear
                 </button>
                 <button
                   className="primary-action"
-                  onClick={() => importPhotoShots(readyPhotoScans.map((result) => result.shot), photoSimulator, photoMetadata)}
+                  onClick={() => importPhotoShots(mergedPhotoShots, photoSimulator, photoMetadata, importNotes)}
                 >
                   <span>⇧</span>
-                  Import detected data
+                  Import converted CSV
                 </button>
               </div>
             )}
           </div>
         )}
-
         {importMode === "manual" && (
           <form className="import-panel manual-entry-panel" onSubmit={submitManualSession}>
             <div className="manual-entry-guide">
               <strong>Manual first-session entry</strong>
               <span>
-                Enter the numbers you have from TrackMan, Full Swing, Foresight, SkyTrak, Mevo+, or another launch monitor.
+                Enter the numbers you have from any launch monitor, simulator export, or coach notes.
                 Blank metrics stay private to this session and display as NA.
               </span>
             </div>
@@ -7223,6 +9042,13 @@ function LastImportPanel({ lastImport }: { lastImport: LastImport }) {
     ["Sim", lastImport.simulator],
     ["Submission type", lastImport.submissionType],
     ["Club", importedClubs.join(", ") || "NA"],
+    ["Notes", lastImport.notes || "NA"],
+    [
+      "Unavailable",
+      lastImport.missingMetrics?.length
+        ? lastImport.missingMetrics.map((metric) => PHOTO_METRIC_LABELS[metric] ?? metric).join(", ")
+        : "None",
+    ],
   ];
   const averageRows = [
     ["Shots", `${lastImport.shots.length}`],
@@ -7701,6 +9527,16 @@ function ProStatsList({ club }: { club: string }) {
 
 function answersFromPracticeProfile(profile: UserPracticeProfile): OnboardingAnswers {
   return {
+    accountRole: profile.role,
+    displayName: profile.displayName,
+    email: profile.email,
+    facilityName: profile.facilityName,
+    coachBio: profile.coachBio,
+    specialties: profile.specialties,
+    location: profile.location,
+    profilePhotoName: profile.profilePhotoName,
+    firstGolferName: profile.firstGolferName,
+    firstGolferEmail: profile.firstGolferEmail,
     ageRange: profile.ageRange,
     handedness: profile.handedness,
     skillLevel: profile.skillLevel,
@@ -7723,13 +9559,15 @@ function OnboardingFlow({
   onSkip,
 }: {
   initialProfile: UserPracticeProfile | null;
-  onRegister: (profile: UserPracticeProfile) => void;
+  onRegister: (profile: UserPracticeProfile, draft?: RegistrationDraft) => void;
   onSkip: () => void;
 }) {
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState<OnboardingAnswers>(() =>
     initialProfile ? answersFromPracticeProfile(initialProfile) : {},
   );
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   useEffect(() => {
     const draft = readStoredOnboardingAnswers();
     if (Object.keys(draft).length) {
@@ -7743,158 +9581,73 @@ function OnboardingFlow({
     }
   }, [initialProfile]);
 
-  const isFinalStep = step >= ONBOARDING_QUESTIONS.length;
-  const currentQuestion = ONBOARDING_QUESTIONS[step];
-  const progress = Math.min(100, Math.round((step / ONBOARDING_QUESTIONS.length) * 100));
-  const userPracticeProfile = buildUserPracticeProfile(answers);
-  const recommendations = buildPracticeRecommendations(userPracticeProfile);
-  const currentAnswer = currentQuestion ? answers[currentQuestion.id] : undefined;
-  const selectedValues = asArray(currentAnswer);
-  const canContinue = !currentQuestion || currentQuestion.type === "text" || selectedValues.length > 0;
+  const role = (typeof answers.accountRole === "string" ? answers.accountRole : "golfer") as OnboardingRole;
+  const displayName = typeof answers.displayName === "string" ? answers.displayName : "";
+  const email = typeof answers.email === "string" ? answers.email : "";
+  const selectedGoals = asArray(answers.goals);
+  const canSubmit = displayName.trim().length > 1 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) && password.length >= 8 && password === confirmPassword;
+  const progress = step === 0 ? 50 : 100;
+  const golferGoals = ["Lower scores", "Driver accuracy", "Wedge control", "More distance", "Better contact", "Practice structure"];
 
-  function updateAnswer(question: OnboardingQuestion, value: string) {
-    let nextValue: string | string[];
-
-    if (question.type === "single") {
-      nextValue = value;
-    } else {
-      const currentValues = asArray(answers[question.id]);
-      const isSelected = currentValues.includes(value);
-      if (!isSelected && question.maxSelections && currentValues.length >= question.maxSelections) {
-        nextValue = currentValues;
-      } else {
-        nextValue = isSelected ? currentValues.filter((item) => item !== value) : [...currentValues, value];
-      }
-    }
-
-    const nextAnswers = { ...answers, [question.id]: nextValue };
-    setAnswers(nextAnswers);
-    storeOnboardingAnswers(nextAnswers);
-  }
-
-  function updateTextAnswer(question: OnboardingQuestion, value: string) {
+  function updateValue(key: OnboardingQuestionId, value: string | string[]) {
     const nextAnswers = { ...answers };
-    if (value.trim()) {
-      nextAnswers[question.id] = value;
+    if (Array.isArray(value) ? value.length : value.trim()) {
+      nextAnswers[key] = value;
     } else {
-      delete nextAnswers[question.id];
+      delete nextAnswers[key];
     }
     setAnswers(nextAnswers);
     storeOnboardingAnswers(nextAnswers);
   }
 
-  function goNext() {
-    if (!currentQuestion || !canContinue) return;
-    setStep((value) => Math.min(value + 1, ONBOARDING_QUESTIONS.length));
+  function toggleGoal(goal: string) {
+    const selected = selectedGoals.includes(goal);
+    const nextGoals = selected
+      ? selectedGoals.filter((item) => item !== goal)
+      : selectedGoals.length < 3 ? [...selectedGoals, goal] : selectedGoals;
+    updateValue("goals", nextGoals);
   }
 
-  if (isFinalStep) {
-    const profileRows = [
-      ["Level", userPracticeProfile.skillLevel],
-      ["Handicap", userPracticeProfile.handicap],
-      ["Time", userPracticeProfile.timeAvailable],
-      ["Rhythm", userPracticeProfile.frequency],
-    ];
+  function splitName(name: string) {
+    const parts = name.trim().split(/\s+/).filter(Boolean);
+    return {
+      firstName: parts[0] ?? "",
+      lastName: parts.slice(1).join(" ") || (role === "coach" ? "Coach" : "Golfer"),
+    };
+  }
 
-    return (
-      <main className="onboarding-shell">
-        <section className="onboarding-card final">
-          <header className="onboarding-brand">
-            <div className="onboarding-logo">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img alt="Free Range Golf logo" src="/logos/free-range-golf.png" />
-            </div>
-            <div>
-              <span>Free Range Golf</span>
-              <strong>Practice profile ready</strong>
-            </div>
-          </header>
-
-          <div className="onboarding-final-hero">
-            <p className="eyebrow">Personalized path</p>
-            <h1>{recommendations.pathTitle}</h1>
-            <p>{recommendations.summary}</p>
-          </div>
-
-          <div className="onboarding-summary-grid">
-            <article>
-              <span>Focus areas</span>
-              <div className="summary-chip-row">
-                {recommendations.focusAreas.map((item) => (
-                  <strong key={item}>{item}</strong>
-                ))}
-              </div>
-            </article>
-            <article>
-              <span>Starter drills</span>
-              <ul>
-                {recommendations.drills.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            </article>
-            <article>
-              <span>Simulator modes</span>
-              <ul>
-                {recommendations.simulatorModes.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            </article>
-            <article>
-              <span>Training plan</span>
-              <p>{recommendations.trainingPlan}</p>
-            </article>
-            <article>
-              <span>Lesson recommendation</span>
-              <p>{recommendations.lessonRecommendation}</p>
-            </article>
-            <article>
-              <span>Next priorities</span>
-              <ul>
-                {recommendations.priorities.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            </article>
-            <article>
-              <span>Optional suggestions</span>
-              <ul>
-                {recommendations.suggestions.map((item) => (
-                  <li key={item}>{item}</li>
-                ))}
-              </ul>
-            </article>
-          </div>
-
-          <div className="onboarding-profile-strip">
-            {profileRows.map(([label, value]) => (
-              <div key={label}>
-                <span>{label}</span>
-                <strong>{value}</strong>
-              </div>
-            ))}
-          </div>
-
-          <div className="onboarding-actions final-actions">
-            <button className="text-button" onClick={onSkip} type="button">
-              Skip setup
-            </button>
-            <button className="secondary-action" onClick={() => setStep(ONBOARDING_QUESTIONS.length - 1)}>
-              Back
-            </button>
-            <button className="primary-action" onClick={() => onRegister(userPracticeProfile)}>
-              Create account
-            </button>
-          </div>
-        </section>
-      </main>
-    );
+  function submitSetup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canSubmit) return;
+    const name = splitName(displayName);
+    const profileAnswers: OnboardingAnswers = {
+      ...answers,
+      accountRole: role,
+      email: email.trim().toLowerCase(),
+      displayName: displayName.trim(),
+      goals: role === "golfer" ? selectedGoals : asArray(answers.specialties),
+      handicap: typeof answers.handicap === "string" ? answers.handicap : "I don't know",
+      handedness: typeof answers.handedness === "string" ? answers.handedness : "Right-handed",
+      simExperience: "Ready to upload",
+      simulatorGoals: role === "coach" ? ["Lesson follow-up", "Player accountability"] : ["Swing data", "Practice plan"],
+      timeAvailable: "45 minutes",
+      frequency: "Weekly",
+      experienceStyle: role === "coach" ? ["Coach-guided sessions"] : ["Data-driven training"],
+    };
+    const profile = buildUserPracticeProfile(profileAnswers);
+    onRegister(profile, {
+      accountType: role === "coach" ? "coach" : "player",
+      confirmPassword,
+      email: email.trim().toLowerCase(),
+      firstName: name.firstName,
+      lastName: name.lastName,
+      password,
+    });
   }
 
   return (
     <main className="onboarding-shell">
-      <section className="onboarding-card">
+      <section className={cls("onboarding-card", step === 1 && "compact")}>
         <header className="onboarding-brand">
           <div className="onboarding-logo">
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -7910,59 +9663,141 @@ function OnboardingFlow({
           <span style={{ width: `${progress}%` }} />
         </div>
 
-        <div className="onboarding-question">
-          <span>
-            Question {step + 1} of {ONBOARDING_QUESTIONS.length}
-          </span>
-          <h1>{currentQuestion.title}</h1>
-          <p>{currentQuestion.helper}</p>
-        </div>
+        {step === 0 ? (
+          <>
+            <div className="onboarding-question">
+              <span>Step 1 of 2</span>
+              <h1>How will you use Free Range Golf?</h1>
+              <p>Choose the workspace that fits you. You can still connect with a coach or player later.</p>
+            </div>
 
-        {currentQuestion.type === "text" ? (
-          <div className="onboarding-text-panel">
-            <textarea
-              maxLength={180}
-              onChange={(event) => updateTextAnswer(currentQuestion, event.target.value)}
-              placeholder={currentQuestion.placeholder}
-              value={typeof currentAnswer === "string" ? currentAnswer : ""}
-            />
-            <span>{typeof currentAnswer === "string" ? `${currentAnswer.length}/180` : "Optional"}</span>
-          </div>
-        ) : (
-          <div className={cls("onboarding-options", currentQuestion.display)}>
-            {currentQuestion.options.map((option) => {
-              const selected = selectedValues.includes(option.value);
-              return (
+            <div className="onboarding-options cards role-cards">
+              {[
+                { value: "golfer", label: "I’m a golfer", detail: "Upload sessions, watch lessons, and get personalized practice." },
+                { value: "coach", label: "I’m a coach", detail: "Manage players, upload lesson videos, and assign practice." },
+              ].map((option) => (
                 <button
-                  className={cls("onboarding-option", selected && "selected")}
+                  className={cls("onboarding-option", role === option.value && "selected")}
                   key={option.value}
-                  onClick={() => updateAnswer(currentQuestion, option.value)}
+                  onClick={() => updateValue("accountRole", option.value)}
+                  type="button"
                 >
                   <strong>{option.label}</strong>
-                  {option.detail && <span>{option.detail}</span>}
+                  <span>{option.detail}</span>
                 </button>
-              );
-            })}
+              ))}
+            </div>
+          </>
+        ) : (
+          <form className="onboarding-setup-form" onSubmit={submitSetup}>
+            <div className="onboarding-question">
+              <span>Step 2 of 2</span>
+              <h1>{role === "coach" ? "Set up your coach workspace." : "Set up your golfer profile."}</h1>
+              <p>{role === "coach" ? "Add the basics Zac or any coach needs before inviting players." : "Add the essentials so analysis, practice plans, and coach notes match you."}</p>
+            </div>
+
+            <div className="onboarding-form-grid">
+              <label className="onboarding-form-wide">
+                <span>{role === "coach" ? "Coach name" : "Name"}</span>
+                <input value={displayName} onChange={(event) => updateValue("displayName", event.target.value)} placeholder={role === "coach" ? "Zac Coach" : "Joe Derario"} required />
+              </label>
+              <label>
+                <span>Email</span>
+                <input value={email} onChange={(event) => updateValue("email", event.target.value)} placeholder="you@example.com" required type="email" />
+              </label>
+              <label>
+                <span>Password</span>
+                <input autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="At least 8 characters" required type="password" />
+              </label>
+              <label>
+                <span>Confirm password</span>
+                <input autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} placeholder="Re-enter password" required type="password" />
+              </label>
+              <label>
+                <span>Profile photo</span>
+                <input
+                  accept="image/png,image/jpeg,image/webp"
+                  onChange={(event) => updateValue("profilePhotoName", event.currentTarget.files?.[0]?.name ?? "")}
+                  type="file"
+                />
+              </label>
+
+              {role === "golfer" ? (
+                <>
+                  <label>
+                    <span>Handedness</span>
+                    <select value={typeof answers.handedness === "string" ? answers.handedness : "Right-handed"} onChange={(event) => updateValue("handedness", event.target.value)}>
+                      <option>Right-handed</option>
+                      <option>Left-handed</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Handicap / skill</span>
+                    <select value={typeof answers.handicap === "string" ? answers.handicap : "I don't know"} onChange={(event) => updateValue("handicap", event.target.value)}>
+                      {["I don't know", "25+", "16-24", "10-15", "5-9", "0-4", "Plus handicap"].map((option) => <option key={option}>{option}</option>)}
+                    </select>
+                  </label>
+                  <div className="onboarding-form-wide onboarding-goal-picker">
+                    <span>Goals, pick up to 3</span>
+                    <div>
+                      {golferGoals.map((goal) => (
+                        <button className={cls(selectedGoals.includes(goal) && "selected")} key={goal} onClick={() => toggleGoal(goal)} type="button">
+                          {goal}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <label>
+                    <span>Facility / business</span>
+                    <input value={typeof answers.facilityName === "string" ? answers.facilityName : ""} onChange={(event) => updateValue("facilityName", event.target.value)} placeholder="Back Nine Woodstock" />
+                  </label>
+                  <label>
+                    <span>Location</span>
+                    <input value={typeof answers.location === "string" ? answers.location : ""} onChange={(event) => updateValue("location", event.target.value)} placeholder="Woodstock, GA" />
+                  </label>
+                  <label className="onboarding-form-wide">
+                    <span>Specialties</span>
+                    <input value={typeof answers.specialties === "string" ? answers.specialties : ""} onChange={(event) => updateValue("specialties", event.target.value)} placeholder="Wedges, juniors, driver accuracy" />
+                  </label>
+                  <label className="onboarding-form-wide">
+                    <span>Coach bio</span>
+                    <textarea value={typeof answers.coachBio === "string" ? answers.coachBio : ""} onChange={(event) => updateValue("coachBio", event.target.value)} placeholder="Short intro players will see." />
+                  </label>
+                </>
+              )}
+            </div>
+
+            {!canSubmit && (
+              <p className="onboarding-selection-note">Add your name, a valid email, and matching passwords with at least 8 characters.</p>
+            )}
+
+            <div className="onboarding-actions">
+              <button className="text-button" onClick={onSkip} type="button">
+                Skip to account options
+              </button>
+              <button className="secondary-action" onClick={() => setStep(0)} type="button">
+                Back
+              </button>
+              <button className="primary-action" disabled={!canSubmit} type="submit">
+                {role === "coach" ? "Create Coach Account" : "Create Account"}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {step === 0 && (
+          <div className="onboarding-actions">
+            <button className="text-button" onClick={onSkip} type="button">
+              Skip to account options
+            </button>
+            <button className="primary-action" onClick={() => setStep(1)} type="button">
+              Continue
+            </button>
           </div>
         )}
-
-        {currentQuestion.maxSelections && currentQuestion.type === "multi" && (
-          <p className="onboarding-selection-note">
-            {selectedValues.length}/{currentQuestion.maxSelections} selected
-          </p>
-        )}
-
-        <div className="onboarding-actions">
-          <button className="text-button" onClick={onSkip} type="button">
-            Skip setup
-          </button>
-          <button className="secondary-action" disabled={step === 0} onClick={() => setStep((value) => Math.max(0, value - 1))}>
-            Back
-          </button>
-          <button className="primary-action" disabled={!canContinue} onClick={goNext}>
-            Continue
-          </button>
-        </div>
       </section>
     </main>
   );
@@ -7973,19 +9808,21 @@ function LoginRequestModal({
   onAuthenticated,
   onClose,
   onStatus,
+  registrationDraft,
 }: {
   initialMode: LoginModalMode;
   onAuthenticated: () => void | Promise<boolean>;
   onClose: () => void;
   onStatus: (message: string) => void;
+  registrationDraft?: RegistrationDraft | null;
 }) {
   const [mode, setMode] = useState<LoginModalMode>(initialMode);
-  const [email, setEmail] = useState("");
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [accountType, setAccountType] = useState<RegisterAccountType>("player");
+  const [email, setEmail] = useState(registrationDraft?.email ?? "");
+  const [firstName, setFirstName] = useState(registrationDraft?.firstName ?? "");
+  const [lastName, setLastName] = useState(registrationDraft?.lastName ?? "");
+  const [password, setPassword] = useState(registrationDraft?.password ?? "");
+  const [confirmPassword, setConfirmPassword] = useState(registrationDraft?.confirmPassword ?? "");
+  const [accountType, setAccountType] = useState<RegisterAccountType>(registrationDraft?.accountType ?? "player");
   const [state, setState] = useState<"idle" | "sending" | "link" | "reset">("idle");
   const [message, setMessage] = useState(
     initialMode === "register"
@@ -8142,7 +9979,7 @@ function LoginRequestModal({
                 onClick={() => setAccountType("player")}
                 type="button"
               >
-                <strong>Player</strong>
+                <strong>Golfer</strong>
                 <span>Watch lesson videos and track your practice.</span>
               </button>
               <button
@@ -8151,7 +9988,7 @@ function LoginRequestModal({
                 type="button"
               >
                 <strong>Coach</strong>
-                <span>Upload videos and manage assigned players.</span>
+                <span>Upload videos and manage assigned golfers.</span>
               </button>
             </div>
             <div className="video-form-grid">

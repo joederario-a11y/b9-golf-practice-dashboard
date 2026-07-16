@@ -1,6 +1,7 @@
 import {
   ensurePlatformSchema,
   getAssignedMemberIds,
+  getEmailFromAddress,
   getPlatformEnvironment,
   getRequiredDatabase,
   requireIdentity,
@@ -68,7 +69,8 @@ async function sendMemberInvite(
   inviteUrl: string,
 ) {
   const runtime = getPlatformEnvironment();
-  if (!runtime.RESEND_API_KEY || !runtime.VIDEO_EMAIL_FROM) {
+  const emailFrom = getEmailFromAddress();
+  if (!runtime.RESEND_API_KEY || !emailFrom) {
     return { status: "pending", reason: "Email delivery is not configured." };
   }
   try {
@@ -79,7 +81,7 @@ async function sendMemberInvite(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        from: runtime.VIDEO_EMAIL_FROM,
+        from: emailFrom,
         to: [member.email],
         subject: "Your Free Range Golf video library is ready",
         html: `

@@ -1,6 +1,7 @@
 import {
   type AuthIdentity,
   createLoginToken,
+  getEmailFromAddress,
   getPlatformEnvironment,
   getRequiredDatabase,
 } from "./platform";
@@ -75,9 +76,10 @@ export async function sendVideoNotification(
     userId: video.memberId,
   });
   const videoLink = `${appBaseUrl}/?tab=videos&video=${encodeURIComponent(video.id)}&login=${encodeURIComponent(loginToken)}`;
-  const failureReason = "Email delivery is not configured. Add RESEND_API_KEY and VIDEO_EMAIL_FROM.";
+  const emailFrom = getEmailFromAddress();
+  const failureReason = "Email delivery is not configured. Add RESEND_API_KEY and VIDEO_EMAIL_FROM or RESEND_FROM.";
 
-  if (!runtime.RESEND_API_KEY || !runtime.VIDEO_EMAIL_FROM) {
+  if (!runtime.RESEND_API_KEY || !emailFrom) {
     await logNotification({ identity, member, status: "failed", video, failureReason });
     return { status: "Failed" as const, failureReason };
   }
@@ -106,7 +108,7 @@ export async function sendVideoNotification(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        from: runtime.VIDEO_EMAIL_FROM,
+        from: emailFrom,
         to: [member.email],
         subject: "Your new lesson video is ready",
         html,

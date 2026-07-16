@@ -37,6 +37,7 @@
     "COACH_EMAILS": "",
     "ADMIN_EMAILS": "",
     "OPENAI_MODEL": "gpt-5.5",
-    "VIDEO_EMAIL_FROM": ""
+    "RESEND_FROM": "notifications@n3xconsulting.com",
+    "VIDEO_EMAIL_FROM": "notifications@n3xconsulting.com"
   }
 }

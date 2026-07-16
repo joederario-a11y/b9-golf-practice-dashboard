@@ -1,5 +1,6 @@
 import {
   createLoginToken,
+  getEmailFromAddress,
   getPlatformEnvironment,
   getRequiredDatabase,
   roleForEmail,
@@ -85,15 +86,16 @@ export async function requestLoginEmail(
     ? "Your Free Range Golf account is ready"
     : isPasswordReset
       ? "Reset your Free Range Golf password"
-    : "Your Free Range Golf login link";
-  if (!runtime.RESEND_API_KEY || !runtime.VIDEO_EMAIL_FROM) {
+      : "Your Free Range Golf login link";
+  const emailFrom = getEmailFromAddress();
+  if (!runtime.RESEND_API_KEY || !emailFrom) {
     const localLoginAvailable = canExposeLocalLoginUrl(request);
     return {
       status: localLoginAvailable ? "Local link ready" as const : "Failed" as const,
       debugLoginUrl: localLoginAvailable ? loginUrl : undefined,
       emailSubject,
       emailTo: normalizedEmail,
-      failureReason: "Email delivery is not configured. Add RESEND_API_KEY and VIDEO_EMAIL_FROM.",
+      failureReason: "Email delivery is not configured. Add RESEND_API_KEY and VIDEO_EMAIL_FROM or RESEND_FROM.",
       publicMessage: isRegistration
         ? localLoginAvailable
           ? "Account created. Email is not configured locally, so use the secure link below."
@@ -121,7 +123,7 @@ export async function requestLoginEmail(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      from: runtime.VIDEO_EMAIL_FROM,
+      from: emailFrom,
       to: [normalizedEmail],
       subject: emailSubject,
       html: `

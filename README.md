@@ -85,6 +85,120 @@ If email delivery fails or is not configured, the stored video remains
 published, the coach sees a delivery warning, and the failed attempt is logged
 in `video_email_notifications`.
 
+## Supabase Signup Email Notifications
+
+This repository also includes a Supabase Edge Function for Supabase Auth signup
+notifications:
+
+- `supabase/functions/send-signup-email/index.ts` sends a welcome email through
+  Resend when a new `auth.users` row is inserted.
+- `supabase/migrations/20260716143921_send_signup_email_webhook.sql` creates the
+  database trigger that calls the Edge Function asynchronously with `pg_net`.
+- `supabase/config.toml` disables JWT verification for this one function because
+  the database trigger authenticates with a shared secret header.
+
+The Edge Function expects the database webhook header
+`x-signup-webhook-secret` to match `SIGNUP_WEBHOOK_SECRET`. Email delivery
+errors are logged and returned as non-blocking success responses so a signup is
+not blocked by Resend downtime or missing email configuration.
+
+Set Supabase secrets:
+
+```bash
+supabase secrets set RESEND_API_KEY=re_...
+supabase secrets set RESEND_FROM=notifications@n3xconsulting.com
+supabase secrets set SIGNUP_NOTIFY_TO=internal@example.com
+supabase secrets set SIGNUP_WEBHOOK_SECRET=replace-with-a-long-random-secret
+```
+
+Deploy the function:
+
+```bash
+supabase login
+supabase link --project-ref <PROJECT_REF>
+supabase functions deploy send-signup-email
+```
+
+Apply the migration:
+
+```bash
+supabase db push
+```
+
+Then configure the webhook URL and shared secret in the database. Use the same
+secret value that you set as `SIGNUP_WEBHOOK_SECRET`:
+
+```sql
+insert into app_private.signup_webhook_config (id, function_url, webhook_secret, enabled)
+values (
+  true,
+  'https://<PROJECT_REF>.supabase.co/functions/v1/send-signup-email',
+  '<SIGNUP_WEBHOOK_SECRET>',
+  true
+)
+on conflict (id) do update set
+  function_url = excluded.function_url,
+  webhook_secret = excluded.webhook_secret,
+  enabled = excluded.enabled,
+  updated_at = now();
+```
+
+Supabase Dashboard setup:
+
+1. Go to Project Settings > API and copy the project ref for
+   `https://<PROJECT_REF>.supabase.co`.
+2. Go to Edge Functions > Secrets and confirm `RESEND_API_KEY`, `RESEND_FROM`,
+   `SIGNUP_NOTIFY_TO` if used, and `SIGNUP_WEBHOOK_SECRET` are present.
+3. Go to Database > Extensions and confirm `pg_net` is enabled. The migration
+   also attempts to enable it.
+4. Go to SQL Editor and run the `insert into app_private.signup_webhook_config`
+   statement above with your project ref and shared secret.
+5. Create a test Auth user from Authentication > Users, then check Edge Function
+   logs and the recipient inbox.
+
+Do not also create a Dashboard Database Webhook if this migration is active, or
+the user may receive duplicate welcome emails. If you prefer the Dashboard
+instead of the migration trigger, create a Database Webhook on `auth.users` for
+`INSERT`, set the URL to
+`https://<PROJECT_REF>.supabase.co/functions/v1/send-signup-email`, and add
+headers `Content-Type: application/json` and
+`x-signup-webhook-secret: <SIGNUP_WEBHOOK_SECRET>`.
+
+Local test:
+
+```bash
+cp supabase/functions/.env.example supabase/functions/.env.local
+# Fill in RESEND_API_KEY and SIGNUP_WEBHOOK_SECRET in supabase/functions/.env.local.
+supabase functions serve send-signup-email --env-file supabase/functions/.env.local --no-verify-jwt
+```
+
+In another terminal:
+
+```bash
+set -a
+source supabase/functions/.env.local
+set +a
+
+curl -i -X POST 'http://127.0.0.1:54321/functions/v1/send-signup-email' \
+  -H 'Content-Type: application/json' \
+  -H "x-signup-webhook-secret: $SIGNUP_WEBHOOK_SECRET" \
+  -d '{
+    "type": "INSERT",
+    "table": "users",
+    "schema": "auth",
+    "record": {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "email": "test@example.com",
+      "created_at": "2026-07-16T00:00:00Z",
+      "raw_user_meta_data": {
+        "first_name": "Test",
+        "last_name": "Player"
+      }
+    },
+    "old_record": null
+  }'
+```
+
 ### Authentication and invitations
 
 Adding a member creates a real D1 `users` record, a `coach_members`
