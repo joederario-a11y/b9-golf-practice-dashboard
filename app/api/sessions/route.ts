@@ -1,4 +1,5 @@
 import {
+  ensureUserDataOwnershipSchema,
   getIdentity,
   getRequiredDatabase,
   responseFromError,
@@ -12,21 +13,6 @@ function toErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unexpected error";
 }
 
-async function ensureSchema() {
-  const d1 = getRequiredDatabase();
-  await d1
-    .prepare(
-      `CREATE TABLE IF NOT EXISTS golf_session_snapshots (
-        user_email TEXT PRIMARY KEY,
-        display_name TEXT,
-        sessions_json TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-      )`,
-    )
-    .run();
-}
-
 export async function GET() {
   try {
     const identity = await getIdentity();
@@ -34,12 +20,13 @@ export async function GET() {
       return Response.json({ mode: "guest", sessions: [] });
     }
 
-    await ensureSchema();
+    const database = getRequiredDatabase();
+    await ensureUserDataOwnershipSchema(database);
     const row = await getRequiredDatabase()
       .prepare(
-        "SELECT sessions_json, updated_at FROM golf_session_snapshots WHERE user_email = ?",
+        "SELECT sessions_json, updated_at FROM golf_session_snapshots WHERE user_id = ?",
       )
-      .bind(identity.email)
+      .bind(identity.id)
       .first<{ sessions_json: string; updated_at: string }>();
 
     return Response.json({
@@ -65,24 +52,42 @@ export async function POST(request: Request) {
       return Response.json({ error: "sessions must be an array" }, { status: 400 });
     }
 
-    await ensureSchema();
-    await getRequiredDatabase()
-      .prepare(
-        `INSERT INTO golf_session_snapshots (
-          user_email,
-          display_name,
-          sessions_json,
-          created_at,
-          updated_at
+    const database = getRequiredDatabase();
+    await ensureUserDataOwnershipSchema(database);
+    const existing = await database
+      .prepare("SELECT user_id FROM golf_session_snapshots WHERE user_id = ?")
+      .bind(identity.id)
+      .first<{ user_id: string }>();
+    if (existing) {
+      await database
+        .prepare(
+          `UPDATE golf_session_snapshots
+           SET user_email = ?, display_name = ?, sessions_json = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE user_id = ?`,
         )
-        VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        ON CONFLICT(user_email) DO UPDATE SET
-          display_name = excluded.display_name,
-          sessions_json = excluded.sessions_json,
-          updated_at = CURRENT_TIMESTAMP`,
-      )
-      .bind(identity.email, identity.displayName, JSON.stringify(payload.sessions))
-      .run();
+        .bind(identity.email, identity.displayName, JSON.stringify(payload.sessions), identity.id)
+        .run();
+    } else {
+      await database
+        .prepare(
+          `INSERT INTO golf_session_snapshots (
+            user_email,
+            user_id,
+            display_name,
+            sessions_json,
+            created_at,
+            updated_at
+          )
+          VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+          ON CONFLICT(user_email) DO UPDATE SET
+            user_id = excluded.user_id,
+            display_name = excluded.display_name,
+            sessions_json = excluded.sessions_json,
+            updated_at = CURRENT_TIMESTAMP`,
+        )
+        .bind(identity.email, identity.id, identity.displayName, JSON.stringify(payload.sessions))
+        .run();
+    }
 
     return Response.json({ ok: true, user: identity });
   } catch (error) {

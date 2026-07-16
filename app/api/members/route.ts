@@ -1,5 +1,6 @@
 import {
   ensurePlatformSchema,
+  getAssignedMemberIds,
   getPlatformEnvironment,
   getRequiredDatabase,
   requireIdentity,
@@ -263,6 +264,80 @@ export async function POST(request: Request) {
       member: row ? serializeMember(row) : null,
       invite,
     }, { status: existing ? 200 : 201 });
+  } catch (error) {
+    return responseFromError(error);
+  }
+}
+
+export async function PATCH(request: Request) {
+  try {
+    const identity = await requireIdentity();
+    if (identity.role === "member") {
+      return Response.json({ error: "Coach or admin access is required." }, { status: 403 });
+    }
+
+    const payload = await request.json() as MemberPayload & { memberId?: unknown };
+    const memberId = text(payload.memberId, 80);
+    if (!memberId) {
+      return Response.json({ error: "memberId is required." }, { status: 400 });
+    }
+
+    const database = getRequiredDatabase();
+    await ensurePlatformSchema(database);
+    if (identity.role !== "admin") {
+      const assignedMemberIds = await getAssignedMemberIds(identity, database);
+      if (!assignedMemberIds.includes(memberId)) {
+        return Response.json({ error: "You do not have access to that member." }, { status: 403 });
+      }
+    }
+
+    const existing = await database
+      .prepare("SELECT id FROM users WHERE id = ? AND role = 'member'")
+      .bind(memberId)
+      .first<{ id: string }>();
+    if (!existing) {
+      return Response.json({ error: "Member not found." }, { status: 404 });
+    }
+
+    const firstName = text(payload.firstName, 80);
+    const lastName = text(payload.lastName, 80);
+    const phone = text(payload.phone, 40);
+    const skillLevel = text(payload.skillLevel, 80);
+    const notes = text(payload.notes, 2000);
+    if (!firstName || !lastName) {
+      return Response.json({ error: "First and last name are required." }, { status: 400 });
+    }
+
+    await database
+      .prepare(
+        `UPDATE users SET
+          first_name = ?,
+          last_name = ?,
+          phone = ?,
+          skill_level = ?,
+          notes = ?,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND role = 'member'`,
+      )
+      .bind(firstName, lastName, phone || null, skillLevel || null, notes || null, memberId)
+      .run();
+
+    const row = await database
+      .prepare(
+        `SELECT
+          users.id, users.first_name, users.last_name, users.email, users.phone,
+          users.skill_level, users.notes, users.invite_status, users.created_at,
+          COUNT(lesson_videos.id) AS video_count,
+          MAX(lesson_videos.created_at) AS last_video_at
+        FROM users
+        LEFT JOIN lesson_videos ON lesson_videos.member_id = users.id
+        WHERE users.id = ?
+        GROUP BY users.id`,
+      )
+      .bind(memberId)
+      .first<MemberRow>();
+
+    return Response.json({ member: row ? serializeMember(row) : null });
   } catch (error) {
     return responseFromError(error);
   }

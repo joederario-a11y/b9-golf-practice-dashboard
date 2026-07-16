@@ -8,6 +8,10 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
+    "build:worker": "rm -rf dist && vinext build",
+    "preview:worker": "npm run build:worker && cd dist/server && wrangler dev --config wrangler.json --port 8787",
+    "deploy:dry-run": "npm run build:worker && cd dist/server && wrangler deploy --config wrangler.json --dry-run --outdir ../../.wrangler/dry-run",
+    "deploy": "npm run build:worker && cd dist/server && wrangler deploy --config wrangler.json",
     "start": "vinext start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",

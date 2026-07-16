@@ -140,7 +140,7 @@ export async function POST(request: Request) {
       return Response.json({
         mode: "setup",
         answer:
-          "MatRat AI is wired into Free Range Golf and ready for the selected club/session data. Add OPENAI_API_KEY as a Sites runtime secret to turn on live coaching responses.",
+          "MatRat AI is wired into Free Range Golf and ready for the selected club/session data. Add OPENAI_API_KEY as a Cloudflare Worker secret to turn on live coaching responses.",
       });
     }
 

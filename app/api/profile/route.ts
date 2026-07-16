@@ -1,4 +1,5 @@
 import {
+  ensureUserDataOwnershipSchema,
   getIdentity,
   getRequiredDatabase,
   responseFromError,
@@ -12,21 +13,6 @@ function toErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unexpected error";
 }
 
-async function ensureSchema() {
-  const d1 = getRequiredDatabase();
-  await d1
-    .prepare(
-      `CREATE TABLE IF NOT EXISTS golf_practice_profiles (
-        user_email TEXT PRIMARY KEY,
-        display_name TEXT,
-        profile_json TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-      )`,
-    )
-    .run();
-}
-
 export async function GET() {
   try {
     const identity = await getIdentity();
@@ -34,12 +20,13 @@ export async function GET() {
       return Response.json({ mode: "guest", profile: null });
     }
 
-    await ensureSchema();
-    const row = await getRequiredDatabase()
+    const database = getRequiredDatabase();
+    await ensureUserDataOwnershipSchema(database);
+    const row = await database
       .prepare(
-        "SELECT profile_json, updated_at FROM golf_practice_profiles WHERE user_email = ?",
+        "SELECT profile_json, updated_at FROM golf_practice_profiles WHERE user_id = ?",
       )
-      .bind(identity.email)
+      .bind(identity.id)
       .first<{ profile_json: string; updated_at: string }>();
 
     return Response.json({
@@ -65,24 +52,42 @@ export async function POST(request: Request) {
       return Response.json({ error: "profile must be an object" }, { status: 400 });
     }
 
-    await ensureSchema();
-    await getRequiredDatabase()
-      .prepare(
-        `INSERT INTO golf_practice_profiles (
-          user_email,
-          display_name,
-          profile_json,
-          created_at,
-          updated_at
+    const database = getRequiredDatabase();
+    await ensureUserDataOwnershipSchema(database);
+    const existing = await database
+      .prepare("SELECT user_id FROM golf_practice_profiles WHERE user_id = ?")
+      .bind(identity.id)
+      .first<{ user_id: string }>();
+    if (existing) {
+      await database
+        .prepare(
+          `UPDATE golf_practice_profiles
+           SET user_email = ?, display_name = ?, profile_json = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE user_id = ?`,
         )
-        VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        ON CONFLICT(user_email) DO UPDATE SET
-          display_name = excluded.display_name,
-          profile_json = excluded.profile_json,
-          updated_at = CURRENT_TIMESTAMP`,
-      )
-      .bind(identity.email, identity.displayName, JSON.stringify(payload.profile))
-      .run();
+        .bind(identity.email, identity.displayName, JSON.stringify(payload.profile), identity.id)
+        .run();
+    } else {
+      await database
+        .prepare(
+          `INSERT INTO golf_practice_profiles (
+            user_email,
+            user_id,
+            display_name,
+            profile_json,
+            created_at,
+            updated_at
+          )
+          VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+          ON CONFLICT(user_email) DO UPDATE SET
+            user_id = excluded.user_id,
+            display_name = excluded.display_name,
+            profile_json = excluded.profile_json,
+            updated_at = CURRENT_TIMESTAMP`,
+        )
+        .bind(identity.email, identity.id, identity.displayName, JSON.stringify(payload.profile))
+        .run();
+    }
 
     return Response.json({ ok: true, user: identity });
   } catch (error) {

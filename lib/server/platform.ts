@@ -10,6 +10,7 @@ export type AuthIdentity = {
   firstName: string;
   lastName: string;
   displayName: string;
+  passwordResetRequired: boolean;
 };
 
 export type PlatformEnvironment = {
@@ -29,6 +30,8 @@ type UserRow = {
   first_name: string;
   last_name: string;
   email: string;
+  account_status?: string | null;
+  password_reset_required?: number | boolean | null;
 };
 
 type SessionUserRow = UserRow & {
@@ -45,7 +48,7 @@ export const AUTH_SESSION_COOKIE = "frg-session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 const LOGIN_TOKEN_TTL_SECONDS = 60 * 30;
 const VIDEO_LINK_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 14;
-const PASSWORD_HASH_ITERATIONS = 180000;
+const PASSWORD_HASH_ITERATIONS = 100000;
 
 export function getPlatformEnvironment() {
   return env as unknown as PlatformEnvironment;
@@ -147,6 +150,81 @@ async function derivePasswordHash(password: string, salt: Uint8Array, iterations
   return new Uint8Array(bits);
 }
 
+async function ensureUsersAccountStatusColumn(database: D1Database) {
+  const columns = await database.prepare("PRAGMA table_info(users)").all<{ name: string }>();
+  const hasAccountStatus = columns.results.some((column) => column.name === "account_status");
+  if (hasAccountStatus) return;
+
+  try {
+    await database
+      .prepare("ALTER TABLE users ADD COLUMN account_status TEXT NOT NULL DEFAULT 'active'")
+      .run();
+  } catch (error) {
+    const message = error instanceof Error ? error.message.toLowerCase() : "";
+    if (!message.includes("duplicate column")) throw error;
+  }
+}
+
+async function ensureColumn(database: D1Database, tableName: string, columnName: string, definition: string) {
+  const columns = await database.prepare(`PRAGMA table_info(${tableName})`).all<{ name: string }>();
+  const hasColumn = columns.results.some((column) => column.name === columnName);
+  if (hasColumn) return;
+
+  try {
+    await database.prepare(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`).run();
+  } catch (error) {
+    const message = error instanceof Error ? error.message.toLowerCase() : "";
+    if (!message.includes("duplicate column")) throw error;
+  }
+}
+
+export async function ensureUserDataOwnershipSchema(database = getRequiredDatabase()) {
+  await database.batch([
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS golf_session_snapshots (
+        user_email TEXT PRIMARY KEY,
+        user_id TEXT,
+        display_name TEXT,
+        sessions_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`,
+    ),
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS golf_practice_profiles (
+        user_email TEXT PRIMARY KEY,
+        user_id TEXT,
+        display_name TEXT,
+        profile_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`,
+    ),
+  ]);
+  await ensureColumn(database, "golf_session_snapshots", "user_id", "TEXT");
+  await ensureColumn(database, "golf_practice_profiles", "user_id", "TEXT");
+  await database.batch([
+    database.prepare(
+      `UPDATE golf_session_snapshots
+       SET user_id = (
+         SELECT users.id FROM users
+         WHERE LOWER(users.email) = LOWER(golf_session_snapshots.user_email)
+       )
+       WHERE user_id IS NULL`,
+    ),
+    database.prepare(
+      `UPDATE golf_practice_profiles
+       SET user_id = (
+         SELECT users.id FROM users
+         WHERE LOWER(users.email) = LOWER(golf_practice_profiles.user_email)
+       )
+       WHERE user_id IS NULL`,
+    ),
+    database.prepare("CREATE UNIQUE INDEX IF NOT EXISTS golf_session_snapshots_user_id_unique ON golf_session_snapshots(user_id) WHERE user_id IS NOT NULL"),
+    database.prepare("CREATE UNIQUE INDEX IF NOT EXISTS golf_practice_profiles_user_id_unique ON golf_practice_profiles(user_id) WHERE user_id IS NOT NULL"),
+  ]);
+}
+
 export function makeAuthSessionCookie(token: string, maxAgeSeconds = SESSION_TTL_SECONDS) {
   const appBaseUrl = getPlatformEnvironment().APP_BASE_URL ?? "";
   const secure = !appBaseUrl.startsWith("http://localhost") && !appBaseUrl.startsWith("http://127.0.0.1");
@@ -167,6 +245,7 @@ function identityFromUser(row: UserRow): AuthIdentity {
     firstName: row.first_name,
     lastName: row.last_name,
     displayName: [row.first_name, row.last_name].filter(Boolean).join(" "),
+    passwordResetRequired: row.password_reset_required === 1 || row.password_reset_required === true,
   };
 }
 
@@ -182,12 +261,45 @@ export async function ensurePlatformSchema(database = getRequiredDatabase()) {
         phone TEXT,
         skill_level TEXT,
         notes TEXT,
+        account_status TEXT NOT NULL DEFAULT 'active',
+        password_reset_required INTEGER NOT NULL DEFAULT 0,
         invite_status TEXT NOT NULL DEFAULT 'pending',
         invited_at TEXT,
         last_login_at TEXT,
         created_by TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`,
+    ),
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS member_content_items (
+        id TEXT PRIMARY KEY,
+        member_id TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        content_type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL DEFAULT '',
+        visibility TEXT NOT NULL DEFAULT 'member',
+        status TEXT NOT NULL DEFAULT 'active',
+        session_data_id TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`,
+    ),
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS member_activity_log (
+        id TEXT PRIMARY KEY,
+        actor_id TEXT,
+        actor_role TEXT NOT NULL,
+        member_id TEXT,
+        target_user_id TEXT,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT,
+        action TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       )`,
     ),
     database.prepare(
@@ -317,11 +429,18 @@ export async function ensurePlatformSchema(database = getRequiredDatabase()) {
     database.prepare("CREATE INDEX IF NOT EXISTS member_invitations_member_idx ON member_invitations(member_id, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS lesson_videos_member_idx ON lesson_videos(member_id, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS lesson_videos_coach_idx ON lesson_videos(coach_id, created_at)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS member_content_member_idx ON member_content_items(member_id, created_at)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS member_content_created_by_idx ON member_content_items(created_by, created_at)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS member_activity_member_idx ON member_activity_log(member_id, created_at)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS member_activity_actor_idx ON member_activity_log(actor_id, created_at)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS member_activity_target_idx ON member_activity_log(target_user_id, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS video_views_video_idx ON video_views(video_id)"),
     database.prepare("CREATE INDEX IF NOT EXISTS video_email_notifications_video_idx ON video_email_notifications(video_id)"),
     database.prepare("CREATE INDEX IF NOT EXISTS auth_login_tokens_email_idx ON auth_login_tokens(email, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS auth_sessions_user_idx ON auth_sessions(user_id, expires_at)"),
   ]);
+  await ensureUsersAccountStatusColumn(database);
+  await ensureColumn(database, "users", "password_reset_required", "INTEGER NOT NULL DEFAULT 0");
 }
 
 export function identityForUser(row: UserRow): AuthIdentity {
@@ -389,25 +508,33 @@ export async function createAuthSession(userId: string) {
   };
 }
 
-export async function setUserPassword(userId: string, password: string) {
+export async function setUserPassword(
+  userId: string,
+  password: string,
+  options: { temporary?: boolean } = {},
+) {
   const database = getRequiredDatabase();
   await ensurePlatformSchema(database);
   const salt = new Uint8Array(16);
   crypto.getRandomValues(salt);
   const hash = await derivePasswordHash(password, salt, PASSWORD_HASH_ITERATIONS);
-  await database
-    .prepare(
-      `INSERT INTO user_passwords (
-        user_id, password_hash, password_salt, iterations, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      ON CONFLICT(user_id) DO UPDATE SET
-        password_hash = excluded.password_hash,
-        password_salt = excluded.password_salt,
-        iterations = excluded.iterations,
-        updated_at = CURRENT_TIMESTAMP`,
-    )
-    .bind(userId, bytesToBase64(hash), bytesToBase64(salt), PASSWORD_HASH_ITERATIONS)
-    .run();
+  await database.batch([
+    database
+      .prepare(
+        `INSERT INTO user_passwords (
+          user_id, password_hash, password_salt, iterations, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id) DO UPDATE SET
+          password_hash = excluded.password_hash,
+          password_salt = excluded.password_salt,
+          iterations = excluded.iterations,
+          updated_at = CURRENT_TIMESTAMP`,
+      )
+      .bind(userId, bytesToBase64(hash), bytesToBase64(salt), PASSWORD_HASH_ITERATIONS),
+    database
+      .prepare("UPDATE users SET password_reset_required = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .bind(options.temporary ? 1 : 0, userId),
+  ]);
 }
 
 export async function verifyUserPassword(email: string, password: string) {
@@ -417,6 +544,8 @@ export async function verifyUserPassword(email: string, password: string) {
     .prepare(
       `SELECT
         users.id, users.role, users.first_name, users.last_name, users.email,
+        COALESCE(users.account_status, 'active') AS account_status,
+        COALESCE(users.password_reset_required, 0) AS password_reset_required,
         user_passwords.password_hash, user_passwords.password_salt, user_passwords.iterations
       FROM users
       JOIN user_passwords ON user_passwords.user_id = users.id
@@ -426,6 +555,8 @@ export async function verifyUserPassword(email: string, password: string) {
     .first<PasswordRow>();
 
   if (!row) return null;
+  if (row.account_status === "inactive") return null;
+  if (row.iterations > PASSWORD_HASH_ITERATIONS) return null;
   const expected = base64ToBytes(row.password_hash);
   const actual = await derivePasswordHash(password, base64ToBytes(row.password_salt), row.iterations);
   if (!constantTimeEqual(actual, expected)) return null;
@@ -489,7 +620,7 @@ export async function consumeLoginToken(token: string) {
 
   const user = loginToken.user_id
     ? await database
-        .prepare("SELECT id, role, first_name, last_name, email FROM users WHERE id = ?")
+        .prepare("SELECT id, role, first_name, last_name, email, COALESCE(password_reset_required, 0) AS password_reset_required FROM users WHERE id = ?")
         .bind(loginToken.user_id)
         .first<UserRow>()
     : await upsertUserForEmail({ email: loginToken.email });
@@ -538,6 +669,8 @@ export async function getIdentity(): Promise<AuthIdentity | null> {
         .prepare(
           `SELECT
             users.id, users.role, users.first_name, users.last_name, users.email,
+            COALESCE(users.account_status, 'active') AS account_status,
+            COALESCE(users.password_reset_required, 0) AS password_reset_required,
             auth_sessions.expires_at
           FROM auth_sessions
           JOIN users ON users.id = auth_sessions.user_id
@@ -545,7 +678,7 @@ export async function getIdentity(): Promise<AuthIdentity | null> {
         )
         .bind(await hashToken(sessionToken))
         .first<SessionUserRow>();
-      if (sessionUser && new Date(sessionUser.expires_at).getTime() > Date.now()) {
+      if (sessionUser && sessionUser.account_status !== "inactive" && new Date(sessionUser.expires_at).getTime() > Date.now()) {
         await database.batch([
           database.prepare("UPDATE auth_sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE token_hash = ?").bind(await hashToken(sessionToken)),
           database.prepare("UPDATE users SET last_login_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(sessionUser.id),
@@ -559,10 +692,12 @@ export async function getIdentity(): Promise<AuthIdentity | null> {
   const database = getRequiredDatabase();
   await ensurePlatformSchema(database);
   const existing = await database
-    .prepare("SELECT id, role, first_name, last_name, email FROM users WHERE email = ?")
+    .prepare("SELECT id, role, first_name, last_name, email, COALESCE(account_status, 'active') AS account_status, COALESCE(password_reset_required, 0) AS password_reset_required FROM users WHERE email = ?")
     .bind(email)
     .first<UserRow>();
   const headerRole = requestHeaders.get("oai-authenticated-user-role")?.toLowerCase();
+  if (existing?.account_status === "inactive") return null;
+
   const role: UserRole = headerRole === "admin" || headerRole === "coach"
     ? headerRole
     : roleForEmail(email, existing?.role);
@@ -603,6 +738,7 @@ export async function getIdentity(): Promise<AuthIdentity | null> {
     firstName: name.firstName,
     lastName: name.lastName,
     displayName: [name.firstName, name.lastName].filter(Boolean).join(" "),
+    passwordResetRequired: existing?.password_reset_required === 1 || existing?.password_reset_required === true,
   };
 }
 
@@ -612,6 +748,41 @@ export async function requireIdentity() {
     throw new Response("Authentication required.", { status: 401 });
   }
   return identity;
+}
+
+export async function recordActivity(values: {
+  action: string;
+  actor?: AuthIdentity | null;
+  database?: D1Database;
+  entityId?: string | null;
+  entityType: string;
+  memberId?: string | null;
+  metadata?: Record<string, unknown>;
+  summary: string;
+  targetUserId?: string | null;
+}) {
+  const database = values.database ?? getRequiredDatabase();
+  await ensurePlatformSchema(database);
+  await database
+    .prepare(
+      `INSERT INTO member_activity_log (
+        id, actor_id, actor_role, member_id, target_user_id, entity_type,
+        entity_id, action, summary, metadata_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+    )
+    .bind(
+      crypto.randomUUID(),
+      values.actor?.id ?? null,
+      values.actor?.role ?? "system",
+      values.memberId ?? null,
+      values.targetUserId ?? null,
+      values.entityType,
+      values.entityId ?? null,
+      values.action,
+      values.summary,
+      JSON.stringify(values.metadata ?? {}),
+    )
+    .run();
 }
 
 export async function getAssignedMemberIds(identity: AuthIdentity, database = getRequiredDatabase()) {

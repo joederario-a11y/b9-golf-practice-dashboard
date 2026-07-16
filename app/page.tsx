@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 
-type Tab = "dashboard" | "sessions" | "clubs" | "videos" | "coach" | "practice" | "import";
+type Tab = "dashboard" | "sessions" | "clubs" | "videos" | "coach" | "admin" | "practice" | "import";
 type AccountMode = "pending" | "user" | "guest";
 type LoginModalMode = "login" | "register";
 type RegisterAccountType = "player" | "coach";
@@ -87,6 +87,33 @@ type ClubMetricConfig = {
   decimals?: number;
 };
 
+type GaugeTone = "green" | "amber" | "red" | "neutral";
+
+type SwingGaugeBand = {
+  from: number;
+  to: number;
+  tone: GaugeTone;
+  label: string;
+  redline?: boolean;
+};
+
+type SwingGaugeMetric = {
+  id: string;
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  unit: string;
+  decimals: number;
+  targetRange: [number, number];
+  warningRange: [number, number];
+  bands: SwingGaugeBand[];
+  source: "Live" | "Sample" | "Derived";
+  detail: string;
+  priority?: "hero";
+  centerMarker?: number;
+};
+
 type ProTourStats = {
   carry: number;
   total: number;
@@ -103,7 +130,7 @@ type LastImport = {
   date: string;
   location: string;
   simulator: string;
-  submissionType: "API feed" | "CSV / Excel" | "Photo";
+  submissionType: "API feed" | "CSV / Excel" | "Photo" | "Manual entry";
   shots: Shot[];
 };
 
@@ -211,6 +238,94 @@ type CoachMember = {
   coachIds?: string[];
 };
 
+type StaffUserRecord = {
+  id: string;
+  name: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  role: "admin" | "coach" | "member";
+  phone: string;
+  skillLevel: string;
+  notes: string;
+  accountStatus: "active" | "inactive";
+  inviteStatus: string;
+  invitedAt?: string | null;
+  lastLoginAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  assignedCoachId?: string;
+  assignedCoachName?: string;
+  assignedCoachIds: string[];
+  assignedCoachNames: string[];
+  videoCount: number;
+  sessionCount: number;
+  lastVideoAt?: string | null;
+};
+
+type StaffActivityRecord = {
+  id: string;
+  actorId?: string | null;
+  actorRole: string;
+  memberId?: string | null;
+  targetUserId?: string | null;
+  entityType: string;
+  entityId?: string | null;
+  action: string;
+  summary: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
+
+type StaffContentRecord = {
+  id: string;
+  memberId: string;
+  creatorName: string;
+  contentType: string;
+  title: string;
+  body: string;
+  visibility: string;
+  status: string;
+  sessionId?: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type StaffDashboardPayload = {
+  summary: {
+    activeMembers: number;
+    coachFeedbackAwaitingReview: number;
+    membersAddedThisMonth: number;
+    sessionsAdded: number;
+    totalCoaches: number;
+    totalMembers: number;
+    videosUploaded: number;
+  };
+  quickActions: string[];
+  users: StaffUserRecord[];
+  coaches: StaffUserRecord[];
+  recentActivity: StaffActivityRecord[];
+};
+
+type StaffMemberDetail = {
+  member: StaffUserRecord;
+  sessions: Session[];
+  sessionsUpdatedAt?: string | null;
+  videos: Array<{
+    id: string;
+    title: string;
+    publicationStatus: string;
+    uploadStatus: string;
+    reviewStatus: string;
+    createdAt: string;
+    lessonDate?: string | null;
+    memberFacingNotes: string;
+  }>;
+  content: StaffContentRecord[];
+  activity: StaffActivityRecord[];
+};
+
 type AccountUser = {
   id: string;
   displayName: string;
@@ -218,6 +333,7 @@ type AccountUser = {
   role: "admin" | "coach" | "member";
   firstName: string;
   lastName: string;
+  passwordResetRequired?: boolean;
 };
 
 type VideoEmailNotificationLog = {
@@ -353,6 +469,7 @@ const DEFAULT_SIMULATOR = "Full Swing";
 const LOCATION_UNAVAILABLE = "NA";
 const PRACTICE_PROFILE_STORAGE_KEY = "free-range-golf.practice-profile.v1";
 const ONBOARDING_DRAFT_STORAGE_KEY = "free-range-golf.onboarding-draft.v1";
+const ONBOARDING_SKIP_STORAGE_KEY = "free-range-golf.onboarding-skipped.v1";
 const SESSIONS_STORAGE_KEY = "free-range-golf.sessions.v1";
 const LAST_IMPORT_STORAGE_KEY = "free-range-golf.last-import.v1";
 
@@ -472,6 +589,7 @@ const NAV_ITEMS: { id: Tab; label: string; icon: string }[] = [
   { id: "clubs", label: "Clubs", icon: "▥" },
   { id: "videos", label: "Videos", icon: "▶" },
   { id: "coach", label: "Coach", icon: "✦" },
+  { id: "admin", label: "Admin", icon: "⚙" },
   { id: "practice", label: "Practice", icon: "◎" },
   { id: "import", label: "Import", icon: "⇧" },
 ];
@@ -482,9 +600,39 @@ const PAGE_DESCRIPTIONS: Record<Tab, string> = {
   clubs: "Understand carry windows, gapping, and quality across the bag.",
   videos: "Keep lesson recaps, swing reviews, and practice feedback together.",
   coach: "Turn performance data into focused guidance and deliver lesson follow-up.",
+  admin: "Manage people, assignments, member content, and operational activity.",
   practice: "Build the next practice block around the misses that matter most.",
   import: "Bring in simulator files or photos and convert them into usable session data.",
 };
+
+const ROUTE_TABS = new Set<Tab>(NAV_ITEMS.map((item) => item.id));
+
+function tabFromValue(value: string | null | undefined): Tab | null {
+  const normalized = value?.trim().toLowerCase();
+  return normalized && ROUTE_TABS.has(normalized as Tab) ? normalized as Tab : null;
+}
+
+function tabFromPathname(pathname: string): Tab | null {
+  const [segment] = pathname.split("/").filter(Boolean);
+  return tabFromValue(segment);
+}
+
+function pathForTab(tab: Tab) {
+  return tab === "dashboard" ? "/" : `/${tab}`;
+}
+
+function navItemsForAccount(accountMode: AccountMode, accountUser: AccountUser | null) {
+  if (accountMode === "user" && accountUser?.role === "member") {
+    return NAV_ITEMS.filter((item) => item.id !== "coach" && item.id !== "admin");
+  }
+  if (accountMode === "user" && accountUser?.role === "coach") {
+    return NAV_ITEMS.filter((item) => item.id !== "admin");
+  }
+  if (accountMode === "user" && accountUser?.role === "admin") {
+    return NAV_ITEMS;
+  }
+  return NAV_ITEMS.filter((item) => item.id !== "admin");
+}
 
 const VIDEO_TYPES: VideoType[] = [
   "Lesson Recap",
@@ -948,6 +1096,24 @@ const BASE_SESSIONS: Session[] = [
   makeSession("s6", "Long iron strike", "2026-05-26", "GCQuad", "Contact", ["5-Iron", "6-Iron", "7-Iron"], -5),
 ];
 
+const EMPTY_SESSION: Session = {
+  id: "empty-session",
+  title: "No sessions yet",
+  date: getTodayDateString(),
+  source: "No data",
+  focus: "Upload your first session",
+  location: LOCATION_UNAVAILABLE,
+  shots: [],
+};
+
+const EMPTY_LAST_IMPORT: LastImport = {
+  date: getTodayDateString(),
+  location: LOCATION_UNAVAILABLE,
+  simulator: "NA",
+  submissionType: "Manual entry",
+  shots: [],
+};
+
 function round(value: number, digits = 1) {
   return Number(value.toFixed(digits));
 }
@@ -991,12 +1157,297 @@ function formatAvailableMetric(value: number, unit = "", digits = 1) {
   return unit ? `${formatted} ${unit}` : formatted;
 }
 
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function orderedRange(from: number, to: number): [number, number] {
+  return from <= to ? [from, to] : [to, from];
+}
+
+function clampRange(range: [number, number], min: number, max: number): [number, number] {
+  return [clamp(range[0], min, max), clamp(range[1], min, max)];
+}
+
+function makeGaugeBands(min: number, max: number, targetRange: [number, number], warningRange: [number, number], redline: "high" | "both" | "none" = "high") {
+  const [targetLow, targetHigh] = clampRange(orderedRange(targetRange[0], targetRange[1]), min, max);
+  const [warningLow, warningHigh] = clampRange(orderedRange(warningRange[0], warningRange[1]), min, max);
+  const bandInputs: SwingGaugeBand[] = [
+    { from: min, to: warningLow, tone: "red", label: "Outside", redline: redline === "both" },
+    { from: warningLow, to: targetLow, tone: "amber", label: "Caution" },
+    { from: targetLow, to: targetHigh, tone: "green", label: "Ideal" },
+    { from: targetHigh, to: warningHigh, tone: "amber", label: "Caution" },
+    { from: warningHigh, to: max, tone: "red", label: "Redline", redline: redline === "high" || redline === "both" },
+  ];
+
+  return bandInputs
+    .map((band) => ({ ...band, from: clamp(band.from, min, max), to: clamp(band.to, min, max) }))
+    .filter((band) => band.to - band.from > 0.01);
+}
+
+function resolveGaugeValue(value: number | undefined, fallback: number, fallbackSource: SwingGaugeMetric["source"] = "Sample") {
+  return Number.isFinite(value) ? { value: value as number, source: "Live" as const } : { value: fallback, source: fallbackSource };
+}
+
+function getClubFamily(club: string) {
+  if (club === "Driver") return "driver";
+  if (club.includes("Wood")) return "wood";
+  if (["PW", "GW", "SW", "LW"].includes(club)) return "wedge";
+  return "iron";
+}
+
+function getAttackWindow(club: string): { target: [number, number]; warning: [number, number]; sample: number } {
+  const family = getClubFamily(club);
+  if (family === "driver") return { target: [1.5, 4.5], warning: [-1.5, 6], sample: 2.7 };
+  if (family === "wood") return { target: [-1.5, 2], warning: [-4, 4], sample: -0.6 };
+  if (family === "wedge") return { target: [-6, -2.5], warning: [-8, -1], sample: -4.2 };
+  return { target: [-5, -1.5], warning: [-7, 1], sample: -3.4 };
+}
+
+function getSwingPlaneWindow(club: string): { target: [number, number]; warning: [number, number]; sample: number } {
+  const family = getClubFamily(club);
+  if (family === "driver") return { target: [45, 53], warning: [41, 57], sample: 49 };
+  if (family === "wood") return { target: [48, 56], warning: [44, 60], sample: 52 };
+  if (family === "wedge") return { target: [60, 67], warning: [56, 70], sample: 63 };
+  return { target: [55, 63], warning: [51, 66], sample: 59 };
+}
+
+function makeSwingGaugeMetric({
+  id,
+  label,
+  value,
+  min,
+  max,
+  unit,
+  decimals,
+  targetRange,
+  warningRange,
+  detail,
+  priority,
+  fallbackSource,
+  redline = "high",
+  centerMarker,
+}: {
+  id: string;
+  label: string;
+  value: { value: number; source: SwingGaugeMetric["source"] };
+  min: number;
+  max: number;
+  unit: string;
+  decimals: number;
+  targetRange: [number, number];
+  warningRange: [number, number];
+  detail: string;
+  priority?: "hero";
+  fallbackSource?: SwingGaugeMetric["source"];
+  redline?: "high" | "both" | "none";
+  centerMarker?: number;
+}): SwingGaugeMetric {
+  const [safeMin, safeMax] = orderedRange(min, max);
+  const safeValue = clamp(value.value, safeMin, safeMax);
+
+  return {
+    id,
+    label,
+    value: safeValue,
+    min: safeMin,
+    max: safeMax,
+    unit,
+    decimals,
+    targetRange: clampRange(targetRange, safeMin, safeMax),
+    warningRange: clampRange(warningRange, safeMin, safeMax),
+    bands: makeGaugeBands(safeMin, safeMax, targetRange, warningRange, redline),
+    source: value.source ?? fallbackSource ?? "Sample",
+    detail,
+    priority,
+    centerMarker,
+  };
+}
+
+function buildSwingGaugeMetrics(
+  club: string,
+  selectedClubSummary: ClubSummary | undefined,
+  selectedClubShots: Shot[],
+  avgCarry: number,
+  avgSmash: number,
+) {
+  const target = CLUB_TARGETS[club] ?? CLUB_TARGETS["7-Iron"];
+  const carryValue = resolveGaugeValue(
+    Number.isFinite(selectedClubSummary?.carry) ? selectedClubSummary?.carry : avgCarry,
+    target.carry,
+  );
+  const smashValue = resolveGaugeValue(
+    Number.isFinite(selectedClubSummary?.smash) ? selectedClubSummary?.smash : avgSmash,
+    target.smash,
+  );
+  const clubPathValue = resolveGaugeValue(averageMetric(selectedClubShots, "clubPath"), 0.8, "Sample");
+  const faceAngleValue = resolveGaugeValue(averageMetric(selectedClubShots, "faceAngle"), -0.4, "Sample");
+  const attackWindow = getAttackWindow(club);
+  const swingPlaneWindow = getSwingPlaneWindow(club);
+  const maxCarry = Math.max(130, target.carry * 1.45, carryValue.value * 1.25);
+  const maxSpin = Math.max(8000, target.spin * 1.35);
+  const minSpin = Math.max(600, target.spin * 0.38);
+
+  return [
+    makeSwingGaugeMetric({
+      id: "clubSpeed",
+      label: "Club Speed",
+      value: resolveGaugeValue(selectedClubSummary?.clubSpeed, target.clubSpeed),
+      min: Math.max(30, target.clubSpeed - 42),
+      max: Math.max(105, target.clubSpeed + 36),
+      unit: "mph",
+      decimals: 1,
+      targetRange: [target.clubSpeed - 4, target.clubSpeed + 5],
+      warningRange: [target.clubSpeed - 10, target.clubSpeed + 11],
+      detail: "How fast the club is moving through impact. The green band is the current club window.",
+      priority: "hero",
+    }),
+    makeSwingGaugeMetric({
+      id: "ballSpeed",
+      label: "Ball Speed",
+      value: resolveGaugeValue(selectedClubSummary?.ballSpeed, target.ballSpeed),
+      min: Math.max(45, target.ballSpeed - 52),
+      max: Math.max(125, target.ballSpeed + 45),
+      unit: "mph",
+      decimals: 1,
+      targetRange: [target.ballSpeed - 5, target.ballSpeed + 6],
+      warningRange: [target.ballSpeed - 13, target.ballSpeed + 14],
+      detail: "Ball speed shows energy transfer. It should rise with centered contact and efficient launch.",
+      priority: "hero",
+    }),
+    makeSwingGaugeMetric({
+      id: "carry",
+      label: "Carry Distance",
+      value: carryValue,
+      min: Math.max(20, target.carry * 0.42),
+      max: maxCarry,
+      unit: "yd",
+      decimals: 1,
+      targetRange: [target.carry - 7, target.carry + 9],
+      warningRange: [target.carry - 20, target.carry + 24],
+      detail: "Carry is the main distance window for this club. High is fine, but consistency is the goal.",
+      priority: "hero",
+      redline: "none",
+    }),
+    makeSwingGaugeMetric({
+      id: "launch",
+      label: "Launch Angle",
+      value: resolveGaugeValue(selectedClubSummary?.launch, target.launch),
+      min: Math.max(0, target.launch - 16),
+      max: Math.min(42, target.launch + 18),
+      unit: "deg",
+      decimals: 1,
+      targetRange: [target.launch - 2, target.launch + 2.5],
+      warningRange: [target.launch - 5, target.launch + 5.5],
+      detail: "Launch angle controls start height and carry. Too low or high starts to cost distance.",
+      centerMarker: target.launch,
+      redline: "both",
+    }),
+    makeSwingGaugeMetric({
+      id: "spin",
+      label: "Spin Rate",
+      value: resolveGaugeValue(selectedClubSummary?.spin, target.spin),
+      min: minSpin,
+      max: maxSpin,
+      unit: "rpm",
+      decimals: 0,
+      targetRange: [target.spin - Math.max(350, target.spin * 0.08), target.spin + Math.max(450, target.spin * 0.09)],
+      warningRange: [target.spin - Math.max(800, target.spin * 0.16), target.spin + Math.max(1000, target.spin * 0.18)],
+      detail: "Spin has a redline because excessive spin can balloon shots and flatten distance.",
+      centerMarker: target.spin,
+      redline: "both",
+    }),
+    makeSwingGaugeMetric({
+      id: "smash",
+      label: "Smash Factor",
+      value: smashValue,
+      min: Math.max(0.95, target.smash - 0.28),
+      max: 1.55,
+      unit: "",
+      decimals: 2,
+      targetRange: [target.smash - 0.03, Math.min(1.52, target.smash + 0.04)],
+      warningRange: [target.smash - 0.08, Math.min(1.54, target.smash + 0.06)],
+      detail: "Smash factor is impact efficiency: ball speed divided by club speed.",
+      redline: "none",
+    }),
+    makeSwingGaugeMetric({
+      id: "clubPath",
+      label: "Club Path",
+      value: clubPathValue,
+      min: -10,
+      max: 10,
+      unit: "deg",
+      decimals: 1,
+      targetRange: [-2, 2],
+      warningRange: [-5, 5],
+      detail: "Path direction through impact. Negative is left, positive is right for a right-handed reference.",
+      centerMarker: 0,
+      redline: "both",
+    }),
+    makeSwingGaugeMetric({
+      id: "faceAngle",
+      label: "Face Angle",
+      value: faceAngleValue,
+      min: -10,
+      max: 10,
+      unit: "deg",
+      decimals: 1,
+      targetRange: [-1.5, 1.5],
+      warningRange: [-4, 4],
+      detail: "Face angle drives start line. The ideal zone keeps the face close to square.",
+      centerMarker: 0,
+      redline: "both",
+    }),
+    makeSwingGaugeMetric({
+      id: "attackAngle",
+      label: "Attack Angle",
+      value: resolveGaugeValue(Number.NaN, attackWindow.sample, "Derived"),
+      min: -9,
+      max: 8,
+      unit: "deg",
+      decimals: 1,
+      targetRange: attackWindow.target,
+      warningRange: attackWindow.warning,
+      detail: "Preview gauge for attack angle. It is ready for live launch-monitor values when available.",
+      centerMarker: 0,
+      redline: "both",
+    }),
+    makeSwingGaugeMetric({
+      id: "swingPlane",
+      label: "Swing Plane",
+      value: resolveGaugeValue(Number.NaN, swingPlaneWindow.sample, "Derived"),
+      min: 38,
+      max: 72,
+      unit: "deg",
+      decimals: 1,
+      targetRange: swingPlaneWindow.target,
+      warningRange: swingPlaneWindow.warning,
+      detail: "Preview gauge for swing plane. The target changes by club type.",
+      centerMarker: (swingPlaneWindow.target[0] + swingPlaneWindow.target[1]) / 2,
+      redline: "both",
+    }),
+  ];
+}
+
+function parseDisplayDate(value: string) {
+  if (!value) return null;
+  const normalized = value.includes("T")
+    ? value
+    : value.length > 10
+      ? value.replace(" ", "T")
+      : `${value}T12:00:00`;
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 function formatDate(value: string) {
-  return new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date(`${value}T12:00:00`));
+  const date = parseDisplayDate(value);
+  return date ? new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(date) : "NA";
 }
 
 function formatFullDate(value: string) {
-  return new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric" }).format(new Date(`${value}T12:00:00`));
+  const date = parseDisplayDate(value);
+  return date ? new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric" }).format(date) : "NA";
 }
 
 function getClubMetricConfig(metricKey: ClubMetricKey) {
@@ -1722,11 +2173,13 @@ function buildImportedSession(
       ? `${simulator} API`
       : submissionType === "Photo"
         ? `${simulator} Photo Scan`
+        : submissionType === "Manual entry"
+          ? "Manual entry"
         : "CSV Upload";
 
   return {
     id: `import-${Date.now()}`,
-    title: `${subject} ${submissionType === "Photo" ? "photo" : submissionType === "API feed" ? "API" : "CSV"} import`,
+    title: `${subject} ${submissionType === "Photo" ? "photo" : submissionType === "API feed" ? "API" : submissionType === "Manual entry" ? "manual" : "CSV"} import`,
     date: metadata.capturedAt ?? getTodayDateString(),
     source,
     focus: "New data",
@@ -1831,7 +2284,10 @@ function parseStoredLastImport(value: string | null): LastImport | null {
     if (!Array.isArray(stored.shots) || !stored.shots.length) return null;
 
     const submissionType =
-      stored.submissionType === "API feed" || stored.submissionType === "CSV / Excel" || stored.submissionType === "Photo"
+      stored.submissionType === "API feed" ||
+      stored.submissionType === "CSV / Excel" ||
+      stored.submissionType === "Photo" ||
+      stored.submissionType === "Manual entry"
         ? stored.submissionType
         : "CSV / Excel";
 
@@ -1879,6 +2335,17 @@ function storeImportState(sessions: Session[], lastImport: LastImport) {
   }
 }
 
+function clearStoredImportState() {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.removeItem(SESSIONS_STORAGE_KEY);
+    window.localStorage.removeItem(LAST_IMPORT_STORAGE_KEY);
+  } catch {
+    // Browser storage is optional.
+  }
+}
+
 function readStoredOnboardingAnswers() {
   if (typeof window === "undefined") return {};
 
@@ -1887,6 +2354,16 @@ function readStoredOnboardingAnswers() {
     return stored ? (JSON.parse(stored) as OnboardingAnswers) : {};
   } catch {
     return {};
+  }
+}
+
+function readStoredOnboardingSkipped() {
+  if (typeof window === "undefined") return false;
+
+  try {
+    return window.localStorage.getItem(ONBOARDING_SKIP_STORAGE_KEY) === "true";
+  } catch {
+    return false;
   }
 }
 
@@ -1900,11 +2377,31 @@ function storeOnboardingAnswers(answers: OnboardingAnswers) {
   }
 }
 
+function storeOnboardingSkipped() {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.setItem(ONBOARDING_SKIP_STORAGE_KEY, "true");
+  } catch {
+    // Skipping still works in the active tab when browser storage is unavailable.
+  }
+}
+
 function clearOnboardingDraft() {
   if (typeof window === "undefined") return;
 
   try {
     window.localStorage.removeItem(ONBOARDING_DRAFT_STORAGE_KEY);
+  } catch {
+    // No action needed.
+  }
+}
+
+function clearOnboardingSkipped() {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.removeItem(ONBOARDING_SKIP_STORAGE_KEY);
   } catch {
     // No action needed.
   }
@@ -1980,6 +2477,31 @@ async function deleteVideoRecord(videoId: string) {
   if (!response.ok) {
     throw new Error(payload.error ?? "The video could not be removed.");
   }
+}
+
+async function readStaffDashboard() {
+  const response = await fetch("/api/admin?view=dashboard", { cache: "no-store" });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error ?? "Admin workspace could not be loaded.");
+  return payload as StaffDashboardPayload;
+}
+
+async function readStaffMember(memberId: string) {
+  const response = await fetch(`/api/admin?view=member&memberId=${encodeURIComponent(memberId)}`, { cache: "no-store" });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error ?? "Member detail could not be loaded.");
+  return payload as StaffMemberDetail;
+}
+
+async function postStaffAction(payload: Record<string, unknown>) {
+  const response = await fetch("/api/admin", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error ?? "The admin action could not be completed.");
+  return result;
 }
 
 async function createVideoRecord(
@@ -2301,8 +2823,8 @@ function buildPracticeRecommendations(profile: UserPracticeProfile): PracticeRec
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
-  const [sessions, setSessions] = useState<Session[]>(BASE_SESSIONS);
-  const [selectedSessionId, setSelectedSessionId] = useState(BASE_SESSIONS[0].id);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState("");
   const [selectedClub, setSelectedClub] = useState("6-Iron");
   const [csvText, setCsvText] = useState(DEMO_CSV);
   const [importMessage, setImportMessage] = useState("Demo CSV loaded");
@@ -2314,21 +2836,21 @@ export default function Home() {
   const [requestedVideoId, setRequestedVideoId] = useState<string | null>(null);
   const [practiceProfile, setPracticeProfile] = useState<UserPracticeProfile | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(true);
-  const [lastImport, setLastImport] = useState<LastImport>(() =>
-    makeLastImport("Photo", parseCsv(DEMO_CSV), DEFAULT_IMPORT_DATE, DEFAULT_SIMULATOR, DEFAULT_FACILITY_NAME),
-  );
+  const [lastImport, setLastImport] = useState<LastImport>(EMPTY_LAST_IMPORT);
   const [userName, setUserName] = useState<string | null>(null);
   const [accountUser, setAccountUser] = useState<AccountUser | null>(null);
   const [devAuthEnabled, setDevAuthEnabled] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [showPasswordResetModal, setShowPasswordResetModal] = useState(false);
+  const [forcePasswordReset, setForcePasswordReset] = useState(false);
+  const [showAccountGate, setShowAccountGate] = useState(false);
   const [loginModalMode, setLoginModalMode] = useState<LoginModalMode>("login");
   const [syncStatus, setSyncStatus] = useState("Choose how you want to use Free Range Golf.");
 
   const clubs = useMemo(() => summarizeClubs(sessions), [sessions]);
   const insights = useMemo(() => computeInsights(clubs, sessions), [clubs, sessions]);
   const allShots = useMemo(() => sessions.flatMap((session) => session.shots), [sessions]);
-  const selectedSession = sessions.find((session) => session.id === selectedSessionId) ?? sessions[0];
+  const selectedSession = sessions.find((session) => session.id === selectedSessionId) ?? sessions[0] ?? EMPTY_SESSION;
   const selectedSessionClubs = useMemo(() => summarizeClubs([selectedSession]), [selectedSession]);
   const selectedSessionInsights = useMemo(
     () => computeInsights(selectedSessionClubs, [selectedSession]),
@@ -2349,13 +2871,16 @@ export default function Home() {
   const performanceIndex = qualityValues.length ? Math.round(average(qualityValues)) : Number.NaN;
   const ballCountLabel = `${allShots.length.toLocaleString()} ${allShots.length === 1 ? "ball" : "balls"}`;
   const topInsight = selectedSessionInsights[0];
+  const visibleNavItems = navItemsForAccount(accountMode, accountUser);
+  const activeNavItem = NAV_ITEMS.find((item) => item.id === activeTab);
 
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
-    if (query.get("tab") === "videos") {
+    const requestedTab = tabFromValue(query.get("tab")) ?? tabFromPathname(window.location.pathname);
+    if (requestedTab) {
       queueMicrotask(() => {
-        setActiveTab("videos");
-        setRequestedVideoId(query.get("video"));
+        setActiveTab(requestedTab);
+        if (requestedTab === "videos") setRequestedVideoId(query.get("video"));
       });
     }
   }, []);
@@ -2367,11 +2892,31 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if (accountMode !== "user") return;
+    if (accountUser?.role === "member" && (activeTab === "coach" || activeTab === "admin")) {
+      setActiveTab(sessions.length ? "videos" : "dashboard");
+    }
+    if (accountUser?.role === "coach" && activeTab === "admin") {
+      setActiveTab("coach");
+    }
+  }, [accountMode, accountUser?.role, activeTab, sessions.length]);
+
+  useEffect(() => {
     const storedProfile = readStoredPracticeProfile();
+    const skippedOnboarding = readStoredOnboardingSkipped();
     if (storedProfile) {
       queueMicrotask(() => {
         setPracticeProfile(storedProfile);
         setShowOnboarding(false);
+      });
+      return;
+    }
+
+    if (skippedOnboarding) {
+      queueMicrotask(() => {
+        setShowOnboarding(false);
+        setAccountMode((current) => current === "pending" ? "guest" : current);
+        setSyncStatus("Using guest mode. Create an account anytime to save your work.");
       });
     }
   }, []);
@@ -2379,9 +2924,10 @@ export default function Home() {
   useEffect(() => {
     const applyStoredSessions = (storedSessions: Session[]) => {
       setSessions(storedSessions);
-      setSelectedSessionId(storedSessions[0].id);
-      setSelectedClub(storedSessions[0].shots[0]?.club ?? "6-Iron");
+      setSelectedSessionId(storedSessions[0]?.id ?? "");
+      setSelectedClub(storedSessions[0]?.shots[0]?.club ?? "6-Iron");
     };
+    if (accountMode !== "guest") return;
     const storedSessions = readStoredSessions();
     const storedLastImport = readStoredLastImport();
 
@@ -2405,7 +2951,7 @@ export default function Home() {
 
     window.addEventListener("storage", syncImportState);
     return () => window.removeEventListener("storage", syncImportState);
-  }, []);
+  }, [accountMode]);
 
   async function saveUserSessions(nextSessions: Session[]) {
     if (accountMode !== "user") return;
@@ -2457,6 +3003,13 @@ export default function Home() {
       if (payload.profile) {
         setPracticeProfile(payload.profile);
         storePracticeProfile(payload.profile);
+      } else {
+        setPracticeProfile(null);
+        try {
+          window.localStorage.removeItem(PRACTICE_PROFILE_STORAGE_KEY);
+        } catch {
+          // Browser storage is optional.
+        }
       }
     } catch {
       // The dashboard can still run without a saved profile.
@@ -2537,6 +3090,7 @@ export default function Home() {
 
       if (payload.mode !== "user" || accountPayload.mode !== "user") {
         setAccountMode("guest");
+        setForcePasswordReset(false);
         setSyncStatus("Use an email login link to open your private account.");
         if (options.promptForEmail) {
           setLoginModalMode("login");
@@ -2545,33 +3099,44 @@ export default function Home() {
         return false;
       }
 
-      const savedSessions = Array.isArray(payload.sessions) && payload.sessions.length ? payload.sessions : sessions;
+      const savedSessions = Array.isArray(payload.sessions) ? payload.sessions as Session[] : [];
       const signedInRole: VideoViewerRole =
         accountPayload.user?.role === "coach" || accountPayload.user?.role === "admin"
           ? accountPayload.user.role
           : "user";
       const signedInUser = accountPayload.user as AccountUser;
+      const requiresPasswordReset = signedInUser.passwordResetRequired === true;
+      clearStoredImportState();
       setAccountMode("user");
+      setShowAccountGate(false);
       setWorkspaceRole(signedInRole);
       setAccountUser(signedInUser);
       setUserName(accountPayload.user?.displayName ?? accountPayload.user?.email ?? "Signed-in golfer");
       setVideoLibraryMemberId(signedInUser.id);
       setVideoLibraryMemberName(signedInUser.displayName);
       setSessions(savedSessions);
-      setSelectedSessionId(savedSessions[0]?.id ?? BASE_SESSIONS[0].id);
+      setSelectedSessionId(savedSessions[0]?.id ?? "");
       setSelectedClub(savedSessions[0]?.shots?.[0]?.club ?? "6-Iron");
-      const requestedTab = new URLSearchParams(window.location.search).get("tab");
-      setActiveTab(
-        requestedTab === "videos"
-          ? "videos"
-          : signedInRole === "user"
-            ? "videos"
-            : "coach",
-      );
+      setLastImport(EMPTY_LAST_IMPORT);
+      setImportConfirmation(null);
+      setForcePasswordReset(requiresPasswordReset);
+      if (requiresPasswordReset) setShowPasswordResetModal(true);
+      const requestedTab =
+        tabFromValue(new URLSearchParams(window.location.search).get("tab")) ??
+        tabFromPathname(window.location.pathname);
+      const hasRequestedVideo = requestedTab === "videos" && new URLSearchParams(window.location.search).has("video");
+      const defaultMemberTab = savedSessions.length ? "videos" : "dashboard";
+      const nextTab =
+        signedInRole === "user" && !savedSessions.length && !hasRequestedVideo
+          ? "dashboard"
+          : requestedTab ?? (signedInRole === "user" ? defaultMemberTab : "coach");
+      setActiveTab(nextTab);
       setShowOnboarding(false);
       setSyncStatus(
-        signedInRole === "user"
-          ? payload.sessions?.length ? "Loaded your saved sessions." : "Signed in. Your lesson video library is ready."
+        requiresPasswordReset
+          ? "Signed in with a temporary password. Choose a new password to continue."
+          : signedInRole === "user"
+          ? savedSessions.length ? "Loaded your saved sessions." : "Signed in. Upload your first session to start analysis."
           : `${signedInRole === "admin" ? "Admin" : "Coach"} workspace ready.`,
       );
 
@@ -2579,6 +3144,7 @@ export default function Home() {
       return true;
     } catch {
       setAccountMode("guest");
+      setForcePasswordReset(false);
       setSyncStatus("Using guest mode. Saved history is unavailable right now.");
       if (options.promptForEmail) {
         setLoginModalMode("login");
@@ -2590,10 +3156,26 @@ export default function Home() {
 
   function openSignup() {
     setShowOnboarding(false);
+    setShowAccountGate(false);
     setShowPasswordResetModal(false);
+    setForcePasswordReset(false);
     setLoginModalMode("register");
     setShowLoginModal(true);
     setSyncStatus("Create your account to continue.");
+  }
+
+  function continueAsGuest() {
+    setShowAccountGate(false);
+    setShowOnboarding(false);
+    setShowLoginModal(false);
+    setShowPasswordResetModal(false);
+    setForcePasswordReset(false);
+    setAccountMode("guest");
+    setSessions([]);
+    setSelectedSessionId("");
+    setSelectedClub("6-Iron");
+    setLastImport(EMPTY_LAST_IMPORT);
+    setSyncStatus("Using guest mode. Create an account anytime to save your work.");
   }
 
   async function logOut() {
@@ -2609,9 +3191,18 @@ export default function Home() {
     setVideoLibraryMemberId("current-user");
     setVideoLibraryMemberName("");
     setRequestedVideoId(null);
+    setSessions([]);
+    setSelectedSessionId("");
+    setSelectedClub("6-Iron");
+    setPracticeProfile(null);
+    setLastImport(EMPTY_LAST_IMPORT);
+    setImportConfirmation(null);
+    clearStoredImportState();
     setActiveTab("videos");
     setShowOnboarding(false);
+    setShowAccountGate(false);
     setShowPasswordResetModal(false);
+    setForcePasswordReset(false);
     setLoginModalMode("register");
     setShowLoginModal(true);
     setSyncStatus("Signed out. Create a new account or sign in.");
@@ -2633,11 +3224,25 @@ export default function Home() {
     setPracticeProfile(profile);
     storePracticeProfile(profile);
     clearOnboardingDraft();
+    clearOnboardingSkipped();
     setShowOnboarding(false);
+    setShowAccountGate(false);
     setAccountMode((current) => current === "pending" ? "guest" : current);
     setLoginModalMode("register");
     setShowLoginModal(true);
     setSyncStatus("Create your account to save your practice profile.");
+  }
+
+  function skipOnboarding() {
+    storeOnboardingSkipped();
+    clearOnboardingDraft();
+    setShowOnboarding(false);
+    setShowAccountGate(true);
+    setAccountMode("guest");
+    setShowLoginModal(false);
+    setShowPasswordResetModal(false);
+    setForcePasswordReset(false);
+    setSyncStatus("Create an account, sign in, or continue as guest.");
   }
 
   function importShots(
@@ -2664,7 +3269,9 @@ export default function Home() {
     setSelectedClub(shots[0]?.club ?? selectedClub);
     setActiveTab("dashboard");
     setLastImport(nextLastImport);
-    storeImportState(nextSessions, nextLastImport);
+    if (accountMode !== "user") {
+      storeImportState(nextSessions, nextLastImport);
+    }
     const importedClubNames = Array.from(new Set(shots.map((shot) => getClubDisplayName(shot.club))));
     const clubLabel = importedClubNames.length === 1 ? importedClubNames[0] : `${importedClubNames.length} clubs`;
     const successMessage =
@@ -2677,6 +3284,17 @@ export default function Home() {
 
   function importCsv(submissionType: LastImport["submissionType"] = "CSV / Excel") {
     importShots(parseCsv(csvText), submissionType, "CSV");
+  }
+
+  function navigateToTab(tab: Tab) {
+    setActiveTab(tab);
+    if (typeof window === "undefined") return;
+
+    const url = new URL(window.location.href);
+    url.pathname = pathForTab(tab);
+    url.searchParams.delete("tab");
+    if (tab !== "videos") url.searchParams.delete("video");
+    window.history.pushState(null, "", `${url.pathname}${url.search}${url.hash}`);
   }
 
   const accountRoleLabel =
@@ -2693,6 +3311,7 @@ export default function Home() {
       <OnboardingFlow
         initialProfile={practiceProfile}
         onRegister={finishOnboarding}
+        onSkip={skipOnboarding}
       />
     );
   }
@@ -2724,11 +3343,11 @@ export default function Home() {
           )}
         </div>
         <nav className="rail-nav">
-          {NAV_ITEMS.map((item) => (
+          {visibleNavItems.map((item) => (
             <button
               className={cls("rail-button", activeTab === item.id && "active")}
               key={item.id}
-              onClick={() => setActiveTab(item.id)}
+              onClick={() => navigateToTab(item.id)}
               title={item.label}
             >
               <span aria-hidden="true">{item.icon}</span>
@@ -2746,7 +3365,7 @@ export default function Home() {
         <header className="topbar">
           <div>
             <p className="eyebrow">June performance review</p>
-            <h1>{NAV_ITEMS.find((item) => item.id === activeTab)?.label}</h1>
+            <h1>{activeNavItem?.label}</h1>
             <p className="page-description">{PAGE_DESCRIPTIONS[activeTab]}</p>
           </div>
           <div className="topbar-actions" aria-label="Session controls">
@@ -2853,12 +3472,32 @@ export default function Home() {
           />
         )}
 
+        {activeTab === "admin" && (
+          <AdminView
+            accountUser={accountUser}
+            authenticated={accountMode === "user"}
+            onOpenMemberVideos={(memberId, memberName) => {
+              setVideoLibraryMemberId(memberId);
+              setVideoLibraryMemberName(memberName);
+              setWorkspaceRole("admin");
+              setActiveTab("videos");
+            }}
+            onOpenCoachTools={(memberId, memberName) => {
+              setVideoLibraryMemberId(memberId);
+              setVideoLibraryMemberName(memberName);
+              setWorkspaceRole("admin");
+              setActiveTab("coach");
+            }}
+          />
+        )}
+
         {activeTab === "practice" && <PracticeView insights={insights} />}
 
         {activeTab === "import" && (
           <ImportView
             csvText={csvText}
             importCsv={importCsv}
+            importManualShot={(shot, metadata) => importShots([shot], "Manual entry", "Manual entry", metadata)}
             importPhotoShots={(shots, simulator, metadata) => importShots(shots, "Photo", simulator, metadata)}
             importMessage={importMessage}
             lastImport={lastImport}
@@ -2867,18 +3506,21 @@ export default function Home() {
         )}
       </section>
 
-      {accountMode === "pending" && (
+      {(showAccountGate || accountMode === "pending") && (
         <AccountGate
           connectAccount={() => {
+            setShowAccountGate(false);
             setShowPasswordResetModal(false);
             setLoginModalMode("login");
             return connectAccount({ promptForEmail: true });
           }}
           createAccount={() => {
+            setShowAccountGate(false);
             setShowPasswordResetModal(false);
             setLoginModalMode("register");
             setShowLoginModal(true);
           }}
+          continueAsGuest={continueAsGuest}
           syncStatus={syncStatus}
         />
       )}
@@ -2894,7 +3536,15 @@ export default function Home() {
 
       {showPasswordResetModal && (
         <PasswordResetModal
-          onClose={() => setShowPasswordResetModal(false)}
+          force={forcePasswordReset}
+          onClose={() => {
+            if (!forcePasswordReset) setShowPasswordResetModal(false);
+          }}
+          onPasswordUpdated={() => {
+            setForcePasswordReset(false);
+            setShowPasswordResetModal(false);
+            setAccountUser((current) => current ? { ...current, passwordResetRequired: false } : current);
+          }}
           onStatus={setSyncStatus}
         />
       )}
@@ -2946,6 +3596,14 @@ function DashboardView({
   setSelectedClub: (club: string) => void;
 }) {
   const selectedClubLabel = getClubDisplayName(selectedClub);
+  const swingGaugeMetrics = useMemo(
+    () => buildSwingGaugeMetrics(selectedClub, selectedClubSummary, selectedClubShots, avgCarry, avgSmash),
+    [avgCarry, avgSmash, selectedClub, selectedClubShots, selectedClubSummary],
+  );
+
+  if (!sessions.length) {
+    return <FirstSessionEmptyState setActiveTab={setActiveTab} />;
+  }
 
   return (
     <div className="view-stack">
@@ -2967,25 +3625,13 @@ function DashboardView({
         </label>
       </section>
 
-      <section className="metric-grid">
-        <Kpi club={selectedClub} label="Performance index" metricKey="quality" value={selectedClubSummary?.quality ?? performanceIndex} unit="/100" tone="green" />
-        <Kpi club={selectedClub} label="Average carry" metricKey="carry" value={avgCarry} unit="yd" tone="blue" />
-        <Kpi club={selectedClub} label="Shot dispersion" metricKey="dispersion" value={Number.isFinite(avgDispersion) ? `±${avgDispersion}` : "NA"} unit="yd" tone="amber" />
-        <Kpi club={selectedClub} label="Smash factor" metricKey="smash" value={Number.isFinite(avgSmash) ? avgSmash.toFixed(2) : "NA"} unit="avg" tone="coral" />
-      </section>
-
-      {selectedClubSummary && (
-        <section className="metric-grid detail-grid">
-          <Kpi club={selectedClub} label="Ball speed" metricKey="ballSpeed" value={selectedClubSummary.ballSpeed} unit="mph" tone="blue" />
-          <Kpi club={selectedClub} label="Club speed" metricKey="clubSpeed" value={selectedClubSummary.clubSpeed} unit="mph" tone="green" />
-          <Kpi club={selectedClub} label="Total distance" metricKey="total" value={selectedClubSummary.total} unit="yd" tone="amber" />
-          <Kpi club={selectedClub} label="Apex height" metricKey="apex" value={selectedClubSummary.apex} unit="ft" tone="blue" />
-          <Kpi club={selectedClub} label="Spin rate" metricKey="spin" value={selectedClubSummary.spin} unit="rpm" tone="coral" />
-          <Kpi club={selectedClub} label="Launch angle" metricKey="launch" value={selectedClubSummary.launch} unit="deg" tone="green" />
-          <Kpi club={selectedClub} label="Descent angle" metricKey="descent" value={selectedClubSummary.descent} unit="deg" tone="amber" />
-          <Kpi club={selectedClub} label="Face to path" metricKey="faceToPath" value={selectedClubSummary.faceToPath} unit="deg" tone="coral" />
-        </section>
-      )}
+      <SwingGaugeCluster
+        avgDispersion={avgDispersion}
+        metrics={swingGaugeMetrics}
+        performanceIndex={selectedClubSummary?.quality ?? performanceIndex}
+        selectedClubLabel={selectedClubLabel}
+        shotCount={selectedClubShots.length}
+      />
 
       <section className="dashboard-grid comparison-grid">
         <article className="panel">
@@ -3332,6 +3978,613 @@ function ProfessionalMetricTable({ clubs, metric }: { clubs: ClubSummary[]; metr
   );
 }
 
+function FirstSessionEmptyState({ setActiveTab }: { setActiveTab: (tab: Tab) => void }) {
+  const uploadOptions = [
+    {
+      title: "Upload a session CSV",
+      body: "Use exported shot rows from TrackMan, Full Swing, Foresight, SkyTrak, Mevo+, or a similar simulator.",
+    },
+    {
+      title: "Upload a screenshot or photo",
+      body: "Add clear photos of simulator result screens. We will read the available carry, speed, launch, spin, and direction data.",
+    },
+    {
+      title: "Manually enter session data",
+      body: "Start with one club and a few known numbers. Any missing metrics will display as NA until you add them.",
+    },
+    {
+      title: "Connect a supported simulator",
+      body: "Use the import area to connect or stage simulator feeds when the source supports it.",
+    },
+  ];
+
+  return (
+    <section className="first-session-empty panel">
+      <div className="first-session-hero">
+        <p className="eyebrow">New player setup</p>
+        <h2>Let&apos;s get your swing dialed in.</h2>
+        <p>
+          Upload your first golf session so we can begin analyzing your swing,
+          identifying trends, and building a personalized improvement plan.
+        </p>
+        <button className="primary-action" onClick={() => setActiveTab("import")}>
+          <span>⇧</span>
+          Upload Your First Session
+        </button>
+      </div>
+      <div className="first-session-options">
+        {uploadOptions.map((option) => (
+          <article key={option.title}>
+            <strong>{option.title}</strong>
+            <span>{option.body}</span>
+          </article>
+        ))}
+      </div>
+      <div className="first-session-guide">
+        <strong>What happens after upload</strong>
+        <p>
+          Your session is saved only to your account, the dashboard refreshes automatically,
+          and recommendations are generated only from your own uploaded data.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+function AdminView({
+  accountUser,
+  authenticated,
+  onOpenCoachTools,
+  onOpenMemberVideos,
+}: {
+  accountUser: AccountUser | null;
+  authenticated: boolean;
+  onOpenCoachTools: (memberId: string, memberName: string) => void;
+  onOpenMemberVideos: (memberId: string, memberName: string) => void;
+}) {
+  const [dashboard, setDashboard] = useState<StaffDashboardPayload | null>(null);
+  const [detail, setDetail] = useState<StaffMemberDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState("Loading admin workspace...");
+  const [search, setSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [showUserModal, setShowUserModal] = useState(false);
+  const [editingUserId, setEditingUserId] = useState<string | null>(null);
+  const [quickMode, setQuickMode] = useState<"content" | "session" | null>(null);
+  const [selectedMemberId, setSelectedMemberId] = useState("");
+  const [userForm, setUserForm] = useState({
+    role: "member" as StaffUserRecord["role"],
+    firstName: "",
+    lastName: "",
+    email: "",
+    phone: "",
+    skillLevel: "",
+    notes: "",
+    accountStatus: "active" as StaffUserRecord["accountStatus"],
+    coachId: "",
+  });
+  const [contentForm, setContentForm] = useState({
+    contentType: "coach_note",
+    title: "",
+    body: "",
+    visibility: "member",
+  });
+  const [sessionForm, setSessionForm] = useState({
+    title: "",
+    date: getTodayDateString(),
+    club: "SW",
+    carry: "",
+    total: "",
+    ballSpeed: "",
+    clubSpeed: "",
+    smash: "",
+    launch: "",
+    spin: "",
+    dispersion: "",
+    note: "",
+    recommendedDrill: "",
+  });
+  const isAdmin = authenticated && accountUser?.role === "admin";
+  const members = dashboard?.users.filter((user) => user.role === "member") ?? [];
+  const coaches = dashboard?.coaches ?? [];
+  const normalizedSearch = search.trim().toLowerCase();
+  const filteredUsers = (dashboard?.users ?? []).filter((user) => {
+    const searchable = [user.name, user.email, user.role, user.assignedCoachName, user.skillLevel].join(" ").toLowerCase();
+    if (normalizedSearch && !searchable.includes(normalizedSearch)) return false;
+    if (roleFilter !== "all" && user.role !== roleFilter) return false;
+    if (statusFilter !== "all" && user.accountStatus !== statusFilter) return false;
+    return true;
+  });
+  const selectedMember = members.find((member) => member.id === selectedMemberId) ?? detail?.member ?? members[0];
+
+  async function refreshWorkspace(nextMemberId?: string) {
+    setLoading(true);
+    try {
+      const payload = await readStaffDashboard();
+      setDashboard(payload);
+      const memberId = nextMemberId || selectedMemberId;
+      if (memberId) {
+        const nextDetail = await readStaffMember(memberId);
+        setDetail(nextDetail);
+      }
+      setMessage("Admin workspace ready.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Admin workspace could not be loaded.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!isAdmin) {
+      setLoading(false);
+      setMessage("Log in with an admin account to use this workspace.");
+      return;
+    }
+    void refreshWorkspace();
+    // Load once for the signed-in admin.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin]);
+
+  function resetUserForm(role: StaffUserRecord["role"] = "member") {
+    setEditingUserId(null);
+    setUserForm({
+      role,
+      firstName: "",
+      lastName: "",
+      email: "",
+      phone: "",
+      skillLevel: "",
+      notes: "",
+      accountStatus: "active",
+      coachId: coaches[0]?.id ?? "",
+    });
+  }
+
+  function openEditUser(user: StaffUserRecord) {
+    setEditingUserId(user.id);
+    setUserForm({
+      role: user.role,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      phone: user.phone,
+      skillLevel: user.skillLevel,
+      notes: user.notes,
+      accountStatus: user.accountStatus,
+      coachId: user.assignedCoachId ?? "",
+    });
+    setShowUserModal(true);
+  }
+
+  async function saveUser(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      const payload = editingUserId
+        ? { action: "updateUser", userId: editingUserId, ...userForm }
+        : { action: "createUser", ...userForm };
+      await postStaffAction(payload);
+      setShowUserModal(false);
+      setMessage(editingUserId ? "User updated." : "User created and invitation attempted.");
+      await refreshWorkspace(selectedMemberId);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The user could not be saved.");
+    }
+  }
+
+  async function updateUser(user: StaffUserRecord, patch: Partial<typeof userForm>) {
+    try {
+      await postStaffAction({
+        action: "updateUser",
+        userId: user.id,
+        role: user.role,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        phone: user.phone,
+        skillLevel: user.skillLevel,
+        notes: user.notes,
+        accountStatus: user.accountStatus,
+        coachId: user.assignedCoachId ?? "",
+        ...patch,
+      });
+      setMessage(`${user.name} updated.`);
+      await refreshWorkspace(selectedMemberId);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The user could not be updated.");
+    }
+  }
+
+  async function assignCoach(member: StaffUserRecord, coachId: string) {
+    try {
+      await postStaffAction({ action: "assignCoach", memberId: member.id, coachId });
+      setMessage(`${member.name} was assigned to a coach.`);
+      await refreshWorkspace(member.id);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The coach assignment could not be saved.");
+    }
+  }
+
+  async function openMember(memberId: string) {
+    setSelectedMemberId(memberId);
+    try {
+      const payload = await readStaffMember(memberId);
+      setDetail(payload);
+      setMessage(`${payload.member.name} loaded.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Member detail could not be loaded.");
+    }
+  }
+
+  async function submitContent(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedMember) return;
+    try {
+      await postStaffAction({
+        action: "addContent",
+        memberId: selectedMember.id,
+        ...contentForm,
+      });
+      setContentForm({ contentType: "coach_note", title: "", body: "", visibility: "member" });
+      setQuickMode(null);
+      setMessage(`Content added for ${selectedMember.name}.`);
+      await refreshWorkspace(selectedMember.id);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Content could not be added.");
+    }
+  }
+
+  async function submitSession(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedMember) return;
+    try {
+      await postStaffAction({
+        action: "addSession",
+        memberId: selectedMember.id,
+        ...sessionForm,
+      });
+      setSessionForm({
+        title: "",
+        date: getTodayDateString(),
+        club: "SW",
+        carry: "",
+        total: "",
+        ballSpeed: "",
+        clubSpeed: "",
+        smash: "",
+        launch: "",
+        spin: "",
+        dispersion: "",
+        note: "",
+        recommendedDrill: "",
+      });
+      setQuickMode(null);
+      setMessage(`Session added for ${selectedMember.name}.`);
+      await refreshWorkspace(selectedMember.id);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Session could not be added.");
+    }
+  }
+
+  async function resendInvitation(user: StaffUserRecord) {
+    try {
+      const payload = await postStaffAction({ action: "resendInvitation", userId: user.id });
+      setMessage(payload.invite?.publicMessage ?? `Invitation resent to ${user.email}.`);
+      await refreshWorkspace(selectedMemberId);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Invitation could not be resent.");
+    }
+  }
+
+  async function deleteUser(user: StaffUserRecord) {
+    const confirmEmail = window.prompt(`Type ${user.email} to delete this account.`);
+    if (!confirmEmail) return;
+    try {
+      await postStaffAction({ action: "deleteUser", userId: user.id, confirmEmail });
+      if (selectedMemberId === user.id) {
+        setSelectedMemberId("");
+        setDetail(null);
+      }
+      setMessage(`${user.name} was deleted.`);
+      await refreshWorkspace();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The user could not be deleted.");
+    }
+  }
+
+  if (!isAdmin) {
+    return (
+      <section className="panel admin-access-panel">
+        <p className="eyebrow">Admin workspace</p>
+        <h2>Admin login required</h2>
+        <p>Members and coaches cannot access user management, role changes, or account controls.</p>
+      </section>
+    );
+  }
+
+  const summaryCards = dashboard
+    ? [
+        ["Total members", dashboard.summary.totalMembers],
+        ["Total coaches", dashboard.summary.totalCoaches],
+        ["Active members", dashboard.summary.activeMembers],
+        ["Added this month", dashboard.summary.membersAddedThisMonth],
+        ["Videos uploaded", dashboard.summary.videosUploaded],
+        ["Sessions added", dashboard.summary.sessionsAdded],
+        ["Feedback review", dashboard.summary.coachFeedbackAwaitingReview],
+      ]
+    : [];
+
+  return (
+    <section className="admin-workspace view-stack">
+      <header className="admin-hero panel">
+        <div>
+          <p className="eyebrow">Role-based operations</p>
+          <h2>Admin dashboard</h2>
+          <span>{loading ? "Loading..." : message}</span>
+        </div>
+        <div className="admin-quick-actions">
+          <button className="primary-action" onClick={() => { resetUserForm("member"); setShowUserModal(true); }}>Add member</button>
+          <button className="secondary-action" onClick={() => { resetUserForm("coach"); setShowUserModal(true); }}>Add coach</button>
+          <button className="secondary-action" onClick={() => { resetUserForm("admin"); setShowUserModal(true); }}>Add admin</button>
+          <button className="secondary-action" disabled={!selectedMember} onClick={() => setQuickMode("content")}>Assign content</button>
+          <button className="secondary-action" disabled={!selectedMember} onClick={() => setQuickMode("session")}>Add session</button>
+        </div>
+      </header>
+
+      <section className="admin-summary-grid">
+        {summaryCards.map(([label, value]) => (
+          <article className="panel" key={label}>
+            <span>{label}</span>
+            <strong>{value}</strong>
+          </article>
+        ))}
+      </section>
+
+      <section className="admin-ops-grid">
+        <article className="panel admin-user-panel">
+          <PanelHeader kicker="User management" title="People and roles" meta={`${filteredUsers.length} shown`} />
+          <div className="admin-filter-row">
+            <label>
+              <span>Search</span>
+              <input onChange={(event) => setSearch(event.target.value)} placeholder="Name, email, coach..." type="search" value={search} />
+            </label>
+            <label>
+              <span>Role</span>
+              <select onChange={(event) => setRoleFilter(event.target.value)} value={roleFilter}>
+                <option value="all">All roles</option>
+                <option value="admin">Admins</option>
+                <option value="coach">Coaches</option>
+                <option value="member">Members</option>
+              </select>
+            </label>
+            <label>
+              <span>Status</span>
+              <select onChange={(event) => setStatusFilter(event.target.value)} value={statusFilter}>
+                <option value="all">Any status</option>
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
+              </select>
+            </label>
+          </div>
+          <div className="admin-table">
+            <div className="admin-table-row admin-table-head">
+              <span>User</span><span>Role</span><span>Coach</span><span>Status</span><span>Activity</span><span>Actions</span>
+            </div>
+            {filteredUsers.map((user) => (
+              <div className="admin-table-row" key={user.id}>
+                <div>
+                  <strong>{user.name}</strong>
+                  <small>{user.email}</small>
+                  <small>{user.videoCount} videos · {user.sessionCount} sessions</small>
+                </div>
+                <div>
+                  <select
+                    aria-label={`Role for ${user.name}`}
+                    onChange={(event) => void updateUser(user, { role: event.target.value as StaffUserRecord["role"] })}
+                    value={user.role}
+                  >
+                    <option value="member">Member</option>
+                    <option value="coach">Coach</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                </div>
+                <div>
+                  {user.role === "member" ? (
+                    <select
+                      aria-label={`Coach for ${user.name}`}
+                      onChange={(event) => void assignCoach(user, event.target.value)}
+                      value={user.assignedCoachId ?? ""}
+                    >
+                      <option value="">Unassigned</option>
+                      {coaches.map((coach) => <option key={coach.id} value={coach.id}>{coach.name}</option>)}
+                    </select>
+                  ) : (
+                    <span>{user.role === "coach" ? "Coach account" : "Admin account"}</span>
+                  )}
+                </div>
+                <div>
+                  <select
+                    aria-label={`Status for ${user.name}`}
+                    onChange={(event) => void updateUser(user, { accountStatus: event.target.value as StaffUserRecord["accountStatus"] })}
+                    value={user.accountStatus}
+                  >
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
+                  </select>
+                  <small>{user.inviteStatus}</small>
+                </div>
+                <div>
+                  <strong>{user.lastLoginAt ? formatDate(user.lastLoginAt) : "No login"}</strong>
+                  <small>Created {formatDate(user.createdAt)}</small>
+                </div>
+                <div className="admin-row-actions">
+                  {user.role === "member" && <button className="icon-button" onClick={() => void openMember(user.id)} title="Open member detail">◫</button>}
+                  {user.role === "member" && <button className="icon-button" onClick={() => onOpenMemberVideos(user.id, user.name)} title="Open videos">▶</button>}
+                  {user.role === "member" && <button className="icon-button" onClick={() => onOpenCoachTools(user.id, user.name)} title="Open coach tools">✦</button>}
+                  <button className="icon-button" onClick={() => openEditUser(user)} title="Edit user">✎</button>
+                  <button className="icon-button" onClick={() => void resendInvitation(user)} title="Resend invitation">↻</button>
+                  <button className="icon-button danger-text-button" onClick={() => void deleteUser(user)} title="Delete user">×</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </article>
+
+        <aside className="panel admin-member-panel">
+          <PanelHeader
+            kicker="Member detail"
+            title={detail?.member.name ?? selectedMember?.name ?? "Select a member"}
+            meta={detail ? `${detail.videos.length} videos · ${detail.sessions.length} sessions` : "Overview, content, activity"}
+          />
+          {detail ? (
+            <div className="admin-member-detail">
+              <div className="admin-member-overview">
+                <div><span>Email</span><strong>{detail.member.email}</strong></div>
+                <div><span>Coach</span><strong>{detail.member.assignedCoachName || "Unassigned"}</strong></div>
+                <div><span>Status</span><strong>{detail.member.accountStatus}</strong></div>
+                <div><span>Skill</span><strong>{detail.member.skillLevel || "NA"}</strong></div>
+              </div>
+              <div className="admin-detail-tabs">
+                <section>
+                  <h3>Recent videos</h3>
+                  {detail.videos.slice(0, 4).map((video) => (
+                    <article key={video.id}>
+                      <strong>{video.title}</strong>
+                      <span>{video.publicationStatus} · {video.reviewStatus}</span>
+                    </article>
+                  ))}
+                  {!detail.videos.length && <p>No videos yet.</p>}
+                </section>
+                <section>
+                  <h3>Sessions</h3>
+                  {detail.sessions.slice(0, 4).map((session) => (
+                    <article key={session.id}>
+                      <strong>{session.title}</strong>
+                      <span>{formatDate(session.date)} · {session.shots.length} shots</span>
+                    </article>
+                  ))}
+                  {!detail.sessions.length && <p>No sessions yet.</p>}
+                </section>
+                <section>
+                  <h3>Coach feedback and plans</h3>
+                  {detail.content.slice(0, 4).map((item) => (
+                    <article key={item.id}>
+                      <strong>{item.title}</strong>
+                      <span>{item.contentType.replaceAll("_", " ")} · {item.visibility}</span>
+                    </article>
+                  ))}
+                  {!detail.content.length && <p>No notes, drills, or plans yet.</p>}
+                </section>
+                <section>
+                  <h3>Activity history</h3>
+                  {detail.activity.slice(0, 6).map((item) => (
+                    <article key={item.id}>
+                      <strong>{item.summary}</strong>
+                      <span>{formatDate(item.createdAt)} · {item.action.replaceAll("_", " ")}</span>
+                    </article>
+                  ))}
+                  {!detail.activity.length && <p>No activity yet.</p>}
+                </section>
+              </div>
+            </div>
+          ) : (
+            <div className="admin-empty-detail">
+              <strong>Choose a member row</strong>
+              <p>Open a member to review their sessions, videos, notes, plans, settings, and activity timeline.</p>
+            </div>
+          )}
+        </aside>
+      </section>
+
+      {dashboard?.recentActivity.length ? (
+        <section className="panel admin-activity-strip">
+          <PanelHeader kicker="Recent activity" title="Operational timeline" meta={`${dashboard.recentActivity.length} latest`} />
+          <div>
+            {dashboard.recentActivity.slice(0, 8).map((item) => (
+              <article key={item.id}>
+                <strong>{item.summary}</strong>
+                <span>{formatDate(item.createdAt)} · {item.action.replaceAll("_", " ")}</span>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {showUserModal && (
+        <div className="video-modal-overlay">
+          <form className="video-upload-modal admin-user-modal" onSubmit={saveUser}>
+            <div className="video-modal-header">
+              <div>
+                <p className="eyebrow">User management</p>
+                <h2>{editingUserId ? "Edit user" : "Add user"}</h2>
+              </div>
+              <button aria-label="Close user form" className="icon-button" onClick={() => setShowUserModal(false)} type="button">×</button>
+            </div>
+            <div className="video-form-grid">
+              <label><span>Role</span><select value={userForm.role} onChange={(event) => setUserForm((current) => ({ ...current, role: event.target.value as StaffUserRecord["role"] }))}><option value="member">Member</option><option value="coach">Coach</option><option value="admin">Admin</option></select></label>
+              <label><span>Status</span><select value={userForm.accountStatus} onChange={(event) => setUserForm((current) => ({ ...current, accountStatus: event.target.value as StaffUserRecord["accountStatus"] }))}><option value="active">Active</option><option value="inactive">Inactive</option></select></label>
+              <label><span>First name</span><input required value={userForm.firstName} onChange={(event) => setUserForm((current) => ({ ...current, firstName: event.target.value }))} /></label>
+              <label><span>Last name</span><input required value={userForm.lastName} onChange={(event) => setUserForm((current) => ({ ...current, lastName: event.target.value }))} /></label>
+              <label className="video-form-wide"><span>Email</span><input disabled={Boolean(editingUserId)} required type="email" value={userForm.email} onChange={(event) => setUserForm((current) => ({ ...current, email: event.target.value }))} /></label>
+              <label><span>Phone</span><input value={userForm.phone} onChange={(event) => setUserForm((current) => ({ ...current, phone: event.target.value }))} /></label>
+              <label><span>Skill / title</span><input value={userForm.skillLevel} onChange={(event) => setUserForm((current) => ({ ...current, skillLevel: event.target.value }))} /></label>
+              {userForm.role === "member" && (
+                <label className="video-form-wide"><span>Assigned coach</span><select value={userForm.coachId} onChange={(event) => setUserForm((current) => ({ ...current, coachId: event.target.value }))}><option value="">Unassigned</option>{coaches.map((coach) => <option key={coach.id} value={coach.id}>{coach.name}</option>)}</select></label>
+              )}
+              <label className="video-form-wide"><span>Notes</span><textarea value={userForm.notes} onChange={(event) => setUserForm((current) => ({ ...current, notes: event.target.value }))} /></label>
+            </div>
+            <div className="video-modal-actions">
+              <span>{editingUserId ? "Profile, role, coach assignment, and account status will update immediately." : "A registration/login email is attempted when email is configured."}</span>
+              <div className="button-row">
+                <button className="secondary-action" onClick={() => setShowUserModal(false)} type="button">Cancel</button>
+                <button className="primary-action" type="submit">{editingUserId ? "Save user" : "Create user"}</button>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {quickMode && selectedMember && (
+        <div className="video-modal-overlay">
+          {quickMode === "content" ? (
+            <form className="video-upload-modal admin-user-modal" onSubmit={submitContent}>
+              <div className="video-modal-header">
+                <div><p className="eyebrow">Fast assignment</p><h2>Add content for {selectedMember.name}</h2></div>
+                <button aria-label="Close content form" className="icon-button" onClick={() => setQuickMode(null)} type="button">×</button>
+              </div>
+              <div className="video-form-grid">
+                <label><span>Type</span><select value={contentForm.contentType} onChange={(event) => setContentForm((current) => ({ ...current, contentType: event.target.value }))}><option value="coach_note">Coach note</option><option value="feedback">Feedback</option><option value="practice_recommendation">Practice recommendation</option><option value="drill">Drill</option><option value="document">Document/reference</option></select></label>
+                <label><span>Visibility</span><select value={contentForm.visibility} onChange={(event) => setContentForm((current) => ({ ...current, visibility: event.target.value }))}><option value="member">Member visible</option><option value="coach">Coach/admin only</option></select></label>
+                <label className="video-form-wide"><span>Title</span><input required value={contentForm.title} onChange={(event) => setContentForm((current) => ({ ...current, title: event.target.value }))} /></label>
+                <label className="video-form-wide"><span>Note / assignment</span><textarea required value={contentForm.body} onChange={(event) => setContentForm((current) => ({ ...current, body: event.target.value }))} /></label>
+              </div>
+              <div className="video-modal-actions"><span>Saved to D1 and included in the member activity timeline.</span><div className="button-row"><button className="secondary-action" onClick={() => setQuickMode(null)} type="button">Cancel</button><button className="primary-action" type="submit">Save content</button></div></div>
+            </form>
+          ) : (
+            <form className="video-upload-modal admin-user-modal" onSubmit={submitSession}>
+              <div className="video-modal-header">
+                <div><p className="eyebrow">Session data</p><h2>Add session for {selectedMember.name}</h2></div>
+                <button aria-label="Close session form" className="icon-button" onClick={() => setQuickMode(null)} type="button">×</button>
+              </div>
+              <div className="video-form-grid">
+                <label className="video-form-wide"><span>Session name</span><input value={sessionForm.title} onChange={(event) => setSessionForm((current) => ({ ...current, title: event.target.value }))} placeholder="Wedge distance control" /></label>
+                <label><span>Date</span><input type="date" value={sessionForm.date} onChange={(event) => setSessionForm((current) => ({ ...current, date: event.target.value }))} /></label>
+                <label><span>Club</span><select value={sessionForm.club} onChange={(event) => setSessionForm((current) => ({ ...current, club: event.target.value }))}>{CLUB_ORDER.map((club) => <option key={club} value={club}>{getClubDisplayName(club)}</option>)}</select></label>
+                {(["carry", "total", "ballSpeed", "clubSpeed", "smash", "launch", "spin", "dispersion"] as const).map((field) => (
+                  <label key={field}><span>{field.replace(/([A-Z])/g, " $1")}</span><input inputMode="decimal" value={sessionForm[field]} onChange={(event) => setSessionForm((current) => ({ ...current, [field]: event.target.value }))} /></label>
+                ))}
+                <label className="video-form-wide"><span>Coach notes</span><textarea value={sessionForm.note} onChange={(event) => setSessionForm((current) => ({ ...current, note: event.target.value }))} /></label>
+                <label className="video-form-wide"><span>Recommended drill</span><textarea value={sessionForm.recommendedDrill} onChange={(event) => setSessionForm((current) => ({ ...current, recommendedDrill: event.target.value }))} /></label>
+              </div>
+              <div className="video-modal-actions"><span>All metrics are optional. Missing data appears as NA across the app.</span><div className="button-row"><button className="secondary-action" onClick={() => setQuickMode(null)} type="button">Cancel</button><button className="primary-action" type="submit">Save session</button></div></div>
+            </form>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function CoachView({
   authenticated,
   clubs,
@@ -3622,9 +4875,32 @@ function CoachVideoWorkspace({
   const [coachPrivateNotes, setCoachPrivateNotes] = useState("");
   const [emailMember, setEmailMember] = useState(true);
   const [editingVideoId, setEditingVideoId] = useState<string | null>(null);
+  const [selectedMemberDetail, setSelectedMemberDetail] = useState<StaffMemberDetail | null>(null);
+  const [coachQuickMode, setCoachQuickMode] = useState<"content" | "session" | null>(null);
   const [saveState, setSaveState] = useState<"idle" | "saving">("idle");
   const [uploadProgress, setUploadProgress] = useState(0);
   const [workspaceMessage, setWorkspaceMessage] = useState("Select a member to begin.");
+  const [coachContentForm, setCoachContentForm] = useState({
+    contentType: "coach_note",
+    title: "",
+    body: "",
+    visibility: "member",
+  });
+  const [coachSessionForm, setCoachSessionForm] = useState({
+    title: "",
+    date: getTodayDateString(),
+    club: "SW",
+    carry: "",
+    total: "",
+    ballSpeed: "",
+    clubSpeed: "",
+    smash: "",
+    launch: "",
+    spin: "",
+    dispersion: "",
+    note: "",
+    recommendedDrill: "",
+  });
   const allowedMembers = members;
   const normalizedMemberSearch = memberSearch.trim().toLowerCase();
   const memberResults = allowedMembers.filter((member) =>
@@ -3632,9 +4908,9 @@ function CoachVideoWorkspace({
     [member.name, member.email, member.phone].some((value) => value.toLowerCase().includes(normalizedMemberSearch)),
   );
   const selectedMember = allowedMembers.find((member) => member.id === selectedMemberId);
-  // Cross-account session sharing is not available yet, so coach uploads stay
-  // standalone until a real member-session relationship exists in D1.
-  const selectedMemberSessions: Session[] = [];
+  const selectedMemberSessions = selectedMemberDetail?.member.id === selectedMemberId
+    ? selectedMemberDetail.sessions
+    : [];
   const selectedSession = selectedMemberSessions.find((session) => session.id === selectedSessionId);
   const managedVideos = [...videos]
     .sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
@@ -3691,6 +4967,7 @@ function CoachVideoWorkspace({
     setStep(1);
     setMemberSearch("");
     setSelectedMemberId("");
+    setSelectedMemberDetail(null);
     setVideoFile(null);
     setThumbnailFile(null);
     setVideoTitle("");
@@ -3717,6 +4994,18 @@ function CoachVideoWorkspace({
     setSelectedMemberId(member.id);
     setSelectedSessionId("");
     setWorkspaceMessage(`${member.name} selected. Add the lesson video when ready.`);
+    void loadCoachMemberDetail(member.id);
+  }
+
+  async function loadCoachMemberDetail(memberId: string) {
+    try {
+      const payload = await readStaffMember(memberId);
+      setSelectedMemberDetail(payload);
+      setWorkspaceMessage(`${payload.member.name} loaded with ${payload.sessions.length} sessions and ${payload.videos.length} videos.`);
+    } catch (error) {
+      setSelectedMemberDetail(null);
+      setWorkspaceMessage(error instanceof Error ? error.message : "Member detail could not be loaded.");
+    }
   }
 
   async function addMember(event: React.FormEvent<HTMLFormElement>) {
@@ -3783,6 +5072,7 @@ function CoachVideoWorkspace({
       setSelectedMemberId(member.id);
       setStep(1);
       setWorkspaceMessage(payload.publicMessage ?? `${member.name} is ready for a demo upload.`);
+      void loadCoachMemberDetail(member.id);
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : "The demo player could not be added.");
     } finally {
@@ -3991,6 +5281,62 @@ function CoachVideoWorkspace({
     }
   }
 
+  async function submitCoachContent(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedMember) {
+      setWorkspaceMessage("Select a member before assigning content.");
+      return;
+    }
+    try {
+      await postStaffAction({
+        action: "addContent",
+        memberId: selectedMember.id,
+        ...coachContentForm,
+      });
+      setCoachContentForm({ contentType: "coach_note", title: "", body: "", visibility: "member" });
+      setCoachQuickMode(null);
+      setWorkspaceMessage(`Content assigned to ${selectedMember.name}.`);
+      void loadCoachMemberDetail(selectedMember.id);
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "Content could not be assigned.");
+    }
+  }
+
+  async function submitCoachSession(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedMember) {
+      setWorkspaceMessage("Select a member before adding session data.");
+      return;
+    }
+    try {
+      await postStaffAction({
+        action: "addSession",
+        memberId: selectedMember.id,
+        ...coachSessionForm,
+      });
+      setCoachSessionForm({
+        title: "",
+        date: getTodayDateString(),
+        club: "SW",
+        carry: "",
+        total: "",
+        ballSpeed: "",
+        clubSpeed: "",
+        smash: "",
+        launch: "",
+        spin: "",
+        dispersion: "",
+        note: "",
+        recommendedDrill: "",
+      });
+      setCoachQuickMode(null);
+      setWorkspaceMessage(`Session data added for ${selectedMember.name}.`);
+      void loadCoachMemberDetail(selectedMember.id);
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "Session data could not be saved.");
+    }
+  }
+
   function moveToNextStep() {
     if (step === 1 && !selectedMember) {
       setWorkspaceMessage("Select a member before uploading a lesson video.");
@@ -4029,6 +5375,8 @@ function CoachVideoWorkspace({
             {demoSeedState === "saving" ? "Adding Demo..." : "Add Demo Player"}
           </button>
           <button className="secondary-action" disabled={!authenticated} onClick={() => setShowAddMember(true)}>＋ Add Member</button>
+          <button className="secondary-action" disabled={!selectedMember} onClick={() => setCoachQuickMode("session")}>Add Session</button>
+          <button className="secondary-action" disabled={!selectedMember} onClick={() => setCoachQuickMode("content")}>Assign Drill/Note</button>
           <button
             className="primary-action"
             disabled={!authenticated}
@@ -4136,6 +5484,8 @@ function CoachVideoWorkspace({
                     </div>
                     <div className="button-row">
                       <button className="secondary-action" onClick={() => onOpenMemberVideos(selectedMember.id, selectedMember.name)}>View Lesson Videos</button>
+                      <button className="secondary-action" onClick={() => setCoachQuickMode("session")}>Add Session</button>
+                      <button className="secondary-action" onClick={() => setCoachQuickMode("content")}>Assign Drill</button>
                       <button className="primary-action" onClick={() => setStep(2)}>Upload New Video</button>
                     </div>
                   </div>
@@ -4423,6 +5773,83 @@ function CoachVideoWorkspace({
           </form>
         </div>
       )}
+
+      {coachQuickMode && selectedMember && (
+        <div className="video-modal-overlay">
+          {coachQuickMode === "content" ? (
+            <form className="video-upload-modal coach-member-modal" onSubmit={submitCoachContent}>
+              <div className="video-modal-header">
+                <div>
+                  <p className="eyebrow">Coach assignment</p>
+                  <h2>Add content for {selectedMember.name}</h2>
+                </div>
+                <button aria-label="Close content dialog" className="icon-button" onClick={() => setCoachQuickMode(null)} type="button">×</button>
+              </div>
+              <div className="video-form-grid">
+                <label>
+                  <span>Type</span>
+                  <select value={coachContentForm.contentType} onChange={(event) => setCoachContentForm((current) => ({ ...current, contentType: event.target.value }))}>
+                    <option value="coach_note">Coach note</option>
+                    <option value="feedback">Member feedback</option>
+                    <option value="practice_recommendation">Practice recommendation</option>
+                    <option value="drill">Drill</option>
+                    <option value="document">Document/reference</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Visibility</span>
+                  <select value={coachContentForm.visibility} onChange={(event) => setCoachContentForm((current) => ({ ...current, visibility: event.target.value }))}>
+                    <option value="member">Member visible</option>
+                    <option value="coach">Coach/admin only</option>
+                  </select>
+                </label>
+                <label className="video-form-wide">
+                  <span>Title</span>
+                  <input required value={coachContentForm.title} onChange={(event) => setCoachContentForm((current) => ({ ...current, title: event.target.value }))} />
+                </label>
+                <label className="video-form-wide">
+                  <span>Note / assignment</span>
+                  <textarea required value={coachContentForm.body} onChange={(event) => setCoachContentForm((current) => ({ ...current, body: event.target.value }))} />
+                </label>
+              </div>
+              <div className="video-modal-actions">
+                <span>Private items stay hidden from the member. Member-visible items are scoped to this account.</span>
+                <div className="button-row">
+                  <button className="secondary-action" onClick={() => setCoachQuickMode(null)} type="button">Cancel</button>
+                  <button className="primary-action" type="submit">Save content</button>
+                </div>
+              </div>
+            </form>
+          ) : (
+            <form className="video-upload-modal coach-member-modal" onSubmit={submitCoachSession}>
+              <div className="video-modal-header">
+                <div>
+                  <p className="eyebrow">Session data</p>
+                  <h2>Add session for {selectedMember.name}</h2>
+                </div>
+                <button aria-label="Close session dialog" className="icon-button" onClick={() => setCoachQuickMode(null)} type="button">×</button>
+              </div>
+              <div className="video-form-grid">
+                <label className="video-form-wide"><span>Session name</span><input value={coachSessionForm.title} onChange={(event) => setCoachSessionForm((current) => ({ ...current, title: event.target.value }))} placeholder="Wedge distance control" /></label>
+                <label><span>Date</span><input type="date" value={coachSessionForm.date} onChange={(event) => setCoachSessionForm((current) => ({ ...current, date: event.target.value }))} /></label>
+                <label><span>Club</span><select value={coachSessionForm.club} onChange={(event) => setCoachSessionForm((current) => ({ ...current, club: event.target.value }))}>{CLUB_ORDER.map((club) => <option key={club} value={club}>{getClubDisplayName(club)}</option>)}</select></label>
+                {(["carry", "total", "ballSpeed", "clubSpeed", "smash", "launch", "spin", "dispersion"] as const).map((field) => (
+                  <label key={field}><span>{field.replace(/([A-Z])/g, " $1")}</span><input inputMode="decimal" value={coachSessionForm[field]} onChange={(event) => setCoachSessionForm((current) => ({ ...current, [field]: event.target.value }))} /></label>
+                ))}
+                <label className="video-form-wide"><span>Coach notes</span><textarea value={coachSessionForm.note} onChange={(event) => setCoachSessionForm((current) => ({ ...current, note: event.target.value }))} /></label>
+                <label className="video-form-wide"><span>Recommended drill</span><textarea value={coachSessionForm.recommendedDrill} onChange={(event) => setCoachSessionForm((current) => ({ ...current, recommendedDrill: event.target.value }))} /></label>
+              </div>
+              <div className="video-modal-actions">
+                <span>Every metric is optional. Missing numbers display as NA.</span>
+                <div className="button-row">
+                  <button className="secondary-action" onClick={() => setCoachQuickMode(null)} type="button">Cancel</button>
+                  <button className="primary-action" type="submit">Save session</button>
+                </div>
+              </div>
+            </form>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -4497,11 +5924,13 @@ function formatVideoDuration(duration: number) {
 }
 
 function formatVideoUploadDate(value: string) {
+  const date = parseDisplayDate(value);
+  if (!date) return "NA";
   return new Intl.DateTimeFormat("en", {
     month: "short",
     day: "numeric",
     year: "numeric",
-  }).format(new Date(value));
+  }).format(date);
 }
 
 function canViewLibraryVideo(video: VideoLibraryRecord, ownerId: string, viewerRole: VideoViewerRole) {
@@ -4987,7 +6416,10 @@ function VideosView({
     .map((videoId) => videos.find((video) => video.id === videoId))
     .filter((video): video is VideoLibraryItem => Boolean(video));
   const timelineGroups = filteredVideos.reduce<Record<string, VideoLibraryItem[]>>((groups, video) => {
-    const key = new Intl.DateTimeFormat("en", { month: "long", year: "numeric" }).format(new Date(video.uploadedAt));
+    const uploadDate = parseDisplayDate(video.uploadedAt);
+    const key = uploadDate
+      ? new Intl.DateTimeFormat("en", { month: "long", year: "numeric" }).format(uploadDate)
+      : "Date unavailable";
     groups[key] = [...(groups[key] ?? []), video];
     return groups;
   }, {});
@@ -5294,9 +6726,26 @@ function VideosView({
   );
 }
 
+const MANUAL_SHOT_FIELDS: Array<{ key: NumericShotMetric; label: string; unit: string; placeholder: string }> = [
+  { key: "carry", label: "Carry", unit: "yd", placeholder: "93" },
+  { key: "total", label: "Total", unit: "yd", placeholder: "100" },
+  { key: "ballSpeed", label: "Ball speed", unit: "mph", placeholder: "77" },
+  { key: "clubSpeed", label: "Club speed", unit: "mph", placeholder: "68" },
+  { key: "smash", label: "Smash factor", unit: "", placeholder: "1.13" },
+  { key: "launch", label: "Launch angle", unit: "deg", placeholder: "31.7" },
+  { key: "spin", label: "Spin rate", unit: "rpm", placeholder: "6626" },
+  { key: "offline", label: "Offline", unit: "yd", placeholder: "5.5" },
+  { key: "apex", label: "Apex", unit: "ft", placeholder: "68" },
+  { key: "descent", label: "Descent angle", unit: "deg", placeholder: "39.8" },
+  { key: "faceAngle", label: "Face angle", unit: "deg", placeholder: "1.2" },
+  { key: "clubPath", label: "Club path", unit: "deg", placeholder: "-1.0" },
+  { key: "faceToPath", label: "Face to path", unit: "deg", placeholder: "2.2" },
+];
+
 function ImportView({
   csvText,
   importCsv,
+  importManualShot,
   importPhotoShots,
   importMessage,
   lastImport,
@@ -5304,18 +6753,90 @@ function ImportView({
 }: {
   csvText: string;
   importCsv: (submissionType?: LastImport["submissionType"]) => void;
+  importManualShot: (shot: Shot, metadata: PhotoImportMetadata) => void;
   importPhotoShots: (shots: Shot[], simulator: string, metadata: PhotoImportMetadata) => void;
   importMessage: string;
   lastImport: LastImport;
   setCsvText: (value: string) => void;
 }) {
-  const [importMode, setImportMode] = useState<"api" | "file" | "photo">("api");
+  const [importMode, setImportMode] = useState<"api" | "file" | "photo" | "manual">("api");
   const [photoScans, setPhotoScans] = useState<PhotoScanResult[]>([]);
   const [photoScanState, setPhotoScanState] = useState<"idle" | "scanning" | "ready" | "error">("idle");
   const [photoProgress, setPhotoProgress] = useState(0);
   const [photoStatus, setPhotoStatus] = useState("Choose up to five TrackMan or simulator screenshots.");
   const [csvFileName, setCsvFileName] = useState("Demo rows");
   const [csvFileStatus, setCsvFileStatus] = useState("Choose a CSV file or paste exported rows.");
+  const [manualStatus, setManualStatus] = useState("Enter at least one metric. Missing fields will display as NA.");
+  const [manualForm, setManualForm] = useState<Record<string, string>>({
+    date: getTodayDateString(),
+    location: "",
+    club: "SW",
+    carry: "",
+    total: "",
+    ballSpeed: "",
+    clubSpeed: "",
+    smash: "",
+    launch: "",
+    spin: "",
+    offline: "",
+    apex: "",
+    descent: "",
+    faceAngle: "",
+    clubPath: "",
+    faceToPath: "",
+  });
+
+  function updateManualField(key: string, value: string) {
+    setManualForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function manualNumber(key: string) {
+    const value = manualForm[key]?.trim();
+    if (!value) return Number.NaN;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : Number.NaN;
+  }
+
+  function submitManualSession(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const shot: Shot = {
+      id: `manual-shot-${Date.now()}`,
+      club: manualForm.club || "SW",
+      carry: manualNumber("carry"),
+      total: manualNumber("total"),
+      ballSpeed: manualNumber("ballSpeed"),
+      clubSpeed: manualNumber("clubSpeed"),
+      smash: manualNumber("smash"),
+      launch: manualNumber("launch"),
+      spin: manualNumber("spin"),
+      offline: manualNumber("offline"),
+      shape: "Not recorded",
+      apex: manualNumber("apex"),
+      descent: manualNumber("descent"),
+      faceAngle: manualNumber("faceAngle"),
+      clubPath: manualNumber("clubPath"),
+      faceToPath: manualNumber("faceToPath"),
+    };
+    const detectedMetrics = MANUAL_SHOT_FIELDS
+      .map((field) => field.key)
+      .filter((metric) => typeof shot[metric] === "number" && Number.isFinite(shot[metric] as number));
+
+    if (!detectedMetrics.length) {
+      setManualStatus("Add at least one swing number before analyzing the manual session.");
+      return;
+    }
+
+    if (Number.isFinite(shot.offline)) {
+      shot.shape = shot.offline < -8 ? "Draw" : shot.offline > 8 ? "Fade" : "Straight";
+    }
+    shot.detectedMetrics = detectedMetrics;
+    setManualStatus(`${getClubDisplayName(shot.club)} entry is being saved and analyzed.`);
+    importManualShot(shot, {
+      capturedAt: manualForm.date || getTodayDateString(),
+      location: manualForm.location.trim() || LOCATION_UNAVAILABLE,
+    });
+  }
 
   async function readCsvFile(file: File | undefined) {
     if (!file) return;
@@ -5462,11 +6983,12 @@ function ImportView({
             { id: "api", label: "API feed", body: "Connect TrackMan, Full Swing, GCQuad, SkyTrak, or Mevo+." },
             { id: "file", label: "CSV file", body: "Paste exported rows or upload a CSV from your simulator." },
             { id: "photo", label: "Session photos", body: "Upload TrackMan or other simulator screenshots." },
+            { id: "manual", label: "Manual entry", body: "Type the club and any metrics you captured from a launch monitor." },
           ].map((mode) => (
             <button
               className={cls("import-mode", importMode === mode.id && "active")}
               key={mode.id}
-              onClick={() => setImportMode(mode.id as "api" | "file" | "photo")}
+              onClick={() => setImportMode(mode.id as "api" | "file" | "photo" | "manual")}
             >
               <strong>{mode.label}</strong>
               <span>{mode.body}</span>
@@ -5533,6 +7055,10 @@ function ImportView({
                 Analyze rows
               </button>
             </div>
+            <p className="muted-copy">
+              Accepted format: CSV under 5 MB. Include at least club plus one shot metric such as carry, total,
+              ball speed, launch, spin, offline, club path, or face angle.
+            </p>
           </div>
         )}
 
@@ -5620,6 +7146,68 @@ function ImportView({
             )}
           </div>
         )}
+
+        {importMode === "manual" && (
+          <form className="import-panel manual-entry-panel" onSubmit={submitManualSession}>
+            <div className="manual-entry-guide">
+              <strong>Manual first-session entry</strong>
+              <span>
+                Enter the numbers you have from TrackMan, Full Swing, Foresight, SkyTrak, Mevo+, or another launch monitor.
+                Blank metrics stay private to this session and display as NA.
+              </span>
+            </div>
+            <div className="manual-form-grid">
+              <label>
+                <span>Date</span>
+                <input
+                  onChange={(event) => updateManualField("date", event.target.value)}
+                  type="date"
+                  value={manualForm.date}
+                />
+              </label>
+              <label>
+                <span>Club</span>
+                <select value={manualForm.club} onChange={(event) => updateManualField("club", event.target.value)}>
+                  {CLUB_ORDER.map((club) => (
+                    <option key={club} value={club}>
+                      {getClubDisplayName(club)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="manual-form-wide">
+                <span>Location</span>
+                <input
+                  onChange={(event) => updateManualField("location", event.target.value)}
+                  placeholder="Back Nine Woodstock"
+                  value={manualForm.location}
+                />
+              </label>
+              {MANUAL_SHOT_FIELDS.map((field) => (
+                <label key={field.key}>
+                  <span>{field.label}</span>
+                  <input
+                    inputMode="decimal"
+                    onChange={(event) => updateManualField(field.key, event.target.value)}
+                    placeholder={field.placeholder}
+                    value={manualForm[field.key]}
+                  />
+                  {field.unit && <small>{field.unit}</small>}
+                </label>
+              ))}
+            </div>
+            <div className="csv-file-status manual-status" role="status">
+              <strong>Manual entry</strong>
+              <span>{manualStatus}</span>
+            </div>
+            <div className="button-row">
+              <button className="primary-action" type="submit">
+                <span>⇧</span>
+                Analyze manual session
+              </button>
+            </div>
+          </form>
+        )}
       </div>
 
       <LastImportPanel lastImport={lastImport} />
@@ -5674,6 +7262,197 @@ function LastImportPanel({ lastImport }: { lastImport: LastImport }) {
         ))}
       </div>
     </div>
+  );
+}
+
+const GAUGE_CENTER = { x: 120, y: 116 };
+const GAUGE_RADIUS = 88;
+const GAUGE_START_ANGLE = 160;
+const GAUGE_END_ANGLE = 380;
+const GAUGE_ARC_PATH = describeGaugeArc(GAUGE_CENTER.x, GAUGE_CENTER.y, GAUGE_RADIUS, GAUGE_START_ANGLE, GAUGE_END_ANGLE);
+
+function polarPoint(cx: number, cy: number, radius: number, angle: number) {
+  const radians = (angle * Math.PI) / 180;
+  return {
+    x: cx + radius * Math.cos(radians),
+    y: cy + radius * Math.sin(radians),
+  };
+}
+
+function describeGaugeArc(cx: number, cy: number, radius: number, startAngle: number, endAngle: number) {
+  const start = polarPoint(cx, cy, radius, startAngle);
+  const end = polarPoint(cx, cy, radius, endAngle);
+  const largeArcFlag = Math.abs(endAngle - startAngle) > 180 ? 1 : 0;
+  return `M ${start.x} ${start.y} A ${radius} ${radius} 0 ${largeArcFlag} 1 ${end.x} ${end.y}`;
+}
+
+function gaugePercent(value: number, min: number, max: number) {
+  if (max === min) return 0;
+  return clamp(((value - min) / (max - min)) * 100, 0, 100);
+}
+
+function gaugeAngle(value: number, min: number, max: number) {
+  const progress = gaugePercent(value, min, max) / 100;
+  return GAUGE_START_ANGLE + (GAUGE_END_ANGLE - GAUGE_START_ANGLE) * progress;
+}
+
+function formatGaugeValue(value: number, decimals: number) {
+  if (!Number.isFinite(value)) return "NA";
+  return decimals === 0 ? Math.round(value).toString() : value.toFixed(decimals);
+}
+
+function formatGaugeRange(range: [number, number], decimals: number, unit: string) {
+  const low = formatGaugeValue(range[0], decimals);
+  const high = formatGaugeValue(range[1], decimals);
+  return `${low}-${high}${unit ? ` ${unit}` : ""}`;
+}
+
+function getGaugeStatus(metric: SwingGaugeMetric) {
+  const value = metric.value;
+  const [targetLow, targetHigh] = metric.targetRange;
+  const [warningLow, warningHigh] = metric.warningRange;
+  if (value >= targetLow && value <= targetHigh) return { label: "Ideal", tone: "green" as const };
+  if (value >= warningLow && value <= warningHigh) return { label: "Caution", tone: "amber" as const };
+  return { label: "Redline", tone: "red" as const };
+}
+
+function SwingGaugeCluster({
+  avgDispersion,
+  metrics,
+  performanceIndex,
+  selectedClubLabel,
+  shotCount,
+}: {
+  avgDispersion: number;
+  metrics: SwingGaugeMetric[];
+  performanceIndex: number;
+  selectedClubLabel: string;
+  shotCount: number;
+}) {
+  return (
+    <section className="swing-gauge-cluster" aria-labelledby="swing-gauge-title">
+      <header className="swing-gauge-header">
+        <div>
+          <p className="eyebrow">Performance cluster</p>
+          <h2 id="swing-gauge-title">{selectedClubLabel} telemetry</h2>
+          <span>
+            {shotCount} shots · index {Number.isFinite(performanceIndex) ? Math.round(performanceIndex) : "NA"}/100 · dispersion{" "}
+            {Number.isFinite(avgDispersion) ? `±${avgDispersion} yd` : "NA"}
+          </span>
+        </div>
+        <div className="swing-gauge-legend" aria-label="Gauge color legend">
+          <span><i className="legend-green" />Ideal</span>
+          <span><i className="legend-amber" />Caution</span>
+          <span><i className="legend-red" />Redline</span>
+        </div>
+      </header>
+
+      <div className="swing-gauge-grid">
+        {metrics.map((metric) => (
+          <SwingStatGauge key={metric.id} metric={metric} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function SwingStatGauge({ metric }: { metric: SwingGaugeMetric }) {
+  const status = getGaugeStatus(metric);
+  const needleAngle = gaugeAngle(metric.value, metric.min, metric.max);
+  const ticks = Array.from({ length: 15 }, (_, index) => {
+    const angle = GAUGE_START_ANGLE + ((GAUGE_END_ANGLE - GAUGE_START_ANGLE) / 14) * index;
+    const outer = polarPoint(GAUGE_CENTER.x, GAUGE_CENTER.y, GAUGE_RADIUS + 1, angle);
+    const inner = polarPoint(GAUGE_CENTER.x, GAUGE_CENTER.y, GAUGE_RADIUS - (index % 2 === 0 ? 11 : 7), angle);
+    return { inner, outer, major: index % 2 === 0 };
+  });
+  const centerAngle = typeof metric.centerMarker === "number" ? gaugeAngle(metric.centerMarker, metric.min, metric.max) : undefined;
+  const centerOuter = typeof centerAngle === "number" ? polarPoint(GAUGE_CENTER.x, GAUGE_CENTER.y, GAUGE_RADIUS + 8, centerAngle) : undefined;
+  const centerInner = typeof centerAngle === "number" ? polarPoint(GAUGE_CENTER.x, GAUGE_CENTER.y, GAUGE_RADIUS - 17, centerAngle) : undefined;
+
+  return (
+    <article className={cls("swing-gauge-card", metric.priority === "hero" && "hero", status.tone)} tabIndex={0}>
+      <div className="swing-gauge-topline">
+        <span>{metric.label}</span>
+        <em className={cls("gauge-source", metric.source.toLowerCase())}>{metric.source}</em>
+      </div>
+
+      <svg
+        aria-label={`${metric.label}: ${formatGaugeValue(metric.value, metric.decimals)} ${metric.unit}`}
+        className="swing-gauge-svg"
+        role="img"
+        viewBox="0 0 240 162"
+      >
+        <defs>
+          <filter id={`gauge-glow-${metric.id}`} x="-30%" y="-30%" width="160%" height="160%">
+            <feGaussianBlur stdDeviation="3.2" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+        <path className="gauge-track" d={GAUGE_ARC_PATH} pathLength={100} />
+        {metric.bands.map((band) => {
+          const start = gaugePercent(band.from, metric.min, metric.max);
+          const end = gaugePercent(band.to, metric.min, metric.max);
+          const length = Math.max(0, end - start);
+          return (
+            <path
+              key={`${metric.id}-${band.label}-${band.from}`}
+              className={cls("gauge-band", band.tone, band.redline && "redline")}
+              d={GAUGE_ARC_PATH}
+              pathLength={100}
+              strokeDasharray={`${length} ${100 - length}`}
+              strokeDashoffset={-start}
+            />
+          );
+        })}
+        {ticks.map((tick, index) => (
+          <line
+            key={`${metric.id}-tick-${index}`}
+            className={cls("gauge-tick", tick.major && "major")}
+            x1={tick.inner.x}
+            x2={tick.outer.x}
+            y1={tick.inner.y}
+            y2={tick.outer.y}
+          />
+        ))}
+        {centerInner && centerOuter && (
+          <line className="gauge-center-marker" x1={centerInner.x} x2={centerOuter.x} y1={centerInner.y} y2={centerOuter.y} />
+        )}
+        <g
+          className="gauge-needle"
+          style={{
+            transform: `rotate(${needleAngle - 270}deg)`,
+            transformOrigin: `${GAUGE_CENTER.x}px ${GAUGE_CENTER.y}px`,
+          }}
+        >
+          <line x1={GAUGE_CENTER.x} x2={GAUGE_CENTER.x} y1={GAUGE_CENTER.y + 9} y2={GAUGE_CENTER.y - 66} />
+        </g>
+        <circle className="gauge-hub-outer" cx={GAUGE_CENTER.x} cy={GAUGE_CENTER.y} r="11" />
+        <circle className="gauge-hub-inner" cx={GAUGE_CENTER.x} cy={GAUGE_CENTER.y} r="4" />
+      </svg>
+
+      <div className="gauge-readout">
+        <strong>
+          {formatGaugeValue(metric.value, metric.decimals)}
+          {metric.unit && <small>{metric.unit}</small>}
+        </strong>
+        <span className={cls("gauge-status", status.tone)}>{status.label}</span>
+      </div>
+
+      <div className="gauge-scale">
+        <span>{formatGaugeValue(metric.min, metric.decimals)}</span>
+        <span>{formatGaugeValue(metric.max, metric.decimals)}</span>
+      </div>
+
+      <div className="swing-gauge-tooltip" role="tooltip">
+        <strong>{metric.label}</strong>
+        <span>Ideal: {formatGaugeRange(metric.targetRange, metric.decimals, metric.unit)}</span>
+        <span>Watch: {formatGaugeRange(metric.warningRange, metric.decimals, metric.unit)}</span>
+        <p>{metric.detail}</p>
+      </div>
+    </article>
   );
 }
 
@@ -5941,9 +7720,11 @@ function answersFromPracticeProfile(profile: UserPracticeProfile): OnboardingAns
 function OnboardingFlow({
   initialProfile,
   onRegister,
+  onSkip,
 }: {
   initialProfile: UserPracticeProfile | null;
   onRegister: (profile: UserPracticeProfile) => void;
+  onSkip: () => void;
 }) {
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState<OnboardingAnswers>(() =>
@@ -6096,6 +7877,9 @@ function OnboardingFlow({
           </div>
 
           <div className="onboarding-actions final-actions">
+            <button className="text-button" onClick={onSkip} type="button">
+              Skip setup
+            </button>
             <button className="secondary-action" onClick={() => setStep(ONBOARDING_QUESTIONS.length - 1)}>
               Back
             </button>
@@ -6169,6 +7953,9 @@ function OnboardingFlow({
         )}
 
         <div className="onboarding-actions">
+          <button className="text-button" onClick={onSkip} type="button">
+            Skip setup
+          </button>
           <button className="secondary-action" disabled={step === 0} onClick={() => setStep((value) => Math.max(0, value - 1))}>
             Back
           </button>
@@ -6466,16 +8253,24 @@ function LoginRequestModal({
 }
 
 function PasswordResetModal({
+  force = false,
   onClose,
+  onPasswordUpdated,
   onStatus,
 }: {
+  force?: boolean;
   onClose: () => void;
+  onPasswordUpdated?: () => void;
   onStatus: (message: string) => void;
 }) {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [state, setState] = useState<"idle" | "saving">("idle");
-  const [message, setMessage] = useState("Choose a new password for your Free Range Golf account.");
+  const [message, setMessage] = useState(
+    force
+      ? "You are signed in with a temporary password. Choose a new password before continuing."
+      : "Choose a new password for your Free Range Golf account.",
+  );
 
   async function savePassword(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -6496,7 +8291,10 @@ function PasswordResetModal({
       const nextMessage = payload.publicMessage ?? payload.error ?? "Your password has been updated.";
       setMessage(nextMessage);
       onStatus(nextMessage);
-      if (response.ok) onClose();
+      if (response.ok) {
+        onPasswordUpdated?.();
+        onClose();
+      }
     } catch {
       const nextMessage = "The password could not be updated right now.";
       setMessage(nextMessage);
@@ -6511,10 +8309,12 @@ function PasswordResetModal({
       <form className="video-upload-modal auth-modal" onSubmit={savePassword}>
         <div className="video-modal-header">
           <div>
-            <p className="eyebrow">Password reset</p>
+            <p className="eyebrow">{force ? "Temporary password" : "Password reset"}</p>
             <h2>Set a new password</h2>
           </div>
-          <button aria-label="Close password reset dialog" className="icon-button" onClick={onClose} type="button">×</button>
+          {!force && (
+            <button aria-label="Close password reset dialog" className="icon-button" onClick={onClose} type="button">×</button>
+          )}
         </div>
         <label className="video-form-wide">
           <span>New password</span>
@@ -6543,7 +8343,7 @@ function PasswordResetModal({
         <div className="video-modal-actions">
           <span />
           <div className="button-row">
-            <button className="secondary-action" onClick={onClose} type="button">Cancel</button>
+            {!force && <button className="secondary-action" onClick={onClose} type="button">Cancel</button>}
             <button className="primary-action" disabled={state === "saving"} type="submit">
               {state === "saving" ? "Saving..." : "Save Password"}
             </button>
@@ -6556,10 +8356,12 @@ function PasswordResetModal({
 
 function AccountGate({
   connectAccount,
+  continueAsGuest,
   createAccount,
   syncStatus,
 }: {
   connectAccount: () => void | Promise<boolean>;
+  continueAsGuest: () => void;
   createAccount: () => void;
   syncStatus: string;
 }) {
@@ -6568,7 +8370,7 @@ function AccountGate({
       <section className="account-modal">
         <div>
           <p className="eyebrow">Welcome to Free Range Golf</p>
-          <h2>Create your account or sign in.</h2>
+          <h2>Create your account or continue as guest.</h2>
           <span>{syncStatus}</span>
         </div>
         <div className="account-choice-grid">
@@ -6579,6 +8381,10 @@ function AccountGate({
           <button className="account-choice" onClick={createAccount}>
             <strong>Create a new account</strong>
             <span>Register with your email, then open your private video library from a secure link.</span>
+          </button>
+          <button className="account-choice" onClick={continueAsGuest}>
+            <strong>Continue as guest</strong>
+            <span>Explore the demo workspace now. You can sign up later to save private data.</span>
           </button>
         </div>
       </section>

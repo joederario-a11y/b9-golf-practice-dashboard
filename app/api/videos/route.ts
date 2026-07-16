@@ -10,6 +10,7 @@ import {
   getAssignedMemberIds,
   getRequiredDatabase,
   getRequiredVideoStorage,
+  recordActivity,
   requireIdentity,
   responseFromError,
 } from "@/lib/server/platform";
@@ -379,6 +380,17 @@ export async function PUT(request: Request) {
         )
         .bind(fileName, stored.size, mimeType, video.id)
         .run();
+      await recordActivity({
+        action: "video_uploaded",
+        actor: identity,
+        database,
+        entityId: video.id,
+        entityType: "video",
+        memberId: video.member_id,
+        metadata: { fileName, size: stored.size, mimeType },
+        summary: `${identity.displayName} uploaded ${fileName}.`,
+        targetUserId: video.member_id,
+      });
     }
     return Response.json({ ok: true, asset, size: stored.size });
   } catch (error) {
@@ -483,6 +495,20 @@ export async function PATCH(request: Request) {
           video.id,
         )
         .run();
+
+      if (publicationStatus === "Published") {
+        await recordActivity({
+          action: "feedback_submitted",
+          actor: identity,
+          database,
+          entityId: video.id,
+          entityType: "video",
+          memberId: nextMemberId,
+          metadata: { publicationStatus },
+          summary: `${identity.displayName} published coach feedback for a lesson video.`,
+          targetUserId: nextMemberId,
+        });
+      }
 
       if (publicationStatus === "Published" && payload.notifyMember === true) {
         const notificationVideo = await getVideo(database, video.id);

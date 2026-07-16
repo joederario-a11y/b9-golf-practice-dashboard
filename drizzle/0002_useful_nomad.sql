@@ -1,13 +1,13 @@
-CREATE TABLE `coach_members` (
+CREATE TABLE IF NOT EXISTS `coach_members` (
 	`id` text PRIMARY KEY NOT NULL,
 	`coach_id` text NOT NULL,
 	`member_id` text NOT NULL,
 	`created_at` text DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `coach_members_assignment_unique` ON `coach_members` (`coach_id`,`member_id`);--> statement-breakpoint
-CREATE INDEX `coach_members_member_idx` ON `coach_members` (`member_id`);--> statement-breakpoint
-CREATE TABLE `member_invitations` (
+CREATE UNIQUE INDEX IF NOT EXISTS `coach_members_assignment_unique` ON `coach_members` (`coach_id`,`member_id`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `coach_members_member_idx` ON `coach_members` (`member_id`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `member_invitations` (
 	`id` text PRIMARY KEY NOT NULL,
 	`member_id` text NOT NULL,
 	`coach_id` text,
@@ -22,9 +22,9 @@ CREATE TABLE `member_invitations` (
 	`created_at` text DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `member_invitations_token_unique` ON `member_invitations` (`invite_token`);--> statement-breakpoint
-CREATE INDEX `member_invitations_member_idx` ON `member_invitations` (`member_id`,`created_at`);--> statement-breakpoint
-CREATE TABLE `lesson_videos` (
+CREATE UNIQUE INDEX IF NOT EXISTS `member_invitations_token_unique` ON `member_invitations` (`invite_token`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `member_invitations_member_idx` ON `member_invitations` (`member_id`,`created_at`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `lesson_videos` (
 	`id` text PRIMARY KEY NOT NULL,
 	`member_id` text NOT NULL,
 	`coach_id` text,
@@ -66,10 +66,10 @@ CREATE TABLE `lesson_videos` (
 	`updated_at` text DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 --> statement-breakpoint
-CREATE INDEX `lesson_videos_member_idx` ON `lesson_videos` (`member_id`,`created_at`);--> statement-breakpoint
-CREATE INDEX `lesson_videos_coach_idx` ON `lesson_videos` (`coach_id`,`created_at`);--> statement-breakpoint
-CREATE INDEX `lesson_videos_status_idx` ON `lesson_videos` (`publication_status`,`upload_status`);--> statement-breakpoint
-CREATE TABLE `users` (
+CREATE INDEX IF NOT EXISTS `lesson_videos_member_idx` ON `lesson_videos` (`member_id`,`created_at`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `lesson_videos_coach_idx` ON `lesson_videos` (`coach_id`,`created_at`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `lesson_videos_status_idx` ON `lesson_videos` (`publication_status`,`upload_status`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `users` (
 	`id` text PRIMARY KEY NOT NULL,
 	`role` text DEFAULT 'member' NOT NULL,
 	`first_name` text NOT NULL,
@@ -86,9 +86,9 @@ CREATE TABLE `users` (
 	`updated_at` text DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `users_email_unique` ON `users` (`email`);--> statement-breakpoint
-CREATE INDEX `users_role_idx` ON `users` (`role`);--> statement-breakpoint
-CREATE TABLE `video_email_notifications` (
+CREATE UNIQUE INDEX IF NOT EXISTS `users_email_unique` ON `users` (`email`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `users_role_idx` ON `users` (`role`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `video_email_notifications` (
 	`id` text PRIMARY KEY NOT NULL,
 	`video_id` text NOT NULL,
 	`member_id` text NOT NULL,
@@ -101,14 +101,14 @@ CREATE TABLE `video_email_notifications` (
 	`created_at` text DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 --> statement-breakpoint
-CREATE INDEX `video_email_notifications_video_idx` ON `video_email_notifications` (`video_id`);--> statement-breakpoint
-CREATE INDEX `video_email_notifications_member_idx` ON `video_email_notifications` (`member_id`);--> statement-breakpoint
-CREATE TABLE `video_views` (
+CREATE INDEX IF NOT EXISTS `video_email_notifications_video_idx` ON `video_email_notifications` (`video_id`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `video_email_notifications_member_idx` ON `video_email_notifications` (`member_id`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `video_views` (
 	`id` text PRIMARY KEY NOT NULL,
 	`video_id` text NOT NULL,
 	`member_id` text NOT NULL,
 	`viewed_at` text DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 --> statement-breakpoint
-CREATE INDEX `video_views_video_idx` ON `video_views` (`video_id`);--> statement-breakpoint
-CREATE INDEX `video_views_member_idx` ON `video_views` (`member_id`);
+CREATE INDEX IF NOT EXISTS `video_views_video_idx` ON `video_views` (`video_id`);--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `video_views_member_idx` ON `video_views` (`member_id`);

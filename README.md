@@ -1,8 +1,8 @@
-# vinext-starter
+# Free Range Golf Practice Dashboard
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+Full-stack golf practice and coach video software running on
+[vinext](https://github.com/cloudflare/vinext), Cloudflare Workers, D1, R2,
+and Drizzle.
 
 ## Prerequisites
 
@@ -16,59 +16,31 @@ npm run dev
 npm run build
 ```
 
-This starter does not use `wrangler.jsonc`.
+Production deployment is configured through `wrangler.jsonc`.
 
 ## Included Shape
 
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
-```
+- edit application code under `app/`
+- `worker/index.ts` is the Cloudflare Worker entry point generated for vinext
+- `wrangler.jsonc` declares Workers static assets, D1, R2, and Images bindings
+- `vite.config.ts` simulates the same bindings for local vinext development
+- `db/schema.ts` and `drizzle/*.sql` define the D1 schema
 
 ## Useful Commands
 
 - `npm run dev`: start local development
 - `npm run build`: verify the vinext build output
+- `npm run build:worker`: clean and build the Worker output for deployment
+- `npm run preview:worker`: run the built Worker locally with Wrangler
+- `npm run deploy:dry-run`: compile the Worker deployment without publishing
+- `npm run deploy`: build and deploy to Cloudflare Workers
 - `npm run db:generate`: generate Drizzle migrations after schema changes
 
 ## Lesson Video Delivery
 
 The coach-to-member loop uses the existing Cloudflare stack:
 
-- Workspace authentication headers identify the signed-in account.
+- Email/password login, magic links, and invitation tokens identify the signed-in account.
 - D1-backed email magic links identify members who arrive from invitation or video-notification emails.
 - D1 stores users, coach-member assignments, invitation records, video metadata, views, and email audit records.
 - Private R2 stores video files and optional thumbnails.
@@ -97,14 +69,12 @@ APP_BASE_URL=https://your-site.example
 login, and video email links use it to build one-time login URLs that set an
 HTTP-only session cookie before opening the member video library.
 
-The Sites binding names are declared in `.openai/hosting.json`:
+Cloudflare bindings are declared in `wrangler.jsonc`:
 
-```json
-{
-  "d1": "DB",
-  "r2": "VIDEO_STORAGE"
-}
-```
+- `DB`: Cloudflare D1 database
+- `VIDEO_STORAGE`: private Cloudflare R2 bucket
+- `ASSETS`: static asset binding for `dist/client`
+- `IMAGES`: Cloudflare Images transform binding used by the vinext image endpoint
 
 Apply the D1 migrations, including `drizzle/0002_useful_nomad.sql` and
 `drizzle/0003_magic_link_auth.sql`, before using the production coach flow. The
@@ -158,6 +128,23 @@ Repeat with two different `role: "member"` emails to test ownership isolation.
 npm test
 npm run lint
 npm run build
+npm run deploy:dry-run
+```
+
+### Cloudflare Workers deployment
+
+Create the Cloudflare resources once, then update `wrangler.jsonc` with the
+real D1 database id and production URL.
+
+```bash
+npx wrangler login
+npx wrangler d1 create b9-golf-practice-dashboard-db
+npx wrangler r2 bucket create b9-golf-video-storage
+for f in drizzle/*.sql; do npx wrangler d1 execute b9-golf-practice-dashboard-db --remote --file="$f"; done
+npx wrangler secret put RESEND_API_KEY
+npx wrangler secret put OPENAI_API_KEY
+npm run deploy:dry-run
+npm run deploy
 ```
 
 ## Learn More

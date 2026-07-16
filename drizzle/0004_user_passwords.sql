@@ -1,4 +1,4 @@
-CREATE TABLE `user_passwords` (
+CREATE TABLE IF NOT EXISTS `user_passwords` (
 	`user_id` text PRIMARY KEY NOT NULL,
 	`password_hash` text NOT NULL,
 	`password_salt` text NOT NULL,

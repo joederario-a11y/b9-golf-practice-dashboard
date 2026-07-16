@@ -1,4 +1,4 @@
-CREATE TABLE `golf_practice_profiles` (
+CREATE TABLE IF NOT EXISTS `golf_practice_profiles` (
 	`user_email` text PRIMARY KEY NOT NULL,
 	`display_name` text,
 	`profile_json` text NOT NULL,

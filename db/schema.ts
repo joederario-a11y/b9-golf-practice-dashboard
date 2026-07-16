@@ -3,19 +3,25 @@ import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqli
 
 export const golfSessionSnapshots = sqliteTable("golf_session_snapshots", {
   userEmail: text("user_email").primaryKey(),
+  userId: text("user_id"),
   displayName: text("display_name"),
   sessionsJson: text("sessions_json").notNull(),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+}, (table) => [
+  uniqueIndex("golf_session_snapshots_user_id_unique").on(table.userId),
+]);
 
 export const golfPracticeProfiles = sqliteTable("golf_practice_profiles", {
   userEmail: text("user_email").primaryKey(),
+  userId: text("user_id"),
   displayName: text("display_name"),
   profileJson: text("profile_json").notNull(),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+}, (table) => [
+  uniqueIndex("golf_practice_profiles_user_id_unique").on(table.userId),
+]);
 
 export const users = sqliteTable(
   "users",
@@ -28,6 +34,8 @@ export const users = sqliteTable(
     phone: text("phone"),
     skillLevel: text("skill_level"),
     notes: text("notes"),
+    accountStatus: text("account_status").notNull().default("active"),
+    passwordResetRequired: integer("password_reset_required", { mode: "boolean" }).notNull().default(false),
     inviteStatus: text("invite_status").notNull().default("pending"),
     invitedAt: text("invited_at"),
     lastLoginAt: text("last_login_at"),
@@ -124,6 +132,50 @@ export const lessonVideos = sqliteTable(
     index("lesson_videos_member_idx").on(table.memberId, table.createdAt),
     index("lesson_videos_coach_idx").on(table.coachId, table.createdAt),
     index("lesson_videos_status_idx").on(table.publicationStatus, table.uploadStatus),
+  ],
+);
+
+export const memberContentItems = sqliteTable(
+  "member_content_items",
+  {
+    id: text("id").primaryKey(),
+    memberId: text("member_id").notNull(),
+    createdBy: text("created_by").notNull(),
+    contentType: text("content_type").notNull(),
+    title: text("title").notNull(),
+    body: text("body").notNull().default(""),
+    visibility: text("visibility").notNull().default("member"),
+    status: text("status").notNull().default("active"),
+    sessionDataId: text("session_data_id"),
+    metadataJson: text("metadata_json").notNull().default("{}"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("member_content_member_idx").on(table.memberId, table.createdAt),
+    index("member_content_created_by_idx").on(table.createdBy, table.createdAt),
+  ],
+);
+
+export const memberActivityLog = sqliteTable(
+  "member_activity_log",
+  {
+    id: text("id").primaryKey(),
+    actorId: text("actor_id"),
+    actorRole: text("actor_role").notNull(),
+    memberId: text("member_id"),
+    targetUserId: text("target_user_id"),
+    entityType: text("entity_type").notNull(),
+    entityId: text("entity_id"),
+    action: text("action").notNull(),
+    summary: text("summary").notNull(),
+    metadataJson: text("metadata_json").notNull().default("{}"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("member_activity_member_idx").on(table.memberId, table.createdAt),
+    index("member_activity_actor_idx").on(table.actorId, table.createdAt),
+    index("member_activity_target_idx").on(table.targetUserId, table.createdAt),
   ],
 );
 

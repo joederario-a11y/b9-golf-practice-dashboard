@@ -59,7 +59,11 @@ export async function PUT(request: Request) {
     }
 
     await setUserPassword(identity.id, password);
-    return Response.json({ ok: true, user: identity, publicMessage: "Your password has been updated." });
+    return Response.json({
+      ok: true,
+      user: { ...identity, passwordResetRequired: false },
+      publicMessage: "Your password has been updated.",
+    });
   } catch (error) {
     return responseFromError(error);
   }
