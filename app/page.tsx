@@ -7,6 +7,13 @@ type AccountMode = "pending" | "user" | "guest";
 type LoginModalMode = "login" | "register";
 type RegisterAccountType = "player" | "coach";
 type OnboardingRole = "golfer" | "coach";
+type PerformanceTimeframePreset = "all" | "week" | "month" | "last30" | "last90" | "custom";
+
+type PerformanceTimeframe = {
+  preset: PerformanceTimeframePreset;
+  startDate: string;
+  endDate: string;
+};
 
 type RegistrationDraft = {
   accountType: RegisterAccountType;
@@ -1227,6 +1234,21 @@ const EMPTY_LAST_IMPORT: LastImport = {
   shots: [],
 };
 
+const DEFAULT_PERFORMANCE_TIMEFRAME: PerformanceTimeframe = {
+  preset: "all",
+  startDate: "",
+  endDate: "",
+};
+
+const PERFORMANCE_TIMEFRAME_OPTIONS: Array<{ label: string; value: PerformanceTimeframePreset }> = [
+  { label: "All Time", value: "all" },
+  { label: "This Week", value: "week" },
+  { label: "This Month", value: "month" },
+  { label: "Last 30 Days", value: "last30" },
+  { label: "Last 90 Days", value: "last90" },
+  { label: "Custom Date Range", value: "custom" },
+];
+
 function round(value: number, digits = 1) {
   return Number(value.toFixed(digits));
 }
@@ -1561,6 +1583,116 @@ function formatDate(value: string) {
 function formatFullDate(value: string) {
   const date = parseDisplayDate(value);
   return date ? new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric" }).format(date) : "NA";
+}
+
+function startOfLocalDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function endOfLocalDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
+}
+
+function addLocalDays(date: Date, days: number) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function parseDateInput(value: string, endOfDay = false) {
+  if (!value) return null;
+  const parts = value.split("-").map((part) => Number(part));
+  if (parts.length !== 3 || parts.some((part) => !Number.isFinite(part))) return null;
+  const [year, month, day] = parts;
+  const date = new Date(year, month - 1, day);
+  return Number.isNaN(date.getTime()) ? null : endOfDay ? endOfLocalDay(date) : startOfLocalDay(date);
+}
+
+function getPerformanceTimeframeRange(timeframe: PerformanceTimeframe, referenceDate = new Date()) {
+  const todayStart = startOfLocalDay(referenceDate);
+  const todayEnd = endOfLocalDay(referenceDate);
+
+  if (timeframe.preset === "all") return null;
+
+  if (timeframe.preset === "week") {
+    const weekStart = startOfLocalDay(referenceDate);
+    const mondayOffset = (weekStart.getDay() + 6) % 7;
+    weekStart.setDate(weekStart.getDate() - mondayOffset);
+    return { end: todayEnd, start: weekStart };
+  }
+
+  if (timeframe.preset === "month") {
+    return {
+      end: todayEnd,
+      start: new Date(referenceDate.getFullYear(), referenceDate.getMonth(), 1),
+    };
+  }
+
+  if (timeframe.preset === "last30") {
+    return { end: todayEnd, start: addLocalDays(todayStart, -29) };
+  }
+
+  if (timeframe.preset === "last90") {
+    return { end: todayEnd, start: addLocalDays(todayStart, -89) };
+  }
+
+  const customStart = parseDateInput(timeframe.startDate);
+  const customEnd = parseDateInput(timeframe.endDate, true);
+  return {
+    end: customEnd,
+    start: customStart,
+  };
+}
+
+function filterSessionsByPerformanceTimeframe(sessions: Session[], timeframe: PerformanceTimeframe) {
+  const range = getPerformanceTimeframeRange(timeframe);
+  if (!range || (!range.start && !range.end)) return sessions;
+
+  return sessions.filter((session) => {
+    const date = parseDisplayDate(session.date);
+    if (!date) return false;
+    if (range.start && date < range.start) return false;
+    if (range.end && date > range.end) return false;
+    return true;
+  });
+}
+
+function getPerformanceTimeframeLabel(timeframe: PerformanceTimeframe) {
+  const option = PERFORMANCE_TIMEFRAME_OPTIONS.find((item) => item.value === timeframe.preset);
+  if (timeframe.preset !== "custom") return option?.label ?? "All Time";
+  if (timeframe.startDate && timeframe.endDate) return `${formatFullDate(timeframe.startDate)} - ${formatFullDate(timeframe.endDate)}`;
+  if (timeframe.startDate) return `Since ${formatFullDate(timeframe.startDate)}`;
+  if (timeframe.endDate) return `Through ${formatFullDate(timeframe.endDate)}`;
+  return option?.label ?? "Custom Date Range";
+}
+
+function getPerformanceTimeframeSummary(timeframe: PerformanceTimeframe, shownSessions: number, totalSessions: number) {
+  const label = getPerformanceTimeframeLabel(timeframe);
+  if (timeframe.preset === "all") {
+    return `${label} · ${shownSessions} ${shownSessions === 1 ? "session" : "sessions"}`;
+  }
+  return `${label} · ${shownSessions} of ${totalSessions} ${totalSessions === 1 ? "session" : "sessions"}`;
+}
+
+function getSessionSubmissionType(session: Session): LastImport["submissionType"] {
+  const source = session.source.toLowerCase();
+  if (source.includes("api")) return "API feed";
+  if (source.includes("photo") || source.includes("scan")) return "Photo";
+  if (source.includes("manual")) return "Manual entry";
+  return "CSV / Excel";
+}
+
+function makeLastImportFromSession(session?: Session): LastImport {
+  if (!session || !session.shots.length) return EMPTY_LAST_IMPORT;
+  return {
+    date: session.date,
+    location: session.location ?? LOCATION_UNAVAILABLE,
+    missingMetrics: session.missingMetrics,
+    notes: session.importNotes,
+    simulator: session.source,
+    submissionType: getSessionSubmissionType(session),
+    shots: session.shots,
+  };
 }
 
 function getClubMetricConfig(metricKey: ClubMetricKey) {
@@ -4051,6 +4183,7 @@ export default function Home() {
   const [loginModalMode, setLoginModalMode] = useState<LoginModalMode>("login");
   const [registrationDraft, setRegistrationDraft] = useState<RegistrationDraft | null>(null);
   const [syncStatus, setSyncStatus] = useState("Choose how you want to use Free Range Golf.");
+  const [performanceTimeframe, setPerformanceTimeframe] = useState<PerformanceTimeframe>(DEFAULT_PERFORMANCE_TIMEFRAME);
 
   const clubs = useMemo(() => summarizeClubs(sessions), [sessions]);
   const insights = useMemo(() => computeInsights(clubs, sessions), [clubs, sessions]);
@@ -4076,6 +4209,47 @@ export default function Home() {
   const performanceIndex = qualityValues.length ? Math.round(average(qualityValues)) : Number.NaN;
   const ballCountLabel = `${allShots.length.toLocaleString()} ${allShots.length === 1 ? "ball" : "balls"}`;
   const topInsight = selectedSessionInsights[0];
+  const performanceSessions = useMemo(
+    () => filterSessionsByPerformanceTimeframe(sessions, performanceTimeframe),
+    [sessions, performanceTimeframe],
+  );
+  const performanceClubs = useMemo(() => summarizeClubs(performanceSessions), [performanceSessions]);
+  const performanceInsights = useMemo(
+    () => computeInsights(performanceClubs, performanceSessions),
+    [performanceClubs, performanceSessions],
+  );
+  const performanceShots = useMemo(() => performanceSessions.flatMap((session) => session.shots), [performanceSessions]);
+  const performanceSelectedSession =
+    performanceSessions.find((session) => session.id === selectedSessionId) ??
+    performanceSessions[0] ??
+    EMPTY_SESSION;
+  const performanceSelectedSessionClubs = useMemo(
+    () => summarizeClubs([performanceSelectedSession]),
+    [performanceSelectedSession],
+  );
+  const performanceSelectedSessionInsights = useMemo(
+    () => computeInsights(performanceSelectedSessionClubs, [performanceSelectedSession]),
+    [performanceSelectedSessionClubs, performanceSelectedSession],
+  );
+  const performanceSelectedClubSummary =
+    performanceSelectedSessionClubs.find((club) => club.club === selectedClub) ??
+    performanceClubs.find((club) => club.club === selectedClub) ??
+    performanceClubs[0];
+  const performanceActiveClub = performanceSelectedClubSummary?.club ?? selectedClub;
+  const performanceSelectedSessionHasClub = performanceSelectedSession.shots.some((shot) => shot.club === performanceActiveClub);
+  const performanceSelectedClubShots = (performanceSelectedSessionHasClub ? performanceSelectedSession.shots : performanceShots)
+    .filter((shot) => shot.club === performanceActiveClub);
+  const performanceAvgCarry = performanceSelectedClubSummary?.carry ?? round(averageMetric(performanceShots, "carry"));
+  const performanceAvgSmash = performanceSelectedClubSummary?.smash ?? round(averageMetric(performanceShots, "smash"), 2);
+  const performanceAvgDispersion = performanceSelectedClubSummary?.dispersion ?? round(standardDeviation(metricValues(performanceShots, "offline")));
+  const performanceQualityValues = performanceClubs.map((club) => club.quality).filter(Number.isFinite);
+  const filteredPerformanceIndex = performanceQualityValues.length ? Math.round(average(performanceQualityValues)) : Number.NaN;
+  const performanceTopInsight = performanceSelectedSessionInsights[0] ?? performanceInsights[0];
+  const performanceTimeframeSummary = getPerformanceTimeframeSummary(
+    performanceTimeframe,
+    performanceSessions.length,
+    sessions.length,
+  );
   const visibleNavItems = navItemsForAccount(accountMode, accountUser);
   const activeNavItem = visibleNavItems.find((item) => item.id === activeTab) ?? NAV_ITEMS.find((item) => item.id === activeTab);
 
@@ -4177,6 +4351,84 @@ export default function Home() {
     } catch {
       setSyncStatus("Could not save this update.");
     }
+  }
+
+  function commitSessionDataChange(nextSessions: Session[], successMessage: string) {
+    const nextSelectedSession =
+      nextSessions.find((session) => session.id === selectedSessionId) ??
+      nextSessions[0] ??
+      null;
+    const nextLastImport = makeLastImportFromSession(
+      nextSessions.find((session) => session.id.startsWith("import-")) ?? nextSessions[0],
+    );
+    const nextClub =
+      nextSelectedSession?.shots.some((shot) => shot.club === selectedClub)
+        ? selectedClub
+        : nextSelectedSession?.shots[0]?.club ?? "6-Iron";
+
+    setSessions(nextSessions);
+    setSelectedSessionId(nextSelectedSession?.id ?? "");
+    setSelectedClub(nextClub);
+    setLastImport(nextLastImport);
+    setImportMessage(successMessage);
+    setImportConfirmation(successMessage);
+    setSyncStatus(accountMode === "user" ? "Saving updated session data..." : "Updated this guest session data.");
+
+    if (accountMode === "user") {
+      void saveUserSessions(nextSessions);
+      return;
+    }
+
+    if (nextSessions.length) {
+      storeImportState(nextSessions, nextLastImport);
+    } else {
+      clearStoredImportState();
+    }
+  }
+
+  function deleteSession(sessionId: string) {
+    const session = sessions.find((item) => item.id === sessionId);
+    if (!session) return;
+    const shotCount = session.shots.length;
+    const confirmed = window.confirm(
+      `Permanently delete "${session.title}"?\n\nThis removes all ${shotCount} ${shotCount === 1 ? "shot" : "shots"} from dashboard stats, charts, averages, insights, and performance reviews. This cannot be undone.`,
+    );
+    if (!confirmed) return;
+
+    const nextSessions = sessions.filter((item) => item.id !== session.id);
+    commitSessionDataChange(
+      nextSessions,
+      `${session.title} was deleted. Dashboard stats, charts, and insights were recalculated.`,
+    );
+  }
+
+  function deleteShot(sessionId: string, shotId: string) {
+    const session = sessions.find((item) => item.id === sessionId);
+    const shot = session?.shots.find((item) => item.id === shotId);
+    if (!session || !shot) return;
+
+    const shotLabel = shot.sourceShotNumber
+      ? `shot #${shot.sourceShotNumber}`
+      : `${getClubDisplayName(shot.club)} shot`;
+    const removingFinalShot = session.shots.length <= 1;
+    const confirmed = window.confirm(
+      removingFinalShot
+        ? `Permanently delete ${shotLabel} from "${session.title}"?\n\nThis is the only shot in the session, so the entire session will also be removed from stats, charts, averages, insights, and performance reviews. This cannot be undone.`
+        : `Permanently delete ${shotLabel} from "${session.title}"?\n\nThis shot will be removed from stats, charts, averages, insights, and performance reviews. This cannot be undone.`,
+    );
+    if (!confirmed) return;
+
+    const nextSessions = removingFinalShot
+      ? sessions.filter((item) => item.id !== session.id)
+      : sessions.map((item) =>
+          item.id === session.id
+            ? { ...item, shots: item.shots.filter((candidate) => candidate.id !== shot.id) }
+            : item,
+        );
+    commitSessionDataChange(
+      nextSessions,
+      `${shotLabel} was deleted. Dashboard stats, charts, and insights were recalculated.`,
+    );
   }
 
   async function saveUserPracticeProfile(profile: UserPracticeProfile) {
@@ -4615,8 +4867,8 @@ export default function Home() {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">June performance review</p>
-            <h1>{activeNavItem?.label}</h1>
+            <p className="eyebrow">{activeTab === "dashboard" ? "Swing analytics" : "Free Range Golf"}</p>
+            <h1>{activeTab === "dashboard" ? "Performance Review" : activeNavItem?.label}</h1>
             <p className="page-description">{PAGE_DESCRIPTIONS[activeTab]}</p>
           </div>
           <div className="topbar-actions" aria-label="Session controls">
@@ -4648,20 +4900,24 @@ export default function Home() {
 
         {activeTab === "dashboard" && (
           <DashboardView
-            avgCarry={avgCarry}
-            avgDispersion={avgDispersion}
-            avgSmash={avgSmash}
-            clubs={clubs}
-            insights={selectedSessionInsights}
-            performanceIndex={performanceIndex}
+            avgCarry={performanceAvgCarry}
+            avgDispersion={performanceAvgDispersion}
+            avgSmash={performanceAvgSmash}
+            clubs={performanceClubs}
+            hasAnySessions={sessions.length > 0}
+            insights={performanceInsights}
+            onTimeframeChange={setPerformanceTimeframe}
+            performanceIndex={filteredPerformanceIndex}
             practiceProfile={practiceProfile}
-            selectedClub={activeClub}
-            selectedClubShots={selectedClubShots}
-            selectedClubSummary={selectedClubSummary}
-            selectedSession={selectedSession}
-            sessions={sessions}
-            shots={allShots}
-            topInsight={topInsight}
+            selectedClub={performanceActiveClub}
+            selectedClubShots={performanceSelectedClubShots}
+            selectedClubSummary={performanceSelectedClubSummary}
+            selectedSession={performanceSelectedSession}
+            sessions={performanceSessions}
+            shots={performanceShots}
+            timeframe={performanceTimeframe}
+            timeframeSummary={performanceTimeframeSummary}
+            topInsight={performanceTopInsight}
             setActiveTab={setActiveTab}
             setSelectedClub={setSelectedClub}
           />
@@ -4669,6 +4925,8 @@ export default function Home() {
 
         {activeTab === "sessions" && (
           <SessionsView
+            onDeleteSession={deleteSession}
+            onDeleteShot={deleteShot}
             selectedSession={selectedSession}
             selectedSessionId={selectedSessionId}
             sessions={sessions}
