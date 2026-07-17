@@ -1,12 +1,22 @@
 import { requestLoginEmail } from "@/lib/server/auth-email";
 import {
+  deriveSetupStatus,
+  normalizeEmail,
+  safeAccountStatus,
+  safeInviteStatus,
+  safeRole,
+  validatePasswordConfirmation,
+} from "@/lib/admin-user-policy.mjs";
+import {
   ensurePlatformSchema,
   ensureUserDataOwnershipSchema,
   getAssignedMemberIds,
   getRequiredDatabase,
+  invalidateUserSessions,
   recordActivity,
   requireIdentity,
   responseFromError,
+  setUserPassword,
   type AuthIdentity,
   type UserRole,
 } from "@/lib/server/platform";
@@ -24,10 +34,14 @@ type UserRow = {
   invite_status: string;
   invited_at: string | null;
   last_login_at: string | null;
+  password_reset_required: number | boolean;
+  password_user_id: string | null;
   created_at: string;
   updated_at: string;
   assigned_coach_ids: string | null;
   assigned_coach_names: string | null;
+  profile_image_id: string | null;
+  profile_image_updated_at: string | null;
   video_count: number;
   last_video_at: string | null;
   sessions_json: string | null;
@@ -63,6 +77,16 @@ type ContentRow = {
   creator_name: string | null;
 };
 
+type AssignedCoachRow = {
+  id: string;
+  first_name: string;
+  last_name: string;
+  email: string;
+  skill_level: string | null;
+  image_id: string | null;
+  image_updated_at: string | null;
+};
+
 function text(value: unknown, maxLength: number) {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
 }
@@ -80,6 +104,13 @@ function numberOrNull(value: unknown) {
 
 function isEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function coachPhotoUrl(coachId: string, imageId?: string | null, version?: string | null) {
+  if (!imageId) return "";
+  const params = new URLSearchParams({ coachId, imageId });
+  if (version) params.set("v", version);
+  return `/api/coach-photo?${params.toString()}`;
 }
 
 function displayName(row: { first_name: string; last_name: string; email?: string }) {
@@ -109,7 +140,7 @@ function serializeUser(row: UserRow) {
   const coachIds = row.assigned_coach_ids?.split(",").filter(Boolean) ?? [];
   const coachNames = row.assigned_coach_names?.split(",").filter(Boolean) ?? [];
   const sessions = parseJsonArray(row.sessions_json);
-  return {
+  const user = {
     id: row.id,
     name: displayName(row),
     firstName: row.first_name,
@@ -123,15 +154,22 @@ function serializeUser(row: UserRow) {
     inviteStatus: row.invite_status,
     invitedAt: row.invited_at,
     lastLoginAt: row.last_login_at,
+    passwordConfigured: Boolean(row.password_user_id),
+    passwordResetRequired: row.password_reset_required === 1 || row.password_reset_required === true,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     assignedCoachIds: coachIds,
     assignedCoachId: coachIds[0] ?? "",
     assignedCoachNames: coachNames,
     assignedCoachName: coachNames[0] ?? "",
+    profileImageUrl: coachPhotoUrl(row.id, row.profile_image_id, row.profile_image_updated_at),
     videoCount: Number(row.video_count ?? 0),
     sessionCount: sessions.length,
     lastVideoAt: row.last_video_at,
+  };
+  return {
+    ...user,
+    setupStatus: deriveSetupStatus(user),
   };
 }
 
@@ -166,6 +204,16 @@ function serializeContent(row: ContentRow) {
     metadata: parseJsonObject(row.metadata_json),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function serializeAssignedCoach(row: AssignedCoachRow) {
+  return {
+    id: row.id,
+    name: displayName(row),
+    email: row.email,
+    title: row.skill_level ?? "Coach",
+    profileImageUrl: coachPhotoUrl(row.id, row.image_id, row.image_updated_at),
   };
 }
 
@@ -226,16 +274,23 @@ async function listUsers(database: D1Database, identity: AuthIdentity) {
       users.invite_status,
       users.invited_at,
       users.last_login_at,
+      COALESCE(users.password_reset_required, 0) AS password_reset_required,
+      user_passwords.user_id AS password_user_id,
       users.created_at,
       users.updated_at,
       GROUP_CONCAT(DISTINCT assigned_coach.id) AS assigned_coach_ids,
       GROUP_CONCAT(DISTINCT TRIM(assigned_coach.first_name || ' ' || assigned_coach.last_name)) AS assigned_coach_names,
+      profile_image.id AS profile_image_id,
+      profile_image.updated_at AS profile_image_updated_at,
       COUNT(DISTINCT lesson_videos.id) AS video_count,
       MAX(lesson_videos.created_at) AS last_video_at,
       golf_session_snapshots.sessions_json AS sessions_json
     FROM users
     LEFT JOIN coach_members ON coach_members.member_id = users.id
     LEFT JOIN users AS assigned_coach ON assigned_coach.id = coach_members.coach_id
+    LEFT JOIN user_passwords ON user_passwords.user_id = users.id
+    LEFT JOIN coach_profile_images AS profile_image
+      ON profile_image.coach_user_id = users.id AND profile_image.is_current = 1
     LEFT JOIN lesson_videos ON lesson_videos.member_id = users.id
     LEFT JOIN golf_session_snapshots ON golf_session_snapshots.user_id = users.id
   `;
@@ -273,15 +328,26 @@ async function listCoaches(database: D1Database) {
   const result = await database
     .prepare(
       `SELECT
-        id, role, first_name, last_name, email, phone, skill_level, notes,
-        COALESCE(account_status, 'active') AS account_status,
-        invite_status, invited_at, last_login_at, created_at, updated_at,
+        users.id, users.role, users.first_name, users.last_name, users.email,
+        users.phone, users.skill_level, users.notes,
+        COALESCE(users.account_status, 'active') AS account_status,
+        users.invite_status, users.invited_at, users.last_login_at,
+        COALESCE(users.password_reset_required, 0) AS password_reset_required,
+        user_passwords.user_id AS password_user_id,
+        users.created_at,
+        users.updated_at,
         NULL AS assigned_coach_ids,
         NULL AS assigned_coach_names,
+        profile_image.id AS profile_image_id,
+        profile_image.updated_at AS profile_image_updated_at,
         0 AS video_count,
         NULL AS last_video_at,
         NULL AS sessions_json
-      FROM users WHERE role = 'coach' ORDER BY last_name, first_name`,
+      FROM users
+      LEFT JOIN user_passwords ON user_passwords.user_id = users.id
+      LEFT JOIN coach_profile_images AS profile_image
+        ON profile_image.coach_user_id = users.id AND profile_image.is_current = 1
+      WHERE role = 'coach' ORDER BY last_name, first_name`,
     )
     .all<UserRow>();
   return result.results.map(serializeUser);
@@ -330,12 +396,12 @@ async function dashboard(database: D1Database, identity: AuthIdentity) {
 
 async function memberDetail(database: D1Database, identity: AuthIdentity, memberId: string) {
   if (!memberId) throw new Response("memberId is required.", { status: 400 });
-  if (!(await memberIsVisible(identity, memberId, database))) {
+  if (identity.role !== "admin" && identity.id !== memberId && !(await memberIsVisible(identity, memberId, database))) {
     throw new Response("You do not have access to that member.", { status: 403 });
   }
   const users = await listUsers(database, identity);
   const member = users.find((user) => user.id === memberId);
-  if (!member || member.role !== "member") throw new Response("Member not found.", { status: 404 });
+  if (!member) throw new Response("User not found.", { status: 404 });
 
   const sessionRow = await database
     .prepare("SELECT sessions_json, updated_at FROM golf_session_snapshots WHERE user_id = ?")
@@ -343,8 +409,23 @@ async function memberDetail(database: D1Database, identity: AuthIdentity, member
     .first<{ sessions_json: string; updated_at: string }>();
   const videos = await database
     .prepare(
-      `SELECT id, title, publication_status, upload_status, review_status, created_at, lesson_date, member_facing_notes
-       FROM lesson_videos WHERE member_id = ? ORDER BY created_at DESC LIMIT 30`,
+      `SELECT
+         lesson_videos.id,
+         lesson_videos.title,
+         lesson_videos.publication_status,
+         lesson_videos.upload_status,
+         lesson_videos.review_status,
+         lesson_videos.created_at,
+         lesson_videos.updated_at,
+         lesson_videos.lesson_date,
+         lesson_videos.member_facing_notes,
+         lesson_videos.coach_id,
+         lesson_videos.uploaded_by_role,
+         TRIM(coach.first_name || ' ' || coach.last_name) AS coach_name
+       FROM lesson_videos
+       LEFT JOIN users AS coach ON coach.id = lesson_videos.coach_id
+       WHERE lesson_videos.member_id = ?
+       ORDER BY lesson_videos.created_at DESC LIMIT 30`,
     )
     .bind(memberId)
     .all<{
@@ -354,9 +435,34 @@ async function memberDetail(database: D1Database, identity: AuthIdentity, member
       upload_status: string;
       review_status: string;
       created_at: string;
+      updated_at: string;
       lesson_date: string | null;
       member_facing_notes: string;
+      coach_id: string | null;
+      uploaded_by_role: string;
+      coach_name: string | null;
     }>();
+  const assignedCoaches = member.role === "member"
+    ? await database
+        .prepare(
+          `SELECT
+            users.id,
+            users.first_name,
+            users.last_name,
+            users.email,
+            users.skill_level,
+            profile_image.id AS image_id,
+            profile_image.updated_at AS image_updated_at
+           FROM coach_members
+           JOIN users ON users.id = coach_members.coach_id
+           LEFT JOIN coach_profile_images AS profile_image
+             ON profile_image.coach_user_id = users.id AND profile_image.is_current = 1
+           WHERE coach_members.member_id = ?
+           ORDER BY users.last_name, users.first_name`,
+        )
+        .bind(memberId)
+        .all<AssignedCoachRow>()
+    : { results: [] as AssignedCoachRow[] };
   const content = await database
     .prepare(
       `SELECT
@@ -372,6 +478,7 @@ async function memberDetail(database: D1Database, identity: AuthIdentity, member
 
   return {
     member,
+    assignedCoaches: assignedCoaches.results.map(serializeAssignedCoach),
     sessions: parseJsonArray(sessionRow?.sessions_json ?? null),
     sessionsUpdatedAt: sessionRow?.updated_at ?? null,
     videos: videos.results.map((video) => ({
@@ -381,8 +488,12 @@ async function memberDetail(database: D1Database, identity: AuthIdentity, member
       uploadStatus: video.upload_status,
       reviewStatus: video.review_status,
       createdAt: video.created_at,
+      updatedAt: video.updated_at,
       lessonDate: video.lesson_date,
       memberFacingNotes: video.member_facing_notes,
+      coachId: video.coach_id,
+      coachName: video.coach_name,
+      uploadedByRole: video.uploaded_by_role,
     })),
     content: content.results.map(serializeContent),
     activity: await recentActivity(database, identity, memberId),
@@ -390,52 +501,74 @@ async function memberDetail(database: D1Database, identity: AuthIdentity, member
 }
 
 async function createOrUpdateUser(request: Request, database: D1Database, identity: AuthIdentity, payload: Record<string, unknown>) {
-  const requestedRole = text(payload.role, 20) as UserRole || "member";
-  const role: UserRole = requestedRole === "admin" || requestedRole === "coach" || requestedRole === "member"
-    ? requestedRole
-    : "member";
+  const role = safeRole(text(payload.role, 20), "member") as UserRole;
   if (identity.role !== "admin" && role !== "member") {
     throw new Response("Only admins can create coach or admin accounts.", { status: 403 });
   }
 
   const firstName = text(payload.firstName, 80);
   const lastName = text(payload.lastName, 80);
-  const email = text(payload.email, 254).toLowerCase();
+  const email = normalizeEmail(payload.email);
   if (!firstName || !lastName || !isEmail(email)) {
     throw new Response("First name, last name, and a valid email are required.", { status: 400 });
   }
   const phone = nullableText(payload.phone, 40);
   const skillLevel = nullableText(payload.skillLevel, 80);
   const notes = nullableText(payload.notes, 2000);
-  const accountStatus = text(payload.accountStatus, 20) === "inactive" ? "inactive" : "active";
+  const accountStatus = safeAccountStatus(text(payload.accountStatus, 20), "active");
+  const inviteStatus = safeInviteStatus(text(payload.inviteStatus, 20), "pending");
   const existing = await database
-    .prepare("SELECT id, email, role FROM users WHERE email = ?")
+    .prepare("SELECT id, email, role FROM users WHERE LOWER(email) = ?")
     .bind(email)
     .first<{ id: string; email: string; role: UserRole }>();
   const userId = existing?.id ?? crypto.randomUUID();
 
-  await database
-    .prepare(
-      `INSERT INTO users (
-        id, role, first_name, last_name, email, phone, skill_level, notes,
-        account_status, invite_status, invited_at, created_by, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      ON CONFLICT(email) DO UPDATE SET
-        role = excluded.role,
-        first_name = excluded.first_name,
-        last_name = excluded.last_name,
-        phone = excluded.phone,
-        skill_level = excluded.skill_level,
-        notes = excluded.notes,
-        account_status = excluded.account_status,
-        updated_at = CURRENT_TIMESTAMP`,
-    )
-    .bind(userId, role, firstName, lastName, email, phone, skillLevel, notes, accountStatus, identity.id)
-    .run();
+  if (existing) {
+    await database
+      .prepare(
+        `UPDATE users SET
+          role = ?,
+          first_name = ?,
+          last_name = ?,
+          email = ?,
+          phone = ?,
+          skill_level = ?,
+          notes = ?,
+          account_status = ?,
+          invite_status = ?,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?`,
+      )
+      .bind(role, firstName, lastName, email, phone, skillLevel, notes, accountStatus, inviteStatus, userId)
+      .run();
+  } else {
+    await database
+      .prepare(
+        `INSERT INTO users (
+          id, role, first_name, last_name, email, phone, skill_level, notes,
+          account_status, invite_status, invited_at, created_by, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+      )
+      .bind(userId, role, firstName, lastName, email, phone, skillLevel, notes, accountStatus, inviteStatus, identity.id)
+      .run();
+  }
 
   if (role === "member") {
     const coachId = identity.role === "coach" ? identity.id : text(payload.coachId, 80);
-    if (coachId) await assignCoach(database, identity, userId, coachId, false);
+    if (coachId) {
+      await assignCoach(database, identity, userId, coachId, false);
+      await recordActivity({
+        action: identity.role === "coach" ? "coach_added_student" : "coach_assigned",
+        actor: identity,
+        database,
+        entityId: `${coachId}:${userId}`,
+        entityType: "coach_assignment",
+        memberId: userId,
+        metadata: { coachId },
+        summary: `${identity.displayName} added ${firstName} ${lastName} to ${identity.role === "coach" ? "their roster" : "a coach roster"}.`,
+        targetUserId: userId,
+      });
+    }
   } else {
     await database.prepare("DELETE FROM coach_members WHERE member_id = ?").bind(userId).run();
   }
@@ -471,8 +604,32 @@ async function assignCoach(
   if (!member || member.role !== "member") throw new Response("Member not found.", { status: 404 });
   const coach = await getUser(database, coachId);
   if (!coach || coach.role !== "coach") throw new Response("Coach not found.", { status: 404 });
+  const oldAssignments = await database
+    .prepare("SELECT coach_id FROM coach_members WHERE member_id = ?")
+    .bind(memberId)
+    .all<{ coach_id: string }>();
+  const oldCoachIds = oldAssignments.results.map((row) => row.coach_id);
   if (identity.role === "admin") {
-    await database.prepare("DELETE FROM coach_members WHERE member_id = ?").bind(memberId).run();
+    const removedCoachIds = oldCoachIds.filter((oldCoachId) => oldCoachId !== coachId);
+    if (removedCoachIds.length) {
+      await database
+        .prepare("DELETE FROM coach_members WHERE member_id = ? AND coach_id <> ?")
+        .bind(memberId, coachId)
+        .run();
+      for (const removedCoachId of removedCoachIds) {
+        await recordActivity({
+          action: "coach_removed",
+          actor: identity,
+          database,
+          entityId: `${removedCoachId}:${memberId}`,
+          entityType: "coach_assignment",
+          memberId,
+          metadata: { coachId: removedCoachId },
+          summary: `${identity.displayName} removed a coach assignment for ${displayName(member)}.`,
+          targetUserId: memberId,
+        });
+      }
+    }
   }
   const assignmentId = crypto.randomUUID();
   await database
@@ -484,38 +641,130 @@ async function assignCoach(
     .bind(assignmentId, coachId, memberId)
     .run();
   if (shouldRecord) {
+    const alreadyAssigned = oldCoachIds.includes(coachId);
     await recordActivity({
-      action: "coach_assigned",
+      action: alreadyAssigned ? "coach_assignment_confirmed" : oldCoachIds.length ? "coach_changed" : "coach_assigned",
       actor: identity,
       database,
       entityId: assignmentId,
       entityType: "coach_assignment",
       memberId,
       metadata: { coachId },
-      summary: `${identity.displayName} assigned ${displayName(member)} to ${displayName(coach)}.`,
+      summary: alreadyAssigned
+        ? `${displayName(member)} is already assigned to ${displayName(coach)}.`
+        : `${identity.displayName} assigned ${displayName(member)} to ${displayName(coach)}.`,
       targetUserId: memberId,
     });
   }
 }
 
+async function removeCoachAssignment(database: D1Database, identity: AuthIdentity, payload: Record<string, unknown>) {
+  if (identity.role !== "admin") throw new Response("Only admins can remove coach assignments.", { status: 403 });
+  const memberId = text(payload.memberId, 80);
+  const coachId = text(payload.coachId, 80);
+  if (!memberId || !coachId) throw new Response("memberId and coachId are required.", { status: 400 });
+  const member = await getUser(database, memberId);
+  const coach = await getUser(database, coachId);
+  if (!member || member.role !== "member") throw new Response("Member not found.", { status: 404 });
+  if (!coach || coach.role !== "coach") throw new Response("Coach not found.", { status: 404 });
+  const result = await database
+    .prepare("DELETE FROM coach_members WHERE member_id = ? AND coach_id = ?")
+    .bind(memberId, coachId)
+    .run();
+  if (Number(result.meta?.changes ?? 0) > 0) {
+    await recordActivity({
+      action: "coach_removed",
+      actor: identity,
+      database,
+      entityId: `${coachId}:${memberId}`,
+      entityType: "coach_assignment",
+      memberId,
+      metadata: { coachId },
+      summary: `${identity.displayName} removed ${displayName(coach)} from ${displayName(member)}.`,
+      targetUserId: memberId,
+    });
+  }
+}
+
+async function adminSetPassword(database: D1Database, identity: AuthIdentity, payload: Record<string, unknown>) {
+  if (identity.role !== "admin") throw new Response("Only admins can set passwords.", { status: 403 });
+  const userId = text(payload.userId, 80);
+  const password = typeof payload.password === "string" ? payload.password : "";
+  const confirmPassword = typeof payload.confirmPassword === "string" ? payload.confirmPassword : "";
+  const forcePasswordChange = payload.forcePasswordChange === true;
+  if (!userId) throw new Response("userId is required.", { status: 400 });
+  const target = await getUser(database, userId);
+  if (!target) throw new Response("User not found.", { status: 404 });
+  const passwordError = validatePasswordConfirmation(password, confirmPassword);
+  if (passwordError) throw new Response(passwordError, { status: 400 });
+  const existingPassword = await database
+    .prepare("SELECT user_id FROM user_passwords WHERE user_id = ?")
+    .bind(userId)
+    .first<{ user_id: string }>();
+
+  await setUserPassword(userId, password, { temporary: forcePasswordChange });
+  const invalidatedSessions = await invalidateUserSessions(userId, {
+    preserveCurrentSession: userId === identity.id,
+  });
+  await database
+    .prepare(
+      `UPDATE users SET
+        account_status = 'active',
+        invite_status = 'accepted',
+        password_reset_required = ?,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?`,
+    )
+    .bind(forcePasswordChange ? 1 : 0, userId)
+    .run();
+  await recordActivity({
+    action: existingPassword ? "password_reset" : "password_set",
+    actor: identity,
+    database,
+    entityId: userId,
+    entityType: "user_password",
+    memberId: target.role === "member" ? userId : null,
+    metadata: { forcePasswordChange, sessionsInvalidated: invalidatedSessions },
+    summary: `${identity.displayName} ${existingPassword ? "reset" : "set"} a password for ${displayName(target)}.`,
+    targetUserId: userId,
+  });
+  if (invalidatedSessions > 0) {
+    await recordActivity({
+      action: "sessions_invalidated",
+      actor: identity,
+      database,
+      entityId: userId,
+      entityType: "auth_session",
+      memberId: target.role === "member" ? userId : null,
+      metadata: { count: invalidatedSessions },
+      summary: `${identity.displayName} invalidated ${invalidatedSessions} existing login sessions for ${displayName(target)}.`,
+      targetUserId: userId,
+    });
+  }
+}
+
 async function updateUser(database: D1Database, identity: AuthIdentity, payload: Record<string, unknown>) {
+  if (identity.role !== "admin") throw new Response("Only admins can edit user accounts.", { status: 403 });
   const userId = text(payload.userId, 80);
   if (!userId) throw new Response("userId is required.", { status: 400 });
   const existing = await getUser(database, userId);
   if (!existing) throw new Response("User not found.", { status: 404 });
-  if (identity.role !== "admin" && !(existing.role === "member" && await memberIsVisible(identity, userId, database))) {
-    throw new Response("You do not have access to that user.", { status: 403 });
+  const safeNextRole = safeRole(text(payload.role, 20) || existing.role, existing.role) as UserRole;
+  const accountStatus = safeAccountStatus(text(payload.accountStatus, 20) || existing.account_status, existing.account_status);
+  const inviteStatus = safeInviteStatus(text(payload.inviteStatus, 20) || existing.invite_status, existing.invite_status);
+  const firstName = text(payload.firstName, 80);
+  const lastName = text(payload.lastName, 80);
+  const email = normalizeEmail(payload.email || existing.email);
+  if (!firstName || !lastName || !isEmail(email)) {
+    throw new Response("First name, last name, and a valid email are required.", { status: 400 });
   }
-
-  const role = identity.role === "admin"
-    ? (text(payload.role, 20) as UserRole || existing.role)
-    : existing.role;
-  const safeRole: UserRole = role === "admin" || role === "coach" || role === "member" ? role : existing.role;
-  const accountStatus = identity.role === "admin"
-    ? text(payload.accountStatus, 20) || existing.account_status
-    : existing.account_status;
-  const firstName = text(payload.firstName, 80) || existing.first_name;
-  const lastName = text(payload.lastName, 80) || existing.last_name;
+  const duplicateEmail = await database
+    .prepare("SELECT id FROM users WHERE LOWER(email) = ? AND id <> ?")
+    .bind(email, userId)
+    .first<{ id: string }>();
+  if (duplicateEmail) {
+    throw new Response("That email is already used by another account.", { status: 409 });
+  }
 
   await database
     .prepare(
@@ -523,46 +772,118 @@ async function updateUser(database: D1Database, identity: AuthIdentity, payload:
         role = ?,
         first_name = ?,
         last_name = ?,
+        email = ?,
         phone = ?,
         skill_level = ?,
         notes = ?,
         account_status = ?,
+        invite_status = ?,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?`,
     )
     .bind(
-      safeRole,
+      safeNextRole,
       firstName,
       lastName,
+      email,
       nullableText(payload.phone, 40),
       nullableText(payload.skillLevel, 80),
       nullableText(payload.notes, 2000),
-      accountStatus === "inactive" ? "inactive" : "active",
+      accountStatus,
+      inviteStatus,
       userId,
     )
     .run();
 
-  if (identity.role === "admin" && safeRole === "member") {
+  if (safeNextRole === "member") {
     const coachId = text(payload.coachId, 80);
-    if (coachId) await assignCoach(database, identity, userId, coachId);
+    if (coachId) {
+      await assignCoach(database, identity, userId, coachId);
+    } else {
+      const previous = await database
+        .prepare("SELECT coach_id FROM coach_members WHERE member_id = ?")
+        .bind(userId)
+        .all<{ coach_id: string }>();
+      await database.prepare("DELETE FROM coach_members WHERE member_id = ?").bind(userId).run();
+      for (const row of previous.results) {
+        await recordActivity({
+          action: "coach_removed",
+          actor: identity,
+          database,
+          entityId: `${row.coach_id}:${userId}`,
+          entityType: "coach_assignment",
+          memberId: userId,
+          metadata: { coachId: row.coach_id },
+          summary: `${identity.displayName} removed a coach assignment for ${firstName} ${lastName}.`,
+          targetUserId: userId,
+        });
+      }
+    }
   }
-  if (identity.role === "admin" && safeRole !== "member") {
+  if (safeNextRole !== "member") {
     await database.prepare("DELETE FROM coach_members WHERE member_id = ?").bind(userId).run();
   }
+  if (existing.role === "coach" && safeNextRole !== "coach") {
+    await database.prepare("DELETE FROM coach_members WHERE coach_id = ?").bind(userId).run();
+  }
   if (accountStatus === "inactive") {
-    await database.prepare("DELETE FROM auth_sessions WHERE user_id = ?").bind(userId).run();
+    await invalidateUserSessions(userId, { preserveCurrentSession: userId === identity.id });
   }
 
+  const changes: Record<string, unknown> = {};
+  if (existing.email.toLowerCase() !== email) changes.emailChanged = true;
+  if (existing.role !== safeNextRole) changes.roleChanged = { from: existing.role, to: safeNextRole };
+  if (existing.account_status !== accountStatus) changes.accountStatusChanged = { from: existing.account_status, to: accountStatus };
+  if (existing.invite_status !== inviteStatus) changes.inviteStatusChanged = { from: existing.invite_status, to: inviteStatus };
   await recordActivity({
     action: "user_updated",
     actor: identity,
     database,
     entityId: userId,
     entityType: "user",
-    memberId: safeRole === "member" ? userId : null,
+    memberId: safeNextRole === "member" ? userId : null,
+    metadata: changes,
     summary: `${identity.displayName} updated ${firstName} ${lastName}.`,
     targetUserId: userId,
   });
+  if (changes.emailChanged) {
+    await recordActivity({
+      action: "email_changed",
+      actor: identity,
+      database,
+      entityId: userId,
+      entityType: "user",
+      memberId: safeNextRole === "member" ? userId : null,
+      summary: `${identity.displayName} changed the email for ${firstName} ${lastName}.`,
+      targetUserId: userId,
+    });
+  }
+  if (changes.roleChanged) {
+    await recordActivity({
+      action: "role_changed",
+      actor: identity,
+      database,
+      entityId: userId,
+      entityType: "user",
+      memberId: safeNextRole === "member" ? userId : null,
+      metadata: changes.roleChanged as Record<string, unknown>,
+      summary: `${identity.displayName} changed ${firstName} ${lastName} to ${safeNextRole}.`,
+      targetUserId: userId,
+    });
+  }
+  if (changes.accountStatusChanged) {
+    await recordActivity({
+      action: "account_status_changed",
+      actor: identity,
+      database,
+      entityId: userId,
+      entityType: "user",
+      memberId: safeNextRole === "member" ? userId : null,
+      metadata: changes.accountStatusChanged as Record<string, unknown>,
+      summary: `${identity.displayName} marked ${firstName} ${lastName} ${accountStatus}.`,
+      targetUserId: userId,
+    });
+  }
 }
 
 async function addContent(database: D1Database, identity: AuthIdentity, payload: Record<string, unknown>) {
@@ -697,6 +1018,93 @@ async function addSession(database: D1Database, identity: AuthIdentity, payload:
   return { session: nextSession };
 }
 
+async function reconcileCoachAssignments(database: D1Database, identity: AuthIdentity, payload: Record<string, unknown>) {
+  if (identity.role !== "admin") throw new Response("Only admins can reconcile coach assignments.", { status: 403 });
+  const apply = payload.apply === true;
+  const result = await database
+    .prepare(
+      `SELECT
+         member.id AS member_id,
+         member.first_name AS member_first_name,
+         member.last_name AS member_last_name,
+         member.email AS member_email,
+         coach.id AS coach_id,
+         coach.first_name AS coach_first_name,
+         coach.last_name AS coach_last_name,
+         COUNT(lesson_videos.id) AS video_count
+       FROM lesson_videos
+       JOIN users AS member ON member.id = lesson_videos.member_id
+       JOIN users AS coach ON coach.id = lesson_videos.coach_id
+       WHERE lesson_videos.coach_id IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM coach_members
+           WHERE coach_members.member_id = lesson_videos.member_id
+             AND coach_members.coach_id = lesson_videos.coach_id
+         )
+       GROUP BY member.id, coach.id
+       ORDER BY member.last_name, member.first_name`,
+    )
+    .all<{
+      member_id: string;
+      member_first_name: string;
+      member_last_name: string;
+      member_email: string;
+      coach_id: string;
+      coach_first_name: string;
+      coach_last_name: string;
+      video_count: number;
+    }>();
+
+  const grouped = new Map<string, typeof result.results>();
+  for (const row of result.results) {
+    grouped.set(row.member_id, [...(grouped.get(row.member_id) ?? []), row]);
+  }
+  const candidates = Array.from(grouped.values()).map((rows) => {
+    const first = rows[0];
+    return {
+      memberId: first.member_id,
+      memberName: [first.member_first_name, first.member_last_name].filter(Boolean).join(" "),
+      memberEmail: first.member_email,
+      ambiguous: rows.length !== 1,
+      suggestedCoachId: rows.length === 1 ? rows[0].coach_id : "",
+      suggestedCoachName: rows.length === 1 ? [rows[0].coach_first_name, rows[0].coach_last_name].filter(Boolean).join(" ") : "",
+      choices: rows.map((row) => ({
+        coachId: row.coach_id,
+        coachName: [row.coach_first_name, row.coach_last_name].filter(Boolean).join(" "),
+        videoCount: Number(row.video_count ?? 0),
+      })),
+    };
+  });
+
+  let repaired = 0;
+  if (apply) {
+    for (const candidate of candidates.filter((item) => !item.ambiguous && item.suggestedCoachId)) {
+      await database
+        .prepare(
+          `INSERT INTO coach_members (id, coach_id, member_id, created_at)
+           VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(coach_id, member_id) DO NOTHING`,
+        )
+        .bind(crypto.randomUUID(), candidate.suggestedCoachId, candidate.memberId)
+        .run();
+      repaired += 1;
+      await recordActivity({
+        action: "relationship_reconciled",
+        actor: identity,
+        database,
+        entityId: `${candidate.suggestedCoachId}:${candidate.memberId}`,
+        entityType: "coach_assignment",
+        memberId: candidate.memberId,
+        metadata: { coachId: candidate.suggestedCoachId, source: "unambiguous_video_history" },
+        summary: `${identity.displayName} reconciled ${candidate.memberName}'s coach assignment.`,
+        targetUserId: candidate.memberId,
+      });
+    }
+  }
+
+  return { candidates, repaired };
+}
+
 async function deleteUser(database: D1Database, identity: AuthIdentity, payload: Record<string, unknown>) {
   if (identity.role !== "admin") throw new Response("Only admins can delete users.", { status: 403 });
   const userId = text(payload.userId, 80);
@@ -776,6 +1184,18 @@ export async function POST(request: Request) {
     if (action === "assignCoach") {
       await assignCoach(database, identity, text(payload.memberId, 80), text(payload.coachId, 80));
       return Response.json({ ok: true, ...(await dashboard(database, identity)) });
+    }
+    if (action === "removeCoachAssignment") {
+      await removeCoachAssignment(database, identity, payload);
+      return Response.json({ ok: true, ...(await dashboard(database, identity)) });
+    }
+    if (action === "setPassword") {
+      await adminSetPassword(database, identity, payload);
+      return Response.json({ ok: true, ...(await dashboard(database, identity)) });
+    }
+    if (action === "reconcileCoachAssignments") {
+      const result = await reconcileCoachAssignments(database, identity, payload);
+      return Response.json({ ok: true, ...result, ...(await dashboard(database, identity)) });
     }
     if (action === "addContent") {
       const result = await addContent(database, identity, payload);

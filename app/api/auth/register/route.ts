@@ -52,7 +52,7 @@ export async function POST(request: Request) {
     const database = getRequiredDatabase();
     await ensurePlatformSchema(database);
     const existing = await database
-      .prepare("SELECT id, role FROM users WHERE email = ?")
+      .prepare("SELECT id, role FROM users WHERE LOWER(email) = ?")
       .bind(email)
       .first<{ id: string; role: string }>();
     if (existing) {

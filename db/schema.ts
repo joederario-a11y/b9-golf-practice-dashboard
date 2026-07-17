@@ -93,6 +93,29 @@ export const coachMembers = sqliteTable(
   ],
 );
 
+export const coachProfileImages = sqliteTable(
+  "coach_profile_images",
+  {
+    id: text("id").primaryKey(),
+    coachUserId: text("coach_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    storagePath: text("storage_path").notNull(),
+    originalFileName: text("original_file_name").notNull(),
+    mimeType: text("mime_type").notNull(),
+    fileSize: integer("file_size").notNull(),
+    isCurrent: integer("is_current", { mode: "boolean" }).notNull().default(true),
+    createdBy: text("created_by"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("coach_profile_images_coach_idx").on(table.coachUserId, table.createdAt),
+    uniqueIndex("coach_profile_images_current_unique")
+      .on(table.coachUserId)
+      .where(sql`${table.isCurrent} = 1`),
+    uniqueIndex("coach_profile_images_storage_unique").on(table.storagePath),
+  ],
+);
+
 export const memberInvitations = sqliteTable(
   "member_invitations",
   {

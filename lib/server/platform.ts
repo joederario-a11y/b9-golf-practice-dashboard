@@ -355,6 +355,22 @@ export async function ensurePlatformSchema(database = getRequiredDatabase()) {
       )`,
     ),
     database.prepare(
+      `CREATE TABLE IF NOT EXISTS coach_profile_images (
+        id TEXT PRIMARY KEY,
+        coach_user_id TEXT NOT NULL,
+        storage_path TEXT NOT NULL UNIQUE,
+        original_file_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        file_size INTEGER NOT NULL,
+        is_current INTEGER NOT NULL DEFAULT 1,
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (coach_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CHECK (is_current IN (0, 1))
+      )`,
+    ),
+    database.prepare(
       `CREATE TABLE IF NOT EXISTS member_invitations (
         id TEXT PRIMARY KEY,
         member_id TEXT NOT NULL,
@@ -469,6 +485,12 @@ export async function ensurePlatformSchema(database = getRequiredDatabase()) {
       )`,
     ),
     database.prepare("CREATE INDEX IF NOT EXISTS coach_members_member_idx ON coach_members(member_id)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS coach_profile_images_coach_idx ON coach_profile_images(coach_user_id, created_at)"),
+    database.prepare(
+      `CREATE UNIQUE INDEX IF NOT EXISTS coach_profile_images_current_unique
+       ON coach_profile_images(coach_user_id)
+       WHERE is_current = 1`,
+    ),
     database.prepare("CREATE INDEX IF NOT EXISTS member_invitations_member_idx ON member_invitations(member_id, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS lesson_videos_member_idx ON lesson_videos(member_id, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS lesson_videos_coach_idx ON lesson_videos(coach_id, created_at)"),
@@ -578,6 +600,30 @@ export async function setUserPassword(
       .prepare("UPDATE users SET password_reset_required = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .bind(options.temporary ? 1 : 0, userId),
   ]);
+}
+
+export async function invalidateUserSessions(
+  userId: string,
+  options: { preserveCurrentSession?: boolean } = {},
+) {
+  const database = getRequiredDatabase();
+  await ensurePlatformSchema(database);
+  let currentTokenHash = "";
+  if (options.preserveCurrentSession) {
+    const cookieStore = await cookies();
+    const sessionToken = cookieStore.get(AUTH_SESSION_COOKIE)?.value ?? "";
+    if (sessionToken) currentTokenHash = await hashToken(sessionToken);
+  }
+  const result = currentTokenHash
+    ? await database
+        .prepare("DELETE FROM auth_sessions WHERE user_id = ? AND token_hash <> ?")
+        .bind(userId, currentTokenHash)
+        .run()
+    : await database
+        .prepare("DELETE FROM auth_sessions WHERE user_id = ?")
+        .bind(userId)
+        .run();
+  return Number(result.meta?.changes ?? 0);
 }
 
 export async function verifyUserPassword(email: string, password: string) {

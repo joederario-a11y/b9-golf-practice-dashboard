@@ -20,6 +20,7 @@ type RegistrationDraft = {
   confirmPassword?: string;
   email: string;
   firstName: string;
+  headshotFile?: File | null;
   lastName: string;
   password?: string;
 };
@@ -414,15 +415,27 @@ type StaffUserRecord = {
   inviteStatus: string;
   invitedAt?: string | null;
   lastLoginAt?: string | null;
+  passwordConfigured: boolean;
+  passwordResetRequired: boolean;
+  setupStatus: string[];
   createdAt: string;
   updatedAt: string;
   assignedCoachId?: string;
   assignedCoachName?: string;
   assignedCoachIds: string[];
   assignedCoachNames: string[];
+  profileImageUrl?: string;
   videoCount: number;
   sessionCount: number;
   lastVideoAt?: string | null;
+};
+
+type CoachSummary = {
+  id: string;
+  name: string;
+  email: string;
+  title: string;
+  profileImageUrl?: string;
 };
 
 type StaffActivityRecord = {
@@ -472,6 +485,7 @@ type StaffDashboardPayload = {
 
 type StaffMemberDetail = {
   member: StaffUserRecord;
+  assignedCoaches: CoachSummary[];
   sessions: Session[];
   sessionsUpdatedAt?: string | null;
   videos: Array<{
@@ -481,8 +495,12 @@ type StaffMemberDetail = {
     uploadStatus: string;
     reviewStatus: string;
     createdAt: string;
+    updatedAt?: string;
     lessonDate?: string | null;
     memberFacingNotes: string;
+    coachId?: string | null;
+    coachName?: string | null;
+    uploadedByRole?: string;
   }>;
   content: StaffContentRecord[];
   activity: StaffActivityRecord[];
@@ -3889,6 +3907,13 @@ async function readStaffMember(memberId: string) {
   return payload as StaffMemberDetail;
 }
 
+async function readMyCoaches() {
+  const response = await fetch("/api/my-coaches", { cache: "no-store" });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error ?? "Assigned coach could not be loaded.");
+  return (payload.coaches ?? []) as CoachSummary[];
+}
+
 async function postStaffAction(payload: Record<string, unknown>) {
   const response = await fetch("/api/admin", {
     method: "POST",
@@ -3898,6 +3923,47 @@ async function postStaffAction(payload: Record<string, unknown>) {
   const result = await response.json();
   if (!response.ok) throw new Error(result.error ?? "The admin action could not be completed.");
   return result;
+}
+
+async function uploadCoachPhoto(coachId: string, file: File) {
+  const form = new FormData();
+  form.append("coachId", coachId);
+  form.append("image", file);
+  const response = await fetch("/api/coach-photo", {
+    method: "POST",
+    body: form,
+  });
+  const payload = await response.json().catch(() => ({})) as { error?: string; photo?: { url?: string } };
+  if (!response.ok) throw new Error(payload.error ?? "Coach photo could not be uploaded.");
+  return payload.photo;
+}
+
+async function deleteCoachPhoto(coachId: string) {
+  const response = await fetch("/api/coach-photo", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ coachId }),
+  });
+  const payload = await response.json().catch(() => ({})) as { error?: string };
+  if (!response.ok) throw new Error(payload.error ?? "Coach photo could not be removed.");
+}
+
+function initialsForName(name: string) {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("") || "FR";
+}
+
+function CoachAvatar({ coach, size = "normal" }: { coach: Pick<CoachSummary, "name" | "profileImageUrl">; size?: "normal" | "large" }) {
+  return coach.profileImageUrl ? (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img alt={`${coach.name} headshot`} className={cls("coach-avatar", size === "large" && "large")} src={coach.profileImageUrl} />
+  ) : (
+    <span className={cls("member-initials", "coach-avatar-fallback", size === "large" && "large")}>{initialsForName(coach.name)}</span>
+  );
 }
 
 async function createVideoRecord(
@@ -5057,6 +5123,7 @@ export default function Home() {
 
         {activeTab === "coach" && (
           <CoachView
+            accountUser={accountUser}
             clubs={clubs}
             insights={selectedSessionInsights}
             selectedClub={activeClub}
@@ -6528,6 +6595,12 @@ function AdminView({
   const [statusFilter, setStatusFilter] = useState("all");
   const [showUserModal, setShowUserModal] = useState(false);
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
+  const [passwordUser, setPasswordUser] = useState<StaffUserRecord | null>(null);
+  const [passwordForm, setPasswordForm] = useState({
+    password: "",
+    confirmPassword: "",
+    forcePasswordChange: false,
+  });
   const [quickMode, setQuickMode] = useState<"content" | "session" | null>(null);
   const [selectedMemberId, setSelectedMemberId] = useState("");
   const [userForm, setUserForm] = useState({
@@ -6539,6 +6612,7 @@ function AdminView({
     skillLevel: "",
     notes: "",
     accountStatus: "active" as StaffUserRecord["accountStatus"],
+    inviteStatus: "pending",
     coachId: "",
   });
   const [contentForm, setContentForm] = useState({
@@ -6573,7 +6647,7 @@ function AdminView({
     if (statusFilter !== "all" && user.accountStatus !== statusFilter) return false;
     return true;
   });
-  const selectedMember = members.find((member) => member.id === selectedMemberId) ?? detail?.member ?? members[0];
+  const selectedMember = members.find((member) => member.id === selectedMemberId) ?? (detail?.member.role === "member" ? detail.member : undefined) ?? members[0];
 
   async function refreshWorkspace(nextMemberId?: string) {
     setLoading(true);
@@ -6615,6 +6689,7 @@ function AdminView({
       skillLevel: "",
       notes: "",
       accountStatus: "active",
+      inviteStatus: "pending",
       coachId: coaches[0]?.id ?? "",
     });
   }
@@ -6630,14 +6705,29 @@ function AdminView({
       skillLevel: user.skillLevel,
       notes: user.notes,
       accountStatus: user.accountStatus,
+      inviteStatus: user.inviteStatus || "pending",
       coachId: user.assignedCoachId ?? "",
     });
     setShowUserModal(true);
   }
 
+  function confirmSensitiveUserChange(user: StaffUserRecord | null, nextRole: StaffUserRecord["role"], nextStatus: StaffUserRecord["accountStatus"]) {
+    if (nextRole === "admin" && user?.role !== "admin") {
+      const confirmed = window.confirm("Promote this user to admin? They will be able to manage users, roles, passwords, and coach assignments. Existing videos, sessions, and IDs will remain unchanged.");
+      if (!confirmed) return false;
+    }
+    if (nextStatus === "inactive" && user?.accountStatus !== "inactive") {
+      const confirmed = window.confirm("Deactivate this user? They will no longer be able to log in. Their videos, sessions, analyses, and coach relationships will remain preserved.");
+      if (!confirmed) return false;
+    }
+    return true;
+  }
+
   async function saveUser(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     try {
+      const currentUser = editingUserId ? dashboard?.users.find((user) => user.id === editingUserId) ?? null : null;
+      if (!confirmSensitiveUserChange(currentUser, userForm.role, userForm.accountStatus)) return;
       const payload = editingUserId
         ? { action: "updateUser", userId: editingUserId, ...userForm }
         : { action: "createUser", ...userForm };
@@ -6652,16 +6742,21 @@ function AdminView({
 
   async function updateUser(user: StaffUserRecord, patch: Partial<typeof userForm>) {
     try {
+      const nextRole = patch.role ?? user.role;
+      const nextStatus = patch.accountStatus ?? user.accountStatus;
+      if (!confirmSensitiveUserChange(user, nextRole, nextStatus)) return;
       await postStaffAction({
         action: "updateUser",
         userId: user.id,
         role: user.role,
         firstName: user.firstName,
         lastName: user.lastName,
+        email: user.email,
         phone: user.phone,
         skillLevel: user.skillLevel,
         notes: user.notes,
         accountStatus: user.accountStatus,
+        inviteStatus: user.inviteStatus,
         coachId: user.assignedCoachId ?? "",
         ...patch,
       });
@@ -6674,11 +6769,91 @@ function AdminView({
 
   async function assignCoach(member: StaffUserRecord, coachId: string) {
     try {
-      await postStaffAction({ action: "assignCoach", memberId: member.id, coachId });
-      setMessage(`${member.name} was assigned to a coach.`);
+      if (!coachId) {
+        if (!member.assignedCoachIds.length) return;
+        const confirmed = window.confirm(`Remove coach assignment for ${member.name}? This preserves the user, videos, sessions, analyses, and login credentials.`);
+        if (!confirmed) return;
+        for (const assignedCoachId of member.assignedCoachIds) {
+          await postStaffAction({ action: "removeCoachAssignment", memberId: member.id, coachId: assignedCoachId });
+        }
+        setMessage(`${member.name} is now unassigned.`);
+      } else {
+        await postStaffAction({ action: "assignCoach", memberId: member.id, coachId });
+        setMessage(`${member.name} was assigned to a coach.`);
+      }
       await refreshWorkspace(member.id);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "The coach assignment could not be saved.");
+    }
+  }
+
+  function openPasswordReset(user: StaffUserRecord) {
+    setPasswordUser(user);
+    setPasswordForm({ password: "", confirmPassword: "", forcePasswordChange: false });
+  }
+
+  async function submitPasswordReset(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!passwordUser) return;
+    if (passwordForm.password !== passwordForm.confirmPassword) {
+      setMessage("Password and confirmation must match.");
+      return;
+    }
+    const confirmed = window.confirm(`Set a new password for ${passwordUser.name}? Existing login sessions for that user will be invalidated. Their user ID, videos, sessions, analyses, and coach assignments will remain preserved.`);
+    if (!confirmed) return;
+    try {
+      await postStaffAction({
+        action: "setPassword",
+        userId: passwordUser.id,
+        password: passwordForm.password,
+        confirmPassword: passwordForm.confirmPassword,
+        forcePasswordChange: passwordForm.forcePasswordChange,
+      });
+      setPasswordUser(null);
+      setPasswordForm({ password: "", confirmPassword: "", forcePasswordChange: false });
+      setMessage(`Password set for ${passwordUser.name}.`);
+      await refreshWorkspace(selectedMemberId || passwordUser.id);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The password could not be set.");
+    }
+  }
+
+  async function reconcileAssignments(apply: boolean) {
+    try {
+      const payload = await postStaffAction({ action: "reconcileCoachAssignments", apply });
+      const candidates = Array.isArray(payload.candidates) ? payload.candidates.length : 0;
+      const repaired = Number(payload.repaired ?? 0);
+      setMessage(apply ? `Relationship repair complete: ${repaired} unambiguous assignments stored.` : `${candidates} relationship candidates found.`);
+      await refreshWorkspace(selectedMemberId);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Relationship reconciliation could not run.");
+    }
+  }
+
+  async function handleAdminCoachPhoto(user: StaffUserRecord, file: File | null) {
+    if (!file) return;
+    if (user.profileImageUrl) {
+      const confirmed = window.confirm(`Replace ${user.name}'s coach headshot? Their account, roster, videos, sessions, and relationships will remain unchanged.`);
+      if (!confirmed) return;
+    }
+    try {
+      await uploadCoachPhoto(user.id, file);
+      setMessage(`${user.name}'s coach photo was saved.`);
+      await refreshWorkspace(detail?.member.id ?? selectedMemberId);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Coach photo could not be saved.");
+    }
+  }
+
+  async function removeAdminCoachPhoto(user: StaffUserRecord) {
+    const confirmed = window.confirm(`Delete ${user.name}'s coach headshot? This removes only the photo, not the coach account, roster, videos, sessions, or assignments.`);
+    if (!confirmed) return;
+    try {
+      await deleteCoachPhoto(user.id);
+      setMessage(`${user.name}'s coach photo was removed.`);
+      await refreshWorkspace(detail?.member.id ?? selectedMemberId);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Coach photo could not be removed.");
     }
   }
 
@@ -6805,6 +6980,8 @@ function AdminView({
           <button className="secondary-action" onClick={() => { resetUserForm("admin"); setShowUserModal(true); }}>Add admin</button>
           <button className="secondary-action" disabled={!selectedMember} onClick={() => setQuickMode("content")}>Assign content</button>
           <button className="secondary-action" disabled={!selectedMember} onClick={() => setQuickMode("session")}>Add session</button>
+          <button className="secondary-action" onClick={() => void reconcileAssignments(false)}>Find assignment gaps</button>
+          <button className="secondary-action" onClick={() => void reconcileAssignments(true)}>Repair clear gaps</button>
         </div>
       </header>
 
@@ -6849,10 +7026,13 @@ function AdminView({
             </div>
             {filteredUsers.map((user) => (
               <div className="admin-table-row" key={user.id}>
-                <div>
-                  <strong>{user.name}</strong>
-                  <small>{user.email}</small>
-                  <small>{user.videoCount} videos · {user.sessionCount} sessions</small>
+                <div className="admin-user-cell">
+                  {user.role === "coach" && <CoachAvatar coach={user} />}
+                  <span>
+                    <strong>{user.name}</strong>
+                    <small>{user.email}</small>
+                    <small>{user.videoCount} videos · {user.sessionCount} sessions</small>
+                  </span>
                 </div>
                 <div>
                   <select
@@ -6888,19 +7068,21 @@ function AdminView({
                     <option value="active">Active</option>
                     <option value="inactive">Inactive</option>
                   </select>
-                  <small>{user.inviteStatus}</small>
+                  <small>{user.inviteStatus} · {user.passwordConfigured ? "Password set" : "No password"}</small>
+                  {user.passwordResetRequired && <small>Password change required</small>}
                 </div>
                 <div>
                   <strong>{user.lastLoginAt ? formatDate(user.lastLoginAt) : "No login"}</strong>
+                  <small>{user.setupStatus.slice(0, 2).join(" · ")}</small>
                   <small>Created {formatDate(user.createdAt)}</small>
                 </div>
                 <div className="admin-row-actions">
-                  {user.role === "member" && <button className="icon-button" onClick={() => void openMember(user.id)} title="Open member detail">◫</button>}
+                  <button className="icon-button" onClick={() => void openMember(user.id)} title="Open user detail">◫</button>
                   {user.role === "member" && <button className="icon-button" onClick={() => onOpenMemberVideos(user.id, user.name)} title="Open videos">▶</button>}
                   {user.role === "member" && <button className="icon-button" onClick={() => onOpenCoachTools(user.id, user.name)} title="Open coach tools">✦</button>}
                   <button className="icon-button" onClick={() => openEditUser(user)} title="Edit user">✎</button>
+                  <button className="icon-button" onClick={() => openPasswordReset(user)} title="Set or reset password">⚿</button>
                   <button className="icon-button" onClick={() => void resendInvitation(user)} title="Resend invitation">↻</button>
-                  <button className="icon-button danger-text-button" onClick={() => void deleteUser(user)} title="Delete user">×</button>
                 </div>
               </div>
             ))}
@@ -6909,25 +7091,68 @@ function AdminView({
 
         <aside className="panel admin-member-panel">
           <PanelHeader
-            kicker="Member detail"
+            kicker="User detail"
             title={detail?.member.name ?? selectedMember?.name ?? "Select a member"}
             meta={detail ? `${detail.videos.length} videos · ${detail.sessions.length} sessions` : "Overview, content, activity"}
           />
           {detail ? (
             <div className="admin-member-detail">
               <div className="admin-member-overview">
+                <div><span>User ID</span><strong>{detail.member.id}</strong></div>
+                <div><span>Name</span><strong>{detail.member.name}</strong></div>
                 <div><span>Email</span><strong>{detail.member.email}</strong></div>
-                <div><span>Coach</span><strong>{detail.member.assignedCoachName || "Unassigned"}</strong></div>
-                <div><span>Status</span><strong>{detail.member.accountStatus}</strong></div>
+                <div><span>Role</span><strong>{detail.member.role}</strong></div>
+                <div><span>Coach</span><strong>{detail.assignedCoaches.map((coach) => coach.name).join(", ") || detail.member.assignedCoachName || "Unassigned"}</strong></div>
+                <div><span>Account</span><strong>{detail.member.accountStatus}</strong><small>{detail.member.inviteStatus}</small></div>
+                <div><span>Password</span><strong>{detail.member.passwordConfigured ? "Configured" : "Not configured"}</strong><small>{detail.member.passwordResetRequired ? "Change required" : "No forced change"}</small></div>
+                <div><span>Login</span><strong>{detail.member.lastLoginAt ? formatDate(detail.member.lastLoginAt) : "Never logged in"}</strong></div>
                 <div><span>Skill</span><strong>{detail.member.skillLevel || "NA"}</strong></div>
+                <div><span>Videos</span><strong>{detail.member.videoCount}</strong></div>
+                <div><span>Sessions</span><strong>{detail.member.sessionCount}</strong></div>
+                <div><span>Created</span><strong>{formatDate(detail.member.createdAt)}</strong></div>
+                <div><span>Updated</span><strong>{formatDate(detail.member.updatedAt)}</strong></div>
               </div>
+              {detail.member.role === "coach" && (
+                <section className="coach-photo-admin-card">
+                  <div>
+                    <CoachAvatar coach={detail.member} size="large" />
+                    <span><strong>{detail.member.name}</strong><small>Coach headshot</small></span>
+                  </div>
+                  <div className="button-row">
+                    <label className="secondary-action coach-photo-picker">
+                      Upload / replace
+                      <input
+                        accept="image/jpeg,image/png,image/webp"
+                        onChange={(event) => {
+                          const file = event.currentTarget.files?.[0] ?? null;
+                          void handleAdminCoachPhoto(detail.member, file);
+                          event.currentTarget.value = "";
+                        }}
+                        type="file"
+                      />
+                    </label>
+                    <button className="secondary-action danger-text-button" disabled={!detail.member.profileImageUrl} onClick={() => void removeAdminCoachPhoto(detail.member)} type="button">Remove photo</button>
+                  </div>
+                </section>
+              )}
+              {detail.assignedCoaches.length > 0 && (
+                <section className="assigned-coach-strip">
+                  {detail.assignedCoaches.map((coach) => (
+                    <article key={coach.id}>
+                      <CoachAvatar coach={coach} />
+                      <span><strong>{coach.name}</strong><small>{coach.title}</small></span>
+                    </article>
+                  ))}
+                </section>
+              )}
               <div className="admin-detail-tabs">
                 <section>
                   <h3>Recent videos</h3>
                   {detail.videos.slice(0, 4).map((video) => (
                     <article key={video.id}>
                       <strong>{video.title}</strong>
-                      <span>{video.publicationStatus} · {video.reviewStatus}</span>
+                      <span>{video.publicationStatus} · {video.uploadStatus} · {video.reviewStatus}</span>
+                      <span>{video.coachName ? `Coach: ${video.coachName}` : video.uploadedByRole ? `Uploaded by ${video.uploadedByRole}` : ""}</span>
                     </article>
                   ))}
                   {!detail.videos.length && <p>No videos yet.</p>}
@@ -7000,9 +7225,10 @@ function AdminView({
             <div className="video-form-grid">
               <label><span>Role</span><select value={userForm.role} onChange={(event) => setUserForm((current) => ({ ...current, role: event.target.value as StaffUserRecord["role"] }))}><option value="member">Member</option><option value="coach">Coach</option><option value="admin">Admin</option></select></label>
               <label><span>Status</span><select value={userForm.accountStatus} onChange={(event) => setUserForm((current) => ({ ...current, accountStatus: event.target.value as StaffUserRecord["accountStatus"] }))}><option value="active">Active</option><option value="inactive">Inactive</option></select></label>
+              <label><span>Invite / setup</span><select value={userForm.inviteStatus} onChange={(event) => setUserForm((current) => ({ ...current, inviteStatus: event.target.value }))}><option value="pending">Pending setup</option><option value="sent">Invite sent</option><option value="accepted">Accepted</option><option value="active">Active</option></select></label>
               <label><span>First name</span><input required value={userForm.firstName} onChange={(event) => setUserForm((current) => ({ ...current, firstName: event.target.value }))} /></label>
               <label><span>Last name</span><input required value={userForm.lastName} onChange={(event) => setUserForm((current) => ({ ...current, lastName: event.target.value }))} /></label>
-              <label className="video-form-wide"><span>Email</span><input disabled={Boolean(editingUserId)} required type="email" value={userForm.email} onChange={(event) => setUserForm((current) => ({ ...current, email: event.target.value }))} /></label>
+              <label className="video-form-wide"><span>Email</span><input required type="email" value={userForm.email} onChange={(event) => setUserForm((current) => ({ ...current, email: event.target.value }))} /></label>
               <label><span>Phone</span><input value={userForm.phone} onChange={(event) => setUserForm((current) => ({ ...current, phone: event.target.value }))} /></label>
               <label><span>Skill / title</span><input value={userForm.skillLevel} onChange={(event) => setUserForm((current) => ({ ...current, skillLevel: event.target.value }))} /></label>
               {userForm.role === "member" && (
@@ -7015,6 +7241,59 @@ function AdminView({
               <div className="button-row">
                 <button className="secondary-action" onClick={() => setShowUserModal(false)} type="button">Cancel</button>
                 <button className="primary-action" type="submit">{editingUserId ? "Save user" : "Create user"}</button>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {passwordUser && (
+        <div className="video-modal-overlay">
+          <form className="video-upload-modal admin-user-modal" onSubmit={submitPasswordReset}>
+            <div className="video-modal-header">
+              <div>
+                <p className="eyebrow">Admin password control</p>
+                <h2>Set password for {passwordUser.name}</h2>
+              </div>
+              <button aria-label="Close password form" className="icon-button" onClick={() => setPasswordUser(null)} type="button">×</button>
+            </div>
+            <div className="video-form-grid">
+              <label className="video-form-wide">
+                <span>New password</span>
+                <input
+                  autoComplete="new-password"
+                  onChange={(event) => setPasswordForm((current) => ({ ...current, password: event.target.value }))}
+                  placeholder="At least 8 characters"
+                  required
+                  type="password"
+                  value={passwordForm.password}
+                />
+              </label>
+              <label className="video-form-wide">
+                <span>Confirm password</span>
+                <input
+                  autoComplete="new-password"
+                  onChange={(event) => setPasswordForm((current) => ({ ...current, confirmPassword: event.target.value }))}
+                  placeholder="Re-enter password"
+                  required
+                  type="password"
+                  value={passwordForm.confirmPassword}
+                />
+              </label>
+              <label className="coach-email-toggle video-form-wide">
+                <input
+                  checked={passwordForm.forcePasswordChange}
+                  onChange={(event) => setPasswordForm((current) => ({ ...current, forcePasswordChange: event.target.checked }))}
+                  type="checkbox"
+                />
+                <span><strong>Force password change at next login</strong><small>Leave off for Monday testing so the user can log in immediately.</small></span>
+              </label>
+            </div>
+            <div className="video-modal-actions">
+              <span>User ID, videos, sessions, analyses, and coach assignments will remain preserved.</span>
+              <div className="button-row">
+                <button className="secondary-action" onClick={() => setPasswordUser(null)} type="button">Cancel</button>
+                <button className="primary-action" type="submit">Set password</button>
               </div>
             </div>
           </form>
@@ -7063,6 +7342,7 @@ function AdminView({
 }
 
 function CoachView({
+  accountUser,
   authenticated,
   clubs,
   coachName,
@@ -7077,6 +7357,7 @@ function CoachView({
   sessions,
   viewerRole,
 }: {
+  accountUser: AccountUser | null;
   authenticated: boolean;
   clubs: ClubSummary[];
   coachName: string;
@@ -7207,6 +7488,7 @@ function CoachView({
           <CoachVideoWorkspace
             authenticated={authenticated}
             coachName={coachName}
+            accountUser={accountUser}
             devAuthEnabled={devAuthEnabled}
             onOpenMemberVideos={onOpenMemberVideos}
             sessions={sessions}
@@ -7301,6 +7583,7 @@ function getSessionPrimaryClub(session: Session) {
 }
 
 function CoachVideoWorkspace({
+  accountUser,
   authenticated,
   coachName,
   devAuthEnabled,
@@ -7308,6 +7591,7 @@ function CoachVideoWorkspace({
   sessions,
   viewerRole,
 }: {
+  accountUser: AccountUser | null;
   authenticated: boolean;
   coachName: string;
   devAuthEnabled: boolean;
@@ -7357,6 +7641,8 @@ function CoachVideoWorkspace({
   const [saveState, setSaveState] = useState<"idle" | "saving">("idle");
   const [uploadProgress, setUploadProgress] = useState(0);
   const [workspaceMessage, setWorkspaceMessage] = useState("Select a member to begin.");
+  const [coachPhotoVersion, setCoachPhotoVersion] = useState(() => Date.now());
+  const [coachPhotoMissing, setCoachPhotoMissing] = useState(false);
   const [coachContentForm, setCoachContentForm] = useState({
     contentType: "coach_note",
     title: "",
@@ -7392,6 +7678,9 @@ function CoachVideoWorkspace({
   const managedVideos = [...videos]
     .sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
   const editingVideo = videos.find((video) => video.id === editingVideoId);
+  const coachProfileImageUrl = accountUser?.role === "coach"
+    ? `/api/coach-photo?coachId=${encodeURIComponent(accountUser.id)}&v=${coachPhotoVersion}`
+    : "";
 
   useEffect(() => {
     let cancelled = false;
@@ -7595,6 +7884,36 @@ function CoachVideoWorkspace({
       return;
     }
     setThumbnailFile(file);
+  }
+
+  async function handleOwnCoachPhoto(file: File | null) {
+    if (!file || !accountUser || accountUser.role !== "coach") return;
+    if (!coachPhotoMissing) {
+      const confirmed = window.confirm("Replace your coach headshot? Your roster, videos, sessions, and login stay unchanged.");
+      if (!confirmed) return;
+    }
+    try {
+      await uploadCoachPhoto(accountUser.id, file);
+      setCoachPhotoMissing(false);
+      setCoachPhotoVersion(Date.now());
+      setWorkspaceMessage("Coach headshot updated.");
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "Coach headshot could not be saved.");
+    }
+  }
+
+  async function removeOwnCoachPhoto() {
+    if (!accountUser || accountUser.role !== "coach") return;
+    const confirmed = window.confirm("Remove your coach headshot? Your account, roster, videos, and coach/member assignments will remain unchanged.");
+    if (!confirmed) return;
+    try {
+      await deleteCoachPhoto(accountUser.id);
+      setCoachPhotoMissing(true);
+      setCoachPhotoVersion(Date.now());
+      setWorkspaceMessage("Coach headshot removed.");
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "Coach headshot could not be removed.");
+    }
   }
 
   function replaceItem(record: VideoLibraryRecord) {
@@ -7866,6 +8185,40 @@ function CoachVideoWorkspace({
           </button>
         </div>
       </section>
+
+      {accountUser?.role === "coach" && (
+        <section className="coach-profile-photo-card">
+          <div>
+            {coachProfileImageUrl && !coachPhotoMissing ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                alt={`${coachName} headshot`}
+                className="coach-avatar large"
+                onError={() => setCoachPhotoMissing(true)}
+                src={coachProfileImageUrl}
+              />
+            ) : (
+              <span className="member-initials coach-avatar-fallback large">{initialsForName(coachName)}</span>
+            )}
+            <span><strong>{coachName}</strong><small>Coach profile photo</small></span>
+          </div>
+          <div className="button-row">
+            <label className="secondary-action coach-photo-picker">
+              Upload / replace
+              <input
+                accept="image/jpeg,image/png,image/webp"
+                onChange={(event) => {
+                  const file = event.currentTarget.files?.[0] ?? null;
+                  void handleOwnCoachPhoto(file);
+                  event.currentTarget.value = "";
+                }}
+                type="file"
+              />
+            </label>
+            <button className="secondary-action danger-text-button" disabled={coachPhotoMissing} onClick={() => void removeOwnCoachPhoto()} type="button">Remove photo</button>
+          </div>
+        </section>
+      )}
 
       <section className="coach-tool-status" role="status">
         <div>
@@ -8813,6 +9166,7 @@ function VideosView({
   viewerRole: VideoViewerRole;
 }) {
   const [videos, setVideos] = useState<VideoLibraryItem[]>([]);
+  const [assignedCoaches, setAssignedCoaches] = useState<CoachSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [libraryMessage, setLibraryMessage] = useState("Loading your video library...");
   const [showUpload, setShowUpload] = useState(false);
@@ -8854,11 +9208,15 @@ function VideosView({
         cancelled = true;
       };
     }
-    readVideoLibrary(viewerRole === "user" ? undefined : ownerId)
-      .then((records) => {
+    Promise.all([
+      readVideoLibrary(viewerRole === "user" ? undefined : ownerId),
+      viewerRole === "user" ? readMyCoaches() : Promise.resolve([] as CoachSummary[]),
+    ])
+      .then(([records, coaches]) => {
         if (cancelled) return;
         const items = records.map((record) => createVideoLibraryItem(record));
         setVideos(items);
+        setAssignedCoaches(coaches);
         if (requestedVideoId && items.some((item) => item.id === requestedVideoId && canViewLibraryVideo(item, ownerId, viewerRole))) {
           setSelectedVideoId(requestedVideoId);
         }
@@ -9121,6 +9479,20 @@ function VideosView({
           {viewerRole === "user" && <button className="primary-action" onClick={() => setShowUpload(true)}>＋ Upload video</button>}
         </div>
       </section>
+
+      {viewerRole === "user" && assignedCoaches.length > 0 && (
+        <section className="assigned-coach-strip member-facing">
+          {assignedCoaches.map((coach) => (
+            <article key={coach.id}>
+              <CoachAvatar coach={coach} />
+              <span>
+                <strong>{coach.name}</strong>
+                <small>{coach.title || "Coach"}</small>
+              </span>
+            </article>
+          ))}
+        </section>
+      )}
 
       <section className="video-filter-band">
         <label className="video-search-control">
@@ -10404,6 +10776,8 @@ function OnboardingFlow({
   );
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [coachHeadshotFile, setCoachHeadshotFile] = useState<File | null>(registrationDraft?.headshotFile ?? null);
+  const [coachHeadshotPreview, setCoachHeadshotPreview] = useState("");
   useEffect(() => {
     const draft = readStoredOnboardingAnswers();
     if (Object.keys(draft).length) {
@@ -10416,6 +10790,16 @@ function OnboardingFlow({
       queueMicrotask(() => setAnswers(nextAnswers));
     }
   }, [initialProfile]);
+
+  useEffect(() => {
+    if (!coachHeadshotFile) {
+      setCoachHeadshotPreview("");
+      return;
+    }
+    const previewUrl = URL.createObjectURL(coachHeadshotFile);
+    setCoachHeadshotPreview(previewUrl);
+    return () => URL.revokeObjectURL(previewUrl);
+  }, [coachHeadshotFile]);
 
   const role = (typeof answers.accountRole === "string" ? answers.accountRole : "golfer") as OnboardingRole;
   const displayName = typeof answers.displayName === "string" ? answers.displayName : "";
@@ -10467,6 +10851,7 @@ function OnboardingFlow({
       confirmPassword,
       email: email.trim().toLowerCase(),
       firstName: "",
+      headshotFile: role === "coach" ? coachHeadshotFile : null,
       lastName: "",
       password,
     });
@@ -10544,9 +10929,17 @@ function OnboardingFlow({
                 <span>Profile photo</span>
                 <input
                   accept="image/png,image/jpeg,image/webp"
-                  onChange={(event) => updateValue("profilePhotoName", event.currentTarget.files?.[0]?.name ?? "")}
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0] ?? null;
+                    setCoachHeadshotFile(file);
+                    updateValue("profilePhotoName", file?.name ?? "");
+                  }}
                   type="file"
                 />
+                {coachHeadshotPreview && role === "coach" && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img alt="Coach headshot preview" className="coach-headshot-preview" src={coachHeadshotPreview} />
+                )}
               </label>
 
               {role === "golfer" ? (
@@ -10650,6 +11043,8 @@ function LoginRequestModal({
   const [password, setPassword] = useState(registrationDraft?.password ?? "");
   const [confirmPassword, setConfirmPassword] = useState(registrationDraft?.confirmPassword ?? "");
   const [accountType, setAccountType] = useState<RegisterAccountType>(registrationDraft?.accountType ?? "player");
+  const [coachHeadshotFile, setCoachHeadshotFile] = useState<File | null>(null);
+  const [coachHeadshotPreview, setCoachHeadshotPreview] = useState("");
   const [state, setState] = useState<"idle" | "sending" | "link" | "reset">("idle");
   const [message, setMessage] = useState(
     initialMode === "register"
@@ -10657,6 +11052,16 @@ function LoginRequestModal({
       : "Enter your email and password to open your account.",
   );
   const [debugLoginUrl, setDebugLoginUrl] = useState("");
+
+  useEffect(() => {
+    if (!coachHeadshotFile) {
+      setCoachHeadshotPreview("");
+      return;
+    }
+    const previewUrl = URL.createObjectURL(coachHeadshotFile);
+    setCoachHeadshotPreview(previewUrl);
+    return () => URL.revokeObjectURL(previewUrl);
+  }, [coachHeadshotFile]);
 
   function changeMode(nextMode: LoginModalMode) {
     setMode(nextMode);
@@ -10700,6 +11105,14 @@ function LoginRequestModal({
       if (payload.debugLoginUrl) setDebugLoginUrl(payload.debugLoginUrl);
       if (payload.needsRegistration) setMode("register");
       if (response.ok && payload.user) {
+        if (mode === "register" && accountType === "coach" && coachHeadshotFile) {
+          try {
+            await uploadCoachPhoto(payload.user.id, coachHeadshotFile);
+          } catch (error) {
+            const photoMessage = error instanceof Error ? error.message : "Coach photo upload can be retried later.";
+            onStatus(`Account created. ${photoMessage}`);
+          }
+        }
         await onAuthenticated();
         onClose();
       }
@@ -10841,6 +11254,21 @@ function LoginRequestModal({
                   value={lastName}
                 />
               </label>
+              {accountType === "coach" && (
+                <label className="video-form-wide coach-headshot-register">
+                  <span>Coach headshot</span>
+                  <input
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={(event) => setCoachHeadshotFile(event.currentTarget.files?.[0] ?? null)}
+                    type="file"
+                  />
+                  {coachHeadshotPreview && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img alt="Coach headshot preview" src={coachHeadshotPreview} />
+                  )}
+                  <small>Optional. JPG, PNG, or WebP under 5 MB.</small>
+                </label>
+              )}
             </div>
           </>
         )}

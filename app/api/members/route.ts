@@ -4,9 +4,11 @@ import {
   getEmailFromAddress,
   getPlatformEnvironment,
   getRequiredDatabase,
+  recordActivity,
   requireIdentity,
   responseFromError,
 } from "@/lib/server/platform";
+import { normalizeEmail } from "@/lib/admin-user-policy.mjs";
 
 type MemberPayload = {
   coachId?: unknown;
@@ -163,7 +165,7 @@ export async function POST(request: Request) {
     const payload = await request.json() as MemberPayload;
     const firstName = text(payload.firstName, 80);
     const lastName = text(payload.lastName, 80);
-    const email = text(payload.email, 254).toLowerCase();
+    const email = normalizeEmail(payload.email);
     const phone = text(payload.phone, 40);
     const skillLevel = text(payload.skillLevel, 80);
     const notes = text(payload.notes, 2000);
@@ -178,7 +180,7 @@ export async function POST(request: Request) {
     const database = getRequiredDatabase();
     await ensurePlatformSchema(database);
     const existing = await database
-      .prepare("SELECT id, role FROM users WHERE email = ?")
+      .prepare("SELECT id, role FROM users WHERE LOWER(email) = ?")
       .bind(email)
       .first<{ id: string; role: string }>();
     if (existing && existing.role !== "member") {
@@ -222,6 +224,19 @@ export async function POST(request: Request) {
             .bind(crypto.randomUUID(), coachId, memberId)
         : database.prepare("SELECT 1"),
     ]);
+    if (coachId) {
+      await recordActivity({
+        action: identity.role === "coach" ? "coach_added_student" : "coach_assigned",
+        actor: identity,
+        database,
+        entityId: `${coachId}:${memberId}`,
+        entityType: "coach_assignment",
+        memberId,
+        metadata: { coachId, existingMember: Boolean(existing) },
+        summary: `${identity.displayName} added ${firstName} ${lastName} to ${identity.role === "coach" ? "their roster" : "a coach roster"}.`,
+        targetUserId: memberId,
+      });
+    }
 
     const inviteToken = crypto.randomUUID();
     const inviteUrl = createInviteUrl(request, inviteToken);
