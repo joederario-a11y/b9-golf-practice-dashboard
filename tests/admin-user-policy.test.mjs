@@ -5,7 +5,9 @@ import {
   adminCreateUserGuard,
   buildCoachReconciliationCandidates,
   canManageCoachPhoto,
+  canManageUserPhoto,
   canViewCoachPhoto,
+  canViewUserPhoto,
   deriveSetupStatus,
   finalActiveAdminChangeGuard,
   normalizeEmail,
@@ -204,6 +206,24 @@ test("coach photo authorization matches admin coach member roles", () => {
   assert.equal(canManageCoachPhoto({ id: "member", role: "member" }, "coach-a"), false);
   assert.equal(canViewCoachPhoto({ id: "member", role: "member" }, "coach-a", true), true);
   assert.equal(canViewCoachPhoto({ id: "member", role: "member" }, "coach-a", false), false);
+});
+
+test("user photo authorization supports admins coaches and members without broad access", () => {
+  const admin = { id: "admin-1", role: "admin" };
+  const coach = { id: "coach-1", role: "coach" };
+  const otherCoach = { id: "coach-2", role: "coach" };
+  const member = { id: "member-1", role: "member" };
+  const memberUser = { id: "member-1", role: "member" };
+  const coachUser = { id: "coach-1", role: "coach" };
+  const adminUser = { id: "admin-2", role: "admin" };
+
+  assert.equal(canManageUserPhoto(admin, adminUser), true);
+  assert.equal(canManageUserPhoto(member, memberUser), true);
+  assert.equal(canManageUserPhoto(coach, memberUser, { isAssignedCoach: true }), true);
+  assert.equal(canManageUserPhoto(coach, memberUser, { isAssignedCoach: false }), false);
+  assert.equal(canManageUserPhoto(coach, otherCoach), false);
+  assert.equal(canViewUserPhoto(member, coachUser, { isAssignedMember: true }), true);
+  assert.equal(canViewUserPhoto(member, coachUser, { isAssignedMember: false }), false);
 });
 
 test("registration state safely splits onboarding display name", () => {

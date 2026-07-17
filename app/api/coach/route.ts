@@ -16,8 +16,8 @@ type RuntimeEnv = {
   OPENAI_MODEL?: string;
 };
 
-const MATRAT_AI_INSTRUCTIONS = `
-You are MatRat AI, an embedded simulator golf coach for Free Range Golf.
+const MAI_COACH_INSTRUCTIONS = `
+You are MAI Coach, an embedded simulator golf coach inside the MAI Coach app.
 
 Mission:
 - Simplify launch-monitor data into plain English.
@@ -104,7 +104,7 @@ function normalizeMessages(value: unknown) {
 function stringifyContext(context: unknown) {
   const text = JSON.stringify(context ?? {}, null, 2);
   if (text.length <= 18000) return text;
-  return `${text.slice(0, 18000)}\n[Free Range Golf context truncated for length]`;
+  return `${text.slice(0, 18000)}\n[MAI Coach context truncated for length]`;
 }
 
 function extractOutputText(payload: unknown) {
@@ -133,14 +133,14 @@ export async function POST(request: Request) {
     const question = typeof payload.question === "string" ? payload.question.trim().slice(0, 2000) : "";
 
     if (!question) {
-      return Response.json({ error: "Ask MatRat AI a question first." }, { status: 400 });
+      return Response.json({ error: "Ask MAI Coach a question first." }, { status: 400 });
     }
 
     if (!runtimeEnv.OPENAI_API_KEY) {
       return Response.json({
         mode: "setup",
         answer:
-          "MatRat AI is wired into Free Range Golf and ready for the selected club/session data. Add OPENAI_API_KEY as a Cloudflare Worker secret to turn on live coaching responses.",
+          "The MAI Coach assistant is ready for the selected club/session data. Add OPENAI_API_KEY as a Cloudflare Worker secret to turn on live coaching responses.",
       });
     }
 
@@ -150,7 +150,7 @@ export async function POST(request: Request) {
       ...messages,
       {
         role: "user",
-        content: `Golfer question: ${question}\n\nFree Range Golf session context:\n${context}`,
+        content: `Golfer question: ${question}\n\nMAI Coach session context:\n${context}`,
       },
     ];
 
@@ -162,7 +162,7 @@ export async function POST(request: Request) {
       },
       body: JSON.stringify({
         model: runtimeEnv.OPENAI_MODEL || "gpt-5.5",
-        instructions: MATRAT_AI_INSTRUCTIONS,
+        instructions: MAI_COACH_INSTRUCTIONS,
         input,
         store: false,
       }),
@@ -180,7 +180,7 @@ export async function POST(request: Request) {
         "message" in responsePayload.error &&
         typeof responsePayload.error.message === "string"
           ? responsePayload.error.message
-          : "MatRat AI could not complete the request.";
+          : "MAI Coach could not complete the request.";
 
       return Response.json({ error: message }, { status: response.status });
     }
@@ -188,7 +188,7 @@ export async function POST(request: Request) {
     const answer = extractOutputText(responsePayload);
     return Response.json({
       mode: "live",
-      answer: answer || "MatRat AI did not return a readable answer. Try asking again with one specific club or miss pattern.",
+      answer: answer || "MAI Coach did not return a readable answer. Try asking again with one specific club or miss pattern.",
     });
   } catch (error) {
     return Response.json({ error: toErrorMessage(error) }, { status: 500 });

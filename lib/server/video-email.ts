@@ -85,17 +85,17 @@ export async function sendVideoNotification(
   }
 
   const noteBlock = notePreview
-    ? `<p style="margin:16px 0;padding:14px;border-left:3px solid #35f27a;background:#edfdf2;">${escapeHtml(notePreview)}</p>`
+    ? `<p style="margin:16px 0;padding:14px;border-left:3px solid #96cb39;background:#edfdf2;">${escapeHtml(notePreview)}</p>`
     : "";
   const coachName = escapeHtml(identity.displayName);
   const html = `
-    <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;color:#17231d;line-height:1.6;">
+    <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;color:#10171F;line-height:1.6;">
       <p>Hi ${escapeHtml(member.firstName)},</p>
       <p>${coachName} uploaded a new lesson video for you: <strong>${escapeHtml(video.title)}</strong>.</p>
       <p>Log in to watch it and review your coach notes.</p>
       ${noteBlock}
       <p style="margin:28px 0;">
-        <a href="${escapeHtml(videoLink)}" style="display:inline-block;background:#0b1511;color:#35f27a;text-decoration:none;padding:12px 18px;border-radius:6px;font-weight:700;">View your lesson video</a>
+        <a href="${escapeHtml(videoLink)}" style="display:inline-block;background:#10171F;color:#96cb39;text-decoration:none;padding:12px 18px;border-radius:6px;font-weight:700;">View your lesson video</a>
       </p>
     </div>
   `;

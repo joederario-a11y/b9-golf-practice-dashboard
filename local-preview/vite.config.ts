@@ -26,7 +26,7 @@ export default defineConfig({
   plugins: [
     react(),
     {
-      name: "free-range-local-preview-api",
+      name: "mai-coach-local-preview-api",
       configureServer(server) {
         server.middlewares.use((req, res, next) => {
           const path = req.url?.split("?")[0] ?? "/";

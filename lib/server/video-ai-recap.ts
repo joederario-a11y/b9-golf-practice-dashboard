@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 
 import {
+  ACTIVE_VIDEO_RECAP_JOB_STATUSES,
   buildLessonRecapInput,
   buildTranscriptionPrompt,
   canReadApprovedVideoRecap,
@@ -10,6 +11,7 @@ import {
   emptyCoachInputDraft,
   lessonRecapJsonSchema,
   normalizeLessonRecapDraft,
+  PUBLISHABLE_VIDEO_RECAP_DRAFT_STATUSES,
   shouldRequestVideoRecapProcessing,
   transcriptLooksUsable,
   VIDEO_RECAP_PROCESSING_TYPE,
@@ -92,9 +94,10 @@ type ProcessingJobRow = {
   requested_language: string;
   status: string;
   current_step: string;
-  attempt_count: number;
-  workflow_instance_id: string | null;
-  audio_storage_path: string | null;
+	  attempt_count: number;
+	  workflow_instance_id: string | null;
+	  audio_storage_path: string | null;
+	  audio_deleted_at: string | null;
   error_code: string | null;
   error_message: string | null;
   created_at: string;
@@ -164,13 +167,15 @@ type RecapEnv = {
   OPENAI_API_KEY?: string;
   OPENAI_MODEL?: string;
   OPENAI_TRANSCRIPTION_MODEL?: string;
-  VIDEO_LESSON_RECAP_WORKFLOW?: {
-    create(options?: { id?: string; params?: unknown }): Promise<{ id: string }>;
-  };
+	  VIDEO_LESSON_RECAP_WORKFLOW?: {
+	    create(options?: { id?: string; params?: unknown }): Promise<{ id: string }>;
+	    get(id: string): Promise<{ id: string; terminate(): Promise<void> }>;
+	  };
   VIDEO_STORAGE: R2Bucket;
 };
 
 const MAX_TRANSCRIPTION_BYTES = 25 * 1024 * 1024;
+const ACTIVE_VIDEO_RECAP_JOB_STATUS_LIST = Array.from(ACTIVE_VIDEO_RECAP_JOB_STATUSES);
 
 function text(value: unknown, maxLength = 4000) {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
@@ -188,11 +193,35 @@ function displayName(row: { first_name?: string | null; last_name?: string | nul
   return [row.first_name, row.last_name].filter(Boolean).join(" ") || row.email || "Unknown";
 }
 
+function combineRecapText(...values: unknown[]) {
+  const seen = new Set<string>();
+  return values
+    .map((value) => text(value))
+    .filter((value) => {
+      if (!value || seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    })
+    .join("\n\n");
+}
+
 function jobError(error: unknown) {
   const message = error instanceof Error ? error.message : "Video AI processing failed.";
   const code = error instanceof RecapProcessingError ? error.code : "processing_failed";
   const status = error instanceof RecapProcessingError ? error.status : "failed";
   return { code, message, status };
+}
+
+function systemActor(coachId?: string | null): AuthIdentity {
+  return {
+    displayName: "MAI Coach",
+    email: "mai-caddy@system.local",
+    firstName: "MAI",
+    id: coachId ?? "system",
+    lastName: "Caddy",
+    passwordResetRequired: false,
+    role: "coach",
+  };
 }
 
 class RecapProcessingError extends Error {
@@ -240,6 +269,198 @@ async function loadJob(database: D1Database, jobId: string) {
     .first<ProcessingJobRow>();
 }
 
+async function loadActiveJob(database: D1Database, videoId: string) {
+  return database
+    .prepare(
+      `SELECT * FROM video_ai_processing_jobs
+       WHERE video_id = ? AND processing_type = ? AND status IN (${ACTIVE_VIDEO_RECAP_JOB_STATUS_LIST.map(() => "?").join(", ")})
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    )
+    .bind(videoId, VIDEO_RECAP_PROCESSING_TYPE, ...ACTIVE_VIDEO_RECAP_JOB_STATUS_LIST)
+    .first<ProcessingJobRow>();
+}
+
+async function coachRelationshipExists(database: D1Database, coachId: string | null, memberId: string) {
+  if (!coachId) return false;
+  const relationship = await database
+    .prepare("SELECT id FROM coach_members WHERE member_id = ? AND coach_id = ?")
+    .bind(memberId, coachId)
+    .first<{ id: string }>();
+  return Boolean(relationship);
+}
+
+async function assertCurrentCoachRelationship(database: D1Database, video: VideoRecapRow, status = 403) {
+  if (!(await coachRelationshipExists(database, video.coach_id, video.member_id))) {
+    throw new Response("The assigned coach is no longer connected to this member.", { status });
+  }
+}
+
+async function assertWorkflowCanContinue(database: D1Database, jobId: string, video: VideoRecapRow) {
+  const currentJob = await loadJob(database, jobId);
+  if (!currentJob) throw new RecapProcessingError("invalid_processing_job", "The processing job no longer exists.");
+  if (currentJob.status === "cancelled") {
+    throw new RecapProcessingError("processing_cancelled", "The processing job was cancelled.", "cancelled");
+  }
+  if (currentJob.video_id !== video.id || currentJob.member_id !== video.member_id) {
+    throw new RecapProcessingError("job_ownership_mismatch", "The processing job no longer matches the video ownership.");
+  }
+  if (!(await coachRelationshipExists(database, currentJob.coach_id, currentJob.member_id))) {
+    throw new RecapProcessingError("coach_relationship_changed", "The coach is no longer assigned to this member.", "coach_relationship_changed");
+  }
+  return currentJob;
+}
+
+function assertDraftIsMutable(draft: DraftRow, action: string) {
+  if (draft.status === "published") {
+    throw new Response("Published and locked. Create a revision to make changes.", { status: 409 });
+  }
+  if (action === "approveAndPublish" && !PUBLISHABLE_VIDEO_RECAP_DRAFT_STATUSES.has(draft.status)) {
+    throw new Response("Only drafts ready for review or needing coach input can be published.", { status: 409 });
+  }
+  if (["failed", "superseded"].includes(draft.status)) {
+    throw new Response("This recap draft is closed. Create a revision before editing it.", { status: 409 });
+  }
+}
+
+function assertRowsMatch(video: VideoRecapRow, draft?: DraftRow | null, transcript?: TranscriptRow | null, job?: ProcessingJobRow | null) {
+  const rows = [draft, transcript, job].filter(Boolean) as Array<{ member_id: string; video_id: string }>;
+  if (rows.some((row) => row.member_id !== video.member_id || row.video_id !== video.id)) {
+    throw new Response("Recap ownership mismatch.", { status: 409 });
+  }
+  if (draft && transcript && draft.transcript_id !== transcript.id) {
+    throw new Response("Transcript ownership mismatch.", { status: 409 });
+  }
+  if (draft && job && draft.processing_job_id !== job.id) {
+    throw new Response("Processing job ownership mismatch.", { status: 409 });
+  }
+}
+
+async function cleanupTemporaryAudio(env: RecapEnv, database: D1Database, jobOrId: ProcessingJobRow | string, actor?: AuthIdentity) {
+  const job = typeof jobOrId === "string" ? await loadJob(database, jobOrId) : jobOrId;
+  if (!job?.audio_storage_path) return false;
+  try {
+    await env.VIDEO_STORAGE.delete(job.audio_storage_path);
+    await database
+      .prepare("UPDATE video_ai_processing_jobs SET audio_storage_path = NULL, audio_deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .bind(job.id)
+      .run();
+    await recordActivity({
+      action: "temporary_audio_deleted",
+      actor: actor ?? systemActor(job.coach_id),
+      database,
+      entityId: job.id,
+      entityType: "video_ai_processing_job",
+      memberId: job.member_id,
+      metadata: { videoId: job.video_id },
+      summary: "Temporary coach voiceover audio was deleted after processing.",
+      targetUserId: job.member_id,
+    });
+    return true;
+  } catch {
+    await recordActivity({
+      action: "temporary_audio_cleanup_failed",
+      actor: actor ?? systemActor(job.coach_id),
+      database,
+      entityId: job.id,
+      entityType: "video_ai_processing_job",
+      memberId: job.member_id,
+      metadata: { videoId: job.video_id },
+      summary: "Temporary audio cleanup failed and should be retried.",
+      targetUserId: job.member_id,
+    });
+    return false;
+  }
+}
+
+async function recordProcessingEvent(database: D1Database, action: string, job: ProcessingJobRow, summary: string, metadata: Record<string, unknown> = {}) {
+  await recordActivity({
+    action,
+    actor: systemActor(job.coach_id),
+    database,
+    entityId: job.id,
+    entityType: "video_ai_processing_job",
+    memberId: job.member_id,
+    metadata: { processingVersion: job.processing_version, videoId: job.video_id, ...metadata },
+    summary,
+    targetUserId: job.member_id,
+  });
+}
+
+async function loadCurrentTranscript(database: D1Database, video: VideoRecapRow) {
+  return database
+    .prepare(
+      `SELECT * FROM video_transcripts
+       WHERE video_id = ? AND member_id = ? AND is_current = 1
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    )
+    .bind(video.id, video.member_id)
+    .first<TranscriptRow>();
+}
+
+async function cancelActiveProcessing(database: D1Database, identity: AuthIdentity, video: VideoRecapRow) {
+  const job = await loadActiveJob(database, video.id);
+  if (!job) return false;
+  const runtime = getPlatformEnvironment() as RecapEnv;
+  if (job.workflow_instance_id && runtime.VIDEO_LESSON_RECAP_WORKFLOW?.get) {
+    const instance = await runtime.VIDEO_LESSON_RECAP_WORKFLOW.get(job.workflow_instance_id);
+    await instance.terminate();
+  }
+  await cleanupTemporaryAudio(runtime, database, job, identity);
+  await database
+    .prepare(
+      `UPDATE video_ai_processing_jobs
+       SET status = 'cancelled',
+           current_step = 'cancelled',
+           completed_at = CURRENT_TIMESTAMP,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND status IN (${ACTIVE_VIDEO_RECAP_JOB_STATUS_LIST.map(() => "?").join(", ")})`,
+    )
+    .bind(job.id, ...ACTIVE_VIDEO_RECAP_JOB_STATUS_LIST)
+    .run();
+  await recordActivity({
+    action: "processing_cancelled",
+    actor: identity,
+    database,
+    entityId: job.id,
+    entityType: "video_ai_processing_job",
+    memberId: video.member_id,
+    metadata: { videoId: video.id, workflowInstanceId: job.workflow_instance_id },
+    summary: `${identity.displayName} cancelled MAI Coach voiceover processing.`,
+    targetUserId: video.member_id,
+  });
+  return true;
+}
+
+async function regenerateRecapFromCurrentTranscript(database: D1Database, identity: AuthIdentity, video: VideoRecapRow, language: string) {
+  const activeJob = await loadActiveJob(database, video.id);
+  if (activeJob) throw new Response("MAI Coach processing is already active for this video.", { status: 409 });
+  const transcript = await loadCurrentTranscript(database, video);
+  if (!transcript) throw new Response("No saved transcript exists for this video yet.", { status: 404 });
+  assertRowsMatch(video, null, transcript, null);
+  const jobId = await createVideoRecapProcessingJob(database, identity, video.id, true, language);
+  if (!jobId) throw new Response("MAI Coach processing could not be requested for this video.", { status: 409 });
+  const job = await loadJob(database, jobId);
+  if (!job) throw new Response("MAI Coach processing job could not be loaded.", { status: 500 });
+  await markJob(database, job.id, { status: "generating_recap", step: "regenerating_recap_from_current_transcript" });
+  await recordActivity({
+    action: "processing_retried",
+    actor: identity,
+    database,
+    entityId: job.id,
+    entityType: "video_ai_processing_job",
+    memberId: video.member_id,
+    metadata: { retryType: "regenerate_from_transcript", transcriptId: transcript.id, videoId: video.id },
+    summary: `${identity.displayName} requested a new MAI Coach recap from the saved transcript.`,
+    targetUserId: video.member_id,
+  });
+  await generateRecapDraft(getPlatformEnvironment() as RecapEnv, database, job, video, {
+    text: transcript.transcript_text,
+    transcriptId: transcript.id,
+  });
+}
+
 async function markJob(database: D1Database, jobId: string, values: {
   audioStoragePath?: string | null;
   errorCode?: string | null;
@@ -256,7 +477,7 @@ async function markJob(database: D1Database, jobId: string, values: {
         error_code = ?,
         error_message = ?,
         started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
-        completed_at = CASE WHEN ? IN ('ready_for_review', 'failed', 'no_usable_audio', 'cancelled') THEN CURRENT_TIMESTAMP ELSE completed_at END,
+        completed_at = CASE WHEN ? IN ('ready_for_review', 'failed', 'no_usable_audio', 'cancelled', 'coach_relationship_changed', 'published') THEN CURRENT_TIMESTAMP ELSE completed_at END,
         updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
     )
@@ -281,6 +502,12 @@ export async function createVideoRecapProcessingJob(database: D1Database, identi
   if (!canReviewVideoRecap(identity, { coachId: video.coach_id, memberId: video.member_id }, assignedMemberIds)) {
     throw new Response("You cannot request AI processing for this video.", { status: 403 });
   }
+  const processingCoachId = identity.role === "coach" ? identity.id : video.coach_id;
+  if (!(await coachRelationshipExists(database, processingCoachId, video.member_id))) {
+    throw new Response("A current assigned coach is required before AI processing can start.", { status: 403 });
+  }
+  const activeJob = await loadActiveJob(database, video.id);
+  if (activeJob) return activeJob.id;
   const versionRow = await database
     .prepare(
       `SELECT COALESCE(MAX(processing_version), 0) + 1 AS next_version
@@ -298,7 +525,7 @@ export async function createVideoRecapProcessingJob(database: D1Database, identi
         requested_language, status, current_step, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 'waiting_for_video_upload', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
     )
-    .bind(jobId, video.id, video.member_id, video.coach_id, VIDEO_RECAP_PROCESSING_TYPE, processingVersion, language)
+    .bind(jobId, video.id, video.member_id, processingCoachId, VIDEO_RECAP_PROCESSING_TYPE, processingVersion, language)
     .run();
   await recordActivity({
     action: "ai_processing_requested",
@@ -307,8 +534,8 @@ export async function createVideoRecapProcessingJob(database: D1Database, identi
     entityId: jobId,
     entityType: "video_ai_processing_job",
     memberId: video.member_id,
-    metadata: { coachId: video.coach_id, processingVersion, videoId: video.id },
-    summary: `${identity.displayName} requested a MAI Caddy lesson recap from coach voiceover.`,
+    metadata: { coachId: processingCoachId, processingVersion, videoId: video.id },
+    summary: `${identity.displayName} requested a MAI Coach lesson recap from coach voiceover.`,
     targetUserId: video.member_id,
   });
   return jobId;
@@ -321,13 +548,25 @@ export async function queueVideoRecapWorkflowAfterUpload(database: D1Database, i
   const job = await database
     .prepare(
       `SELECT * FROM video_ai_processing_jobs
-       WHERE video_id = ? AND status = 'queued'
+       WHERE video_id = ? AND status IN (${ACTIVE_VIDEO_RECAP_JOB_STATUS_LIST.map(() => "?").join(", ")})
        ORDER BY created_at DESC
        LIMIT 1`,
     )
-    .bind(video.id)
+    .bind(video.id, ...ACTIVE_VIDEO_RECAP_JOB_STATUS_LIST)
     .first<ProcessingJobRow>();
   if (!job) return null;
+  if (!(await coachRelationshipExists(database, job.coach_id, job.member_id))) {
+    await markJob(database, job.id, {
+      errorCode: "coach_relationship_changed",
+      errorMessage: "The coach is no longer assigned to this member.",
+      status: "coach_relationship_changed",
+      step: "coach_relationship_changed",
+    });
+    return { jobId: job.id, queued: false };
+  }
+  if (job.workflow_instance_id) {
+    return { jobId: job.id, queued: true, workflowInstanceId: job.workflow_instance_id };
+  }
 
   const runtime = getPlatformEnvironment();
   const workflow = runtime.VIDEO_LESSON_RECAP_WORKFLOW;
@@ -357,7 +596,7 @@ export async function queueVideoRecapWorkflowAfterUpload(database: D1Database, i
     const instance = await workflow.create({
       id: instanceId,
       params: {
-        coachId: video.coach_id,
+        coachId: job.coach_id,
         language: job.requested_language || "en",
         memberId: video.member_id,
         processingJobId: job.id,
@@ -378,12 +617,16 @@ export async function queueVideoRecapWorkflowAfterUpload(database: D1Database, i
       entityType: "video_ai_processing_job",
       memberId: video.member_id,
       metadata: { workflowInstanceId: instance.id, videoId: video.id },
-      summary: `${identity.displayName} queued MAI Caddy voiceover processing.`,
+      summary: `${identity.displayName} queued MAI Coach voiceover processing.`,
       targetUserId: video.member_id,
     });
     return { jobId: job.id, queued: true, workflowInstanceId: instance.id };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Workflow could not be started.";
+    const existing = await loadJob(database, job.id);
+    if (existing?.workflow_instance_id) {
+      return { jobId: job.id, queued: true, workflowInstanceId: existing.workflow_instance_id };
+    }
     await markJob(database, job.id, {
       errorCode: "workflow_start_failed",
       errorMessage: message,
@@ -401,7 +644,7 @@ async function validateWorkflowInputs(database: D1Database, params: VideoLessonR
   }
   const video = await loadVideoForRecap(database, params.videoId);
   if (!video) throw new RecapProcessingError("video_not_found", "The lesson video no longer exists.");
-  if (video.member_id !== params.memberId || video.coach_id !== params.coachId) {
+  if (video.member_id !== params.memberId) {
     throw new RecapProcessingError("video_ownership_changed", "The video ownership changed during processing.");
   }
   if (video.storage_path !== params.storagePath) {
@@ -410,18 +653,16 @@ async function validateWorkflowInputs(database: D1Database, params: VideoLessonR
   if (video.upload_status !== "ready") {
     throw new RecapProcessingError("video_not_ready", "The video upload is not ready yet.");
   }
-  const relationship = await database
-    .prepare("SELECT id FROM coach_members WHERE member_id = ? AND coach_id = ?")
-    .bind(video.member_id, video.coach_id)
-    .first<{ id: string }>();
-  if (!relationship) {
-    throw new RecapProcessingError("coach_relationship_changed", "The coach is no longer assigned to this member.");
+  if (!(await coachRelationshipExists(database, params.coachId, video.member_id))) {
+    throw new RecapProcessingError("coach_relationship_changed", "The coach is no longer assigned to this member.", "coach_relationship_changed");
   }
   return { job, video };
 }
 
 async function extractAudio(env: RecapEnv, database: D1Database, job: ProcessingJobRow, video: VideoRecapRow) {
+  await assertWorkflowCanContinue(database, job.id, video);
   await markJob(database, job.id, { status: "extracting_audio", step: "extracting_coach_audio" });
+  await recordProcessingEvent(database, "audio_extraction_started", job, "MAI Coach started extracting coach voiceover audio.");
   if (!env.MEDIA) throw new RecapProcessingError("media_binding_missing", "Cloudflare Media binding MEDIA is not configured.");
   const object = await env.VIDEO_STORAGE.get(video.storage_path);
   if (!object?.body) throw new RecapProcessingError("video_missing_from_r2", "The source video could not be found in private R2.");
@@ -434,13 +675,14 @@ async function extractAudio(env: RecapEnv, database: D1Database, job: Processing
     await env.VIDEO_STORAGE.put(audioStoragePath, audioResponse.body, {
       httpMetadata: { contentType: audioResponse.headers.get("content-type") || "audio/mp4" },
       customMetadata: {
-        coachId: video.coach_id ?? "",
+	        coachId: job.coach_id,
         jobId: job.id,
         memberId: video.member_id,
         videoId: video.id,
       },
     });
     await markJob(database, job.id, { audioStoragePath, status: "extracting_audio", step: "audio_extraction_completed" });
+    await recordProcessingEvent(database, "audio_extraction_completed", job, "MAI Coach extracted temporary coach voiceover audio.");
     return audioStoragePath;
   } catch (error) {
     if (error instanceof RecapProcessingError) throw error;
@@ -449,7 +691,9 @@ async function extractAudio(env: RecapEnv, database: D1Database, job: Processing
 }
 
 async function transcribeAudio(env: RecapEnv, database: D1Database, job: ProcessingJobRow, video: VideoRecapRow, audioStoragePath: string) {
+  await assertWorkflowCanContinue(database, job.id, video);
   await markJob(database, job.id, { status: "transcribing", step: "transcribing_coach_feedback" });
+  await recordProcessingEvent(database, "transcription_started", job, "MAI Coach started transcribing coach voiceover audio.");
   if (!env.OPENAI_API_KEY) {
     throw new RecapProcessingError("openai_api_key_missing", "OPENAI_API_KEY is not configured for transcription.");
   }
@@ -476,8 +720,9 @@ async function transcribeAudio(env: RecapEnv, database: D1Database, job: Process
   }
   const transcriptText = text(payload.text, 120_000);
   const transcriptId = crypto.randomUUID();
-  await database.prepare("UPDATE video_transcripts SET is_current = 0, updated_at = CURRENT_TIMESTAMP WHERE video_id = ? AND processing_version = ?")
-    .bind(video.id, job.processing_version)
+  await assertWorkflowCanContinue(database, job.id, video);
+  await database.prepare("UPDATE video_transcripts SET is_current = 0, updated_at = CURRENT_TIMESTAMP WHERE video_id = ?")
+    .bind(video.id)
     .run();
   await database
     .prepare(
@@ -491,7 +736,7 @@ async function transcribeAudio(env: RecapEnv, database: D1Database, job: Process
       transcriptId,
       video.id,
       video.member_id,
-      video.coach_id,
+	      job.coach_id,
       transcriptText,
       JSON.stringify(Array.isArray(payload.segments) ? payload.segments : []),
       job.requested_language || "en",
@@ -503,6 +748,8 @@ async function transcribeAudio(env: RecapEnv, database: D1Database, job: Process
     )
     .run();
   await markJob(database, job.id, { status: "transcribing", step: "transcription_completed" });
+  await recordProcessingEvent(database, "transcription_completed", job, "MAI Coach stored the coach voiceover transcript.", { transcriptId });
+  await cleanupTemporaryAudio(env, database, job);
   return { model, text: transcriptText, transcriptId };
 }
 
@@ -541,13 +788,11 @@ async function buildRecapContext(database: D1Database, video: VideoRecapRow, tra
       swingType: video.swing_type,
       videoType: video.video_type,
       existingFields: {
-        improvement: video.improvement,
-        keyIssue: video.key_issue,
         lessonSummary: video.lesson_summary,
-        memberFacingNotes: video.member_facing_notes,
-        practiceAssignment: video.practice_assignment,
-        recommendedDrill: video.recommended_drill,
-        workedOn: video.worked_on,
+        mainFocus: combineRecapText(video.worked_on, video.key_issue),
+        progressObserved: video.improvement,
+        practiceNext: combineRecapText(video.practice_assignment, video.recommended_drill),
+        nextSessionGoal: video.next_session_goal,
       },
     },
     linkedSession,
@@ -556,12 +801,14 @@ async function buildRecapContext(database: D1Database, video: VideoRecapRow, tra
 }
 
 async function generateRecapDraft(env: RecapEnv, database: D1Database, job: ProcessingJobRow, video: VideoRecapRow, transcript: { transcriptId: string; text: string }) {
+  await assertWorkflowCanContinue(database, job.id, video);
   await markJob(database, job.id, { status: "generating_recap", step: "creating_mai_caddy_recap" });
+  await recordProcessingEvent(database, "recap_generation_started", job, "MAI Coach started generating a coach-review lesson recap.");
   const model = env.OPENAI_MODEL || DEFAULT_VIDEO_RECAP_MODEL;
   const normalizedDraft = transcriptLooksUsable(transcript.text)
     ? await (async () => {
       if (!env.OPENAI_API_KEY) {
-        throw new RecapProcessingError("openai_api_key_missing", "OPENAI_API_KEY is not configured for MAI Caddy recap generation.");
+        throw new RecapProcessingError("openai_api_key_missing", "OPENAI_API_KEY is not configured for MAI Coach recap generation.");
       }
       const client = new OpenAI({ apiKey: env.OPENAI_API_KEY, timeout: 45000 });
       const context = await buildRecapContext(database, video, transcript.text);
@@ -583,15 +830,16 @@ async function generateRecapDraft(env: RecapEnv, database: D1Database, job: Proc
         },
       });
       const outputText = response.output_text?.trim();
-      if (!outputText) throw new RecapProcessingError("empty_recap_response", "MAI Caddy did not return a recap draft.");
+      if (!outputText) throw new RecapProcessingError("empty_recap_response", "MAI Coach did not return a recap draft.");
       return normalizeLessonRecapDraft(JSON.parse(outputText) as unknown);
     })()
     : emptyCoachInputDraft();
 
   const status = normalizedDraft.needsCoachInput ? "needs_coach_input" : "ready_for_review";
   const draftId = crypto.randomUUID();
-  await database.prepare("UPDATE video_lesson_recap_drafts SET is_current = 0, status = 'superseded', updated_at = CURRENT_TIMESTAMP WHERE video_id = ? AND processing_version = ? AND status NOT IN ('approved', 'published')")
-    .bind(video.id, job.processing_version)
+  await assertWorkflowCanContinue(database, job.id, video);
+  await database.prepare("UPDATE video_lesson_recap_drafts SET is_current = 0, status = 'superseded', updated_at = CURRENT_TIMESTAMP WHERE video_id = ? AND status NOT IN ('approved', 'published')")
+    .bind(video.id)
     .run();
   await database
     .prepare(
@@ -608,7 +856,7 @@ async function generateRecapDraft(env: RecapEnv, database: D1Database, job: Proc
       video.id,
       transcript.transcriptId,
       video.member_id,
-      video.coach_id,
+	      job.coach_id,
       job.id,
       job.processing_version,
       normalizedDraft.lessonSummary,
@@ -632,6 +880,7 @@ async function generateRecapDraft(env: RecapEnv, database: D1Database, job: Proc
     status: status === "needs_coach_input" ? "no_usable_audio" : "ready_for_review",
     step: status === "needs_coach_input" ? "no_usable_audio_detected" : "ready_for_coach_review",
   });
+  await recordProcessingEvent(database, "recap_generation_completed", job, "MAI Coach created a coach-review lesson recap draft.", { draftId, transcriptId: transcript.transcriptId });
   return draftId;
 }
 
@@ -643,13 +892,15 @@ export async function runVideoLessonRecapWorkflow(env: RecapEnv, event: Workflow
   try {
     const { job, video } = await step.do("Validate video and authorization", () => validateWorkflowInputs(database, params));
     const audioPath = await step.do("Extract coach audio", () => extractAudio(env, database, job, video));
+    await step.do("Recheck processing authorization before transcription", () => assertWorkflowCanContinue(database, job.id, video));
     const transcript = await step.do("Transcribe coach feedback", () => transcribeAudio(env, database, job, video, audioPath));
-    const draftId = await step.do("Create MAI Caddy recap draft", () => generateRecapDraft(env, database, job, video, transcript));
+    await step.do("Recheck processing authorization before recap generation", () => assertWorkflowCanContinue(database, job.id, video));
+    const draftId = await step.do("Create MAI Coach recap draft", () => generateRecapDraft(env, database, job, video, transcript));
     await step.do("Record recap generation completed", async () => {
       await recordActivity({
-        action: "recap_generation_completed",
+            action: "recap_revision_created",
         actor: {
-          displayName: "MAI Caddy",
+          displayName: "MAI Coach",
           email: "mai-caddy@system.local",
           firstName: "MAI",
           id: video.coach_id ?? "system",
@@ -662,17 +913,24 @@ export async function runVideoLessonRecapWorkflow(env: RecapEnv, event: Workflow
         entityType: "video_lesson_recap_draft",
         memberId: video.member_id,
         metadata: { processingJobId: job.id, transcriptId: transcript.transcriptId, videoId: video.id },
-        summary: "MAI Caddy created a coach-review lesson recap draft.",
+        summary: "MAI Coach created a coach-review lesson recap draft.",
         targetUserId: video.member_id,
       });
     });
   } catch (error) {
     const safe = jobError(error);
+    await cleanupTemporaryAudio(env, database, params.processingJobId);
     await markJob(database, params.processingJobId, {
       errorCode: safe.code,
       errorMessage: safe.message,
       status: safe.status,
-      step: safe.status === "no_usable_audio" ? "no_usable_audio_detected" : "failed",
+      step: safe.status === "no_usable_audio"
+        ? "no_usable_audio_detected"
+        : safe.status === "coach_relationship_changed"
+          ? "coach_relationship_changed"
+          : safe.status === "cancelled"
+            ? "cancelled"
+            : "failed",
     });
     throw error;
   }
@@ -758,6 +1016,10 @@ export async function readVideoRecapState(identity: AuthIdentity, videoId: strin
   const transcript = draft
     ? await database.prepare("SELECT * FROM video_transcripts WHERE id = ?").bind(draft.transcript_id).first<TranscriptRow>()
     : null;
+  if (draft || transcript || job) assertRowsMatch(video, draft ?? null, transcript ?? null, job ?? null);
+  if (draft && draft.status !== "published" && identity.role === "coach" && !canReview) {
+    throw new Response("You do not have access to this lesson recap.", { status: 403 });
+  }
 
   return Response.json({
     canReview,
@@ -793,9 +1055,17 @@ export async function updateVideoRecapState(identity: AuthIdentity, payload: Rec
     .prepare("SELECT * FROM video_lesson_recap_drafts WHERE video_id = ? AND is_current = 1 ORDER BY created_at DESC LIMIT 1")
     .bind(video.id)
     .first<DraftRow>();
-  if (!draft && action !== "retry") throw new Response("No AI recap draft exists yet.", { status: 404 });
+  if (!draft && !["cancelProcessing", "regenerateRecapFromTranscript", "retry", "retranscribeVideo"].includes(action)) {
+    throw new Response("No AI recap draft exists yet.", { status: 404 });
+  }
+  const transcript = draft
+    ? await database.prepare("SELECT * FROM video_transcripts WHERE id = ?").bind(draft.transcript_id).first<TranscriptRow>()
+    : null;
+  const draftJob = draft ? await loadJob(database, draft.processing_job_id) : null;
+  if (draft || transcript || draftJob) assertRowsMatch(video, draft ?? null, transcript ?? null, draftJob ?? null);
 
   if (action === "saveDraft" && draft) {
+    assertDraftIsMutable(draft, action);
     await database
       .prepare(
         `UPDATE video_lesson_recap_drafts SET
@@ -824,15 +1094,16 @@ export async function updateVideoRecapState(identity: AuthIdentity, payload: Rec
       entityType: "video_lesson_recap_draft",
       memberId: video.member_id,
       metadata: { videoId: video.id },
-      summary: `${identity.displayName} edited the MAI Caddy lesson recap draft.`,
+      summary: `${identity.displayName} edited the MAI Coach lesson recap draft.`,
       targetUserId: video.member_id,
     });
   }
 
   if (action === "editTranscript" && draft) {
+    assertDraftIsMutable(draft, action);
     await database
-      .prepare("UPDATE video_transcripts SET transcript_text = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-      .bind(text(payload.transcriptText, 120_000), draft.transcript_id)
+      .prepare("UPDATE video_transcripts SET transcript_text = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND video_id = ? AND member_id = ?")
+      .bind(text(payload.transcriptText, 120_000), draft.transcript_id, video.id, video.member_id)
       .run();
     await recordActivity({
       action: "coach_edited_transcript",
@@ -848,6 +1119,7 @@ export async function updateVideoRecapState(identity: AuthIdentity, payload: Rec
   }
 
   if (action === "approveAndPublish" && draft) {
+    assertDraftIsMutable(draft, action);
     if (video.upload_status !== "ready") throw new Response("Finish uploading the video before publishing the recap.", { status: 409 });
     const now = new Date().toISOString();
     await database.batch([
@@ -881,8 +1153,8 @@ export async function updateVideoRecapState(identity: AuthIdentity, payload: Rec
             practice_assignment = ?, recommended_drill = ?, member_facing_notes = ?,
             next_session_goal = ?, publication_status = 'Published', review_status = 'Coach Feedback',
             updated_at = CURRENT_TIMESTAMP
-           WHERE id = ? AND member_id = ? AND coach_id = ?`,
-        )
+	           WHERE id = ? AND member_id = ?`,
+	        )
         .bind(
           text(payload.lessonSummary),
           text(payload.workedOn),
@@ -894,26 +1166,26 @@ export async function updateVideoRecapState(identity: AuthIdentity, payload: Rec
           text(payload.nextSessionGoal),
           video.id,
           video.member_id,
-          video.coach_id,
-        ),
+	        ),
       database
         .prepare("UPDATE video_ai_processing_jobs SET status = 'published', current_step = 'published', completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ?")
         .bind(draft.processing_job_id),
     ]);
     await recordActivity({
-      action: "coach_published_recap",
+      action: "recap_published",
       actor: identity,
       database,
       entityId: draft.id,
       entityType: "video_lesson_recap_draft",
       memberId: video.member_id,
       metadata: { processingJobId: draft.processing_job_id, videoId: video.id },
-      summary: `${identity.displayName} approved and published a coach-reviewed MAI Caddy recap.`,
+      summary: `${identity.displayName} approved and published a coach-reviewed MAI Coach recap.`,
       targetUserId: video.member_id,
     });
   }
 
   if (action === "cancel" && draft) {
+    assertDraftIsMutable(draft, action);
     await database
       .prepare("UPDATE video_ai_processing_jobs SET status = 'cancelled', current_step = 'cancelled', completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .bind(draft.processing_job_id)
@@ -921,6 +1193,7 @@ export async function updateVideoRecapState(identity: AuthIdentity, payload: Rec
   }
 
   if (action === "markIncorrect" && draft) {
+    assertDraftIsMutable(draft, action);
     await database.batch([
       database
         .prepare("UPDATE video_lesson_recap_drafts SET status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?")
@@ -946,14 +1219,53 @@ export async function updateVideoRecapState(identity: AuthIdentity, payload: Rec
       entityType: "video_lesson_recap_draft",
       memberId: video.member_id,
       metadata: { videoId: video.id },
-      summary: `${identity.displayName} marked a MAI Caddy recap draft as incorrect.`,
+      summary: `${identity.displayName} marked a MAI Coach recap draft as incorrect.`,
       targetUserId: video.member_id,
     });
   }
 
-  if (action === "retry") {
-    await createVideoRecapProcessingJob(database, identity, video.id, true, text(payload.language, 12) || "en");
-    await queueVideoRecapWorkflowAfterUpload(database, identity, video.id);
+  if (action === "cancelProcessing") {
+    await cancelActiveProcessing(database, identity, video);
+  }
+
+  if (action === "regenerateRecapFromTranscript") {
+    await regenerateRecapFromCurrentTranscript(database, identity, video, text(payload.language, 12) || "en");
+  }
+
+  if (action === "retry" || action === "retranscribeVideo") {
+    const activeJob = await loadActiveJob(database, video.id);
+    if (activeJob) {
+      return readVideoRecapState(identity, video.id);
+    }
+    const jobId = await createVideoRecapProcessingJob(database, identity, video.id, true, text(payload.language, 12) || "en");
+    if (jobId) {
+      const job = await loadJob(database, jobId);
+      if (job) {
+        await recordActivity({
+          action: "processing_retried",
+          actor: identity,
+          database,
+          entityId: job.id,
+          entityType: "video_ai_processing_job",
+          memberId: video.member_id,
+          metadata: { retryType: "retranscribe_video", videoId: video.id },
+          summary: `${identity.displayName} requested MAI Coach retranscription from the original video.`,
+          targetUserId: video.member_id,
+        });
+        await recordActivity({
+          action: "transcript_revision_created",
+          actor: identity,
+          database,
+          entityId: job.id,
+          entityType: "video_ai_processing_job",
+          memberId: video.member_id,
+          metadata: { videoId: video.id },
+          summary: `${identity.displayName} started a new transcript revision for a lesson video.`,
+          targetUserId: video.member_id,
+        });
+      }
+      await queueVideoRecapWorkflowAfterUpload(database, identity, video.id);
+    }
   }
 
   return readVideoRecapState(identity, video.id);

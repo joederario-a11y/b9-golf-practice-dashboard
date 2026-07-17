@@ -57,13 +57,13 @@ export async function GET(request: Request) {
         <head>
           <meta charset="utf-8" />
           <meta name="viewport" content="width=device-width,initial-scale=1" />
-          <title>Free Range Golf Development Login</title>
+          <title>MAI Coach Development Login</title>
           <style>
-            body{margin:0;background:#07110d;color:#f4f7f5;font:16px system-ui;display:grid;min-height:100vh;place-items:center}
-            form{width:min(520px,calc(100vw - 32px));display:grid;gap:14px;border:1px solid rgba(255,255,255,.12);background:#111d19;padding:24px;border-radius:8px}
+            body{margin:0;background:#10171F;color:#FFFFFF;font:16px system-ui;display:grid;min-height:100vh;place-items:center}
+            form{width:min(520px,calc(100vw - 32px));display:grid;gap:14px;border:1px solid rgba(255,255,255,.12);background:#151f29;padding:24px;border-radius:8px}
             h1,p{margin:0} p{color:#a8b3ad;line-height:1.5} label{display:grid;gap:6px;font-weight:700}
             input,select,button{font:inherit;border-radius:6px;padding:11px;border:1px solid rgba(255,255,255,.12)}
-            input,select{background:#0b1511;color:#f4f7f5} button{background:#35f27a;color:#050b09;font-weight:800;cursor:pointer}
+            input,select{background:#10171F;color:#FFFFFF} button{background:#96cb39;color:#090d12;font-weight:800;cursor:pointer}
           </style>
         </head>
         <body>
@@ -77,7 +77,7 @@ export async function GET(request: Request) {
             <label>First name<input name="firstName" placeholder="Zac" /></label>
             <label>Last name<input name="lastName" placeholder="Coach" /></label>
             <label>Role<select name="role"><option value="coach">Coach</option><option value="member">Member</option><option value="admin">Admin</option></select></label>
-            <button type="submit">Continue to Free Range Golf</button>
+            <button type="submit">Continue to MAI Coach</button>
           </form>
         </body>
       </html>`,

@@ -24,6 +24,7 @@ interface Env {
   OPENAI_TRANSCRIPTION_MODEL?: string;
   VIDEO_LESSON_RECAP_WORKFLOW?: {
     create(options?: { id?: string; params?: unknown }): Promise<{ id: string }>;
+    get(id: string): Promise<{ id: string; terminate(): Promise<void> }>;
   };
   IMAGES: {
     input(stream: ReadableStream): {

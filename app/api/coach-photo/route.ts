@@ -1,6 +1,6 @@
 import {
-  canManageCoachPhoto,
-  canViewCoachPhoto,
+  canManageUserPhoto,
+  canViewUserPhoto,
   MAX_COACH_HEADSHOT_BYTES,
   sniffImageMimeType,
   validateCoachHeadshotFile,
@@ -15,9 +15,9 @@ import {
   type AuthIdentity,
 } from "@/lib/server/platform";
 
-type CoachImageRow = {
+type UserImageRow = {
   id: string;
-  coach_user_id: string;
+  user_id: string;
   storage_path: string;
   original_file_name: string;
   mime_type: string;
@@ -26,12 +26,12 @@ type CoachImageRow = {
   updated_at: string;
 };
 
-type CoachUserRow = {
+type AppUserRow = {
   id: string;
   first_name: string;
   last_name: string;
   email: string;
-  role: string;
+  role: "admin" | "coach" | "member";
 };
 
 function text(value: unknown, maxLength: number) {
@@ -39,7 +39,7 @@ function text(value: unknown, maxLength: number) {
 }
 
 function displayName(row: { first_name: string; last_name: string; email?: string }) {
-  return [row.first_name, row.last_name].filter(Boolean).join(" ") || row.email || "Coach";
+  return [row.first_name, row.last_name].filter(Boolean).join(" ") || row.email || "User";
 }
 
 function safeFileName(value: string) {
@@ -52,11 +52,16 @@ function extensionForMime(mimeType: string) {
   return "jpg";
 }
 
-async function getCoach(database: D1Database, coachId: string) {
+function photoUrl(userId: string, imageId: string, version = Date.now().toString()) {
+  const params = new URLSearchParams({ imageId, userId, v: version });
+  return `/api/coach-photo?${params.toString()}`;
+}
+
+async function getUser(database: D1Database, userId: string) {
   return database
-    .prepare("SELECT id, first_name, last_name, email, role FROM users WHERE id = ? AND role = 'coach'")
-    .bind(coachId)
-    .first<CoachUserRow>();
+    .prepare("SELECT id, first_name, last_name, email, role FROM users WHERE id = ?")
+    .bind(userId)
+    .first<AppUserRow>();
 }
 
 async function memberIsAssignedToCoach(database: D1Database, memberId: string, coachId: string) {
@@ -67,22 +72,28 @@ async function memberIsAssignedToCoach(database: D1Database, memberId: string, c
   return Boolean(row);
 }
 
-async function canViewCoach(identity: AuthIdentity, database: D1Database, coachId: string) {
-  const isAssignedMember = identity.role === "member" ? await memberIsAssignedToCoach(database, identity.id, coachId) : false;
-  return canViewCoachPhoto(identity, coachId, isAssignedMember);
+async function relationshipFor(identity: AuthIdentity, database: D1Database, targetUser: AppUserRow) {
+  return {
+    isAssignedCoach: identity.role === "coach" && targetUser.role === "member"
+      ? await memberIsAssignedToCoach(database, targetUser.id, identity.id)
+      : false,
+    isAssignedMember: identity.role === "member" && targetUser.role === "coach"
+      ? await memberIsAssignedToCoach(database, identity.id, targetUser.id)
+      : false,
+  };
 }
 
-async function getCurrentImage(database: D1Database, coachId: string, imageId?: string) {
+async function getCurrentImage(database: D1Database, userId: string, imageId?: string) {
   const query = imageId
-    ? `SELECT * FROM coach_profile_images
-       WHERE coach_user_id = ? AND id = ? AND is_current = 1`
-    : `SELECT * FROM coach_profile_images
-       WHERE coach_user_id = ? AND is_current = 1
+    ? `SELECT * FROM user_profile_images
+       WHERE user_id = ? AND id = ? AND is_current = 1`
+    : `SELECT * FROM user_profile_images
+       WHERE user_id = ? AND is_current = 1
        ORDER BY updated_at DESC LIMIT 1`;
   const statement = database.prepare(query);
   return imageId
-    ? statement.bind(coachId, imageId).first<CoachImageRow>()
-    : statement.bind(coachId).first<CoachImageRow>();
+    ? statement.bind(userId, imageId).first<UserImageRow>()
+    : statement.bind(userId).first<UserImageRow>();
 }
 
 async function validateUploadedImage(file: File) {
@@ -100,26 +111,31 @@ async function validateUploadedImage(file: File) {
   return { bytes, mimeType: actualMimeType };
 }
 
+function imagePathIsSafe(image: UserImageRow, userId: string) {
+  if (image.storage_path.includes("..")) return false;
+  return image.storage_path.startsWith(`user-profile-images/${userId}/`) ||
+    image.storage_path.startsWith(`coach-profile-images/${userId}/`);
+}
+
 export async function GET(request: Request) {
   try {
     const identity = await requireIdentity();
     const database = getRequiredDatabase();
     await ensurePlatformSchema(database);
     const url = new URL(request.url);
-    const coachId = text(url.searchParams.get("coachId"), 80);
+    const userId = text(url.searchParams.get("userId"), 80) || text(url.searchParams.get("coachId"), 80);
     const imageId = text(url.searchParams.get("imageId"), 80);
-    if (!coachId) return Response.json({ error: "coachId is required." }, { status: 400 });
-    if (!(await canViewCoach(identity, database, coachId))) {
-      return Response.json({ error: "You do not have access to that coach image." }, { status: 403 });
+    if (!userId) return Response.json({ error: "userId is required." }, { status: 400 });
+    const user = await getUser(database, userId);
+    if (!user) return Response.json({ error: "User image not found." }, { status: 404 });
+    const relationship = await relationshipFor(identity, database, user);
+    if (!canViewUserPhoto(identity, user, relationship)) {
+      return Response.json({ error: "You do not have access to that user image." }, { status: 403 });
     }
-    const image = await getCurrentImage(database, coachId, imageId || undefined);
-    if (!image) return Response.json({ error: "Coach image not found." }, { status: 404 });
-    const expectedPrefix = `coach-profile-images/${coachId}/`;
-    if (!image.storage_path.startsWith(expectedPrefix) || image.storage_path.includes("..")) {
-      return Response.json({ error: "Coach image reference is invalid." }, { status: 404 });
-    }
+    const image = await getCurrentImage(database, userId, imageId || undefined);
+    if (!image || !imagePathIsSafe(image, userId)) return Response.json({ error: "User image not found." }, { status: 404 });
     const object = await getRequiredVideoStorage().get(image.storage_path);
-    if (!object) return Response.json({ error: "Coach image not found." }, { status: 404 });
+    if (!object) return Response.json({ error: "User image not found." }, { status: 404 });
     const headers = new Headers();
     object.writeHttpMetadata(headers);
     headers.set("Content-Type", image.mime_type);
@@ -137,44 +153,45 @@ export async function POST(request: Request) {
     const database = getRequiredDatabase();
     await ensurePlatformSchema(database);
     const form = await request.formData();
-    const coachId = text(form.get("coachId"), 80) || identity.id;
-    if (!canManageCoachPhoto(identity, coachId)) {
-      return Response.json({ error: "You cannot edit that coach image." }, { status: 403 });
+    const userId = text(form.get("userId"), 80) || text(form.get("coachId"), 80) || identity.id;
+    const user = await getUser(database, userId);
+    if (!user) return Response.json({ error: "User not found." }, { status: 404 });
+    const relationship = await relationshipFor(identity, database, user);
+    if (!canManageUserPhoto(identity, user, relationship)) {
+      return Response.json({ error: "You cannot edit that user image." }, { status: 403 });
     }
-    const coach = await getCoach(database, coachId);
-    if (!coach) return Response.json({ error: "Coach not found." }, { status: 404 });
     const image = form.get("image");
     if (!(image instanceof File)) {
       return Response.json({ error: "Choose a JPG, PNG, or WebP headshot." }, { status: 400 });
     }
     const { bytes, mimeType } = await validateUploadedImage(image);
-    const current = await getCurrentImage(database, coachId);
+    const current = await getCurrentImage(database, userId);
     const imageId = crypto.randomUUID();
-    const storagePath = `coach-profile-images/${coachId}/${imageId}.${extensionForMime(mimeType)}`;
+    const storagePath = `user-profile-images/${userId}/${imageId}.${extensionForMime(mimeType)}`;
     const bucket = getRequiredVideoStorage();
     try {
       await bucket.put(storagePath, bytes, {
         httpMetadata: { contentType: mimeType },
         customMetadata: {
-          coachId,
           originalFileName: safeFileName(image.name),
           uploadedBy: identity.id,
+          userId,
         },
       });
       await database.batch([
         database
-          .prepare("UPDATE coach_profile_images SET is_current = 0, updated_at = CURRENT_TIMESTAMP WHERE coach_user_id = ? AND is_current = 1")
-          .bind(coachId),
+          .prepare("UPDATE user_profile_images SET is_current = 0, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND is_current = 1")
+          .bind(userId),
         database
           .prepare(
-            `INSERT INTO coach_profile_images (
-              id, coach_user_id, storage_path, original_file_name, mime_type,
+            `INSERT INTO user_profile_images (
+              id, user_id, storage_path, original_file_name, mime_type,
               file_size, is_current, created_by, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
           )
           .bind(
             imageId,
-            coachId,
+            userId,
             storagePath,
             safeFileName(image.name),
             mimeType,
@@ -190,25 +207,23 @@ export async function POST(request: Request) {
       await bucket.delete(current.storage_path).catch(() => undefined);
     }
     await recordActivity({
-      action: current
-        ? identity.role === "admin" ? "admin_replaced_coach_photo" : "coach_replaced_profile_photo"
-        : identity.role === "admin" ? "admin_uploaded_coach_photo" : "coach_uploaded_profile_photo",
+      action: current ? "user_profile_photo_replaced" : "user_profile_photo_uploaded",
       actor: identity,
       database,
       entityId: imageId,
-      entityType: "coach_profile_image",
-      metadata: { coachId, mimeType, size: bytes.byteLength },
-      summary: `${identity.displayName} ${current ? "replaced" : "uploaded"} ${displayName(coach)}'s coach photo.`,
-      targetUserId: coachId,
+      entityType: "user_profile_image",
+      metadata: { mimeType, role: user.role, size: bytes.byteLength, userId },
+      summary: `${identity.displayName} ${current ? "replaced" : "uploaded"} ${displayName(user)}'s profile photo.`,
+      targetUserId: userId,
     });
     return Response.json({
       ok: true,
       photo: {
-        id: imageId,
-        coachId,
-        mimeType,
         fileSize: bytes.byteLength,
-        url: `/api/coach-photo?coachId=${encodeURIComponent(coachId)}&imageId=${encodeURIComponent(imageId)}&v=${Date.now()}`,
+        id: imageId,
+        mimeType,
+        url: photoUrl(userId, imageId),
+        userId,
       },
     });
   } catch (error) {
@@ -221,29 +236,30 @@ export async function DELETE(request: Request) {
     const identity = await requireIdentity();
     const database = getRequiredDatabase();
     await ensurePlatformSchema(database);
-    const payload = await request.json().catch(() => ({})) as { coachId?: unknown };
-    const coachId = text(payload.coachId, 80) || identity.id;
-    if (!canManageCoachPhoto(identity, coachId)) {
-      return Response.json({ error: "You cannot edit that coach image." }, { status: 403 });
+    const payload = await request.json().catch(() => ({})) as { coachId?: unknown; userId?: unknown };
+    const userId = text(payload.userId, 80) || text(payload.coachId, 80) || identity.id;
+    const user = await getUser(database, userId);
+    if (!user) return Response.json({ error: "User not found." }, { status: 404 });
+    const relationship = await relationshipFor(identity, database, user);
+    if (!canManageUserPhoto(identity, user, relationship)) {
+      return Response.json({ error: "You cannot edit that user image." }, { status: 403 });
     }
-    const coach = await getCoach(database, coachId);
-    if (!coach) return Response.json({ error: "Coach not found." }, { status: 404 });
-    const current = await getCurrentImage(database, coachId);
+    const current = await getCurrentImage(database, userId);
     if (!current) return Response.json({ ok: true, removed: false });
     await database
-      .prepare("UPDATE coach_profile_images SET is_current = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .prepare("UPDATE user_profile_images SET is_current = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .bind(current.id)
       .run();
     await getRequiredVideoStorage().delete(current.storage_path).catch(() => undefined);
     await recordActivity({
-      action: identity.role === "admin" ? "admin_removed_coach_photo" : "coach_removed_profile_photo",
+      action: "user_profile_photo_removed",
       actor: identity,
       database,
       entityId: current.id,
-      entityType: "coach_profile_image",
-      metadata: { coachId },
-      summary: `${identity.displayName} removed ${displayName(coach)}'s coach photo.`,
-      targetUserId: coachId,
+      entityType: "user_profile_image",
+      metadata: { role: user.role, userId },
+      summary: `${identity.displayName} removed ${displayName(user)}'s profile photo.`,
+      targetUserId: userId,
     });
     return Response.json({ ok: true, removed: true });
   } catch (error) {

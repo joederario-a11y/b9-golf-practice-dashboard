@@ -577,7 +577,7 @@ function insufficientDataAnalysis(context: ReturnType<typeof buildAnalysisContex
     : ["At least three usable shots are needed for a reliable coaching pattern."];
 
   return {
-    headline: "MAI Caddy needs a few more usable shots before giving a full session read.",
+    headline: "MAI Coach needs a few more usable shots before giving a full session read.",
     dataQuality: {
       confidence: "low",
       usableShotCount: context.dataQuality.usableShotCount,
@@ -602,7 +602,7 @@ function insufficientDataAnalysis(context: ReturnType<typeof buildAnalysisContex
       {
         drill: "Baseline block",
         problemAddressed: "Not enough comparable shots",
-        whyThisFits: "A larger same-club sample lets MAI Caddy identify carry, face/path, launch, and dispersion trends responsibly.",
+        whyThisFits: "A larger same-club sample lets MAI Coach identify carry, face/path, launch, and dispersion trends responsibly.",
         setup: `Hit 8 to 12 more ${context.session.primaryClub} shots with the same target line and normal routine.`,
         feel: "Make normal swings instead of chasing a correction.",
         metricToMonitor: "Carry distance and offline distance",
@@ -625,7 +625,7 @@ function insufficientDataAnalysis(context: ReturnType<typeof buildAnalysisContex
 function getString(record: Record<string, unknown>, key: string) {
   const value = record[key];
   if (typeof value !== "string" || !value.trim()) {
-    throw new AnalysisError(502, "schema_validation_failed", `MAI Caddy returned an invalid ${key}.`);
+    throw new AnalysisError(502, "schema_validation_failed", `MAI Coach returned an invalid ${key}.`);
   }
   return value.trim();
 }
@@ -633,7 +633,7 @@ function getString(record: Record<string, unknown>, key: string) {
 function getEnum<T extends string>(record: Record<string, unknown>, key: string, values: readonly T[]) {
   const value = getString(record, key);
   if (!values.includes(value as T)) {
-    throw new AnalysisError(502, "schema_validation_failed", `MAI Caddy returned an invalid ${key}.`);
+    throw new AnalysisError(502, "schema_validation_failed", `MAI Coach returned an invalid ${key}.`);
   }
   return value as T;
 }
@@ -641,13 +641,13 @@ function getEnum<T extends string>(record: Record<string, unknown>, key: string,
 function getNumber(record: Record<string, unknown>, key: string, options: { min?: number; max?: number } = {}) {
   const value = record[key];
   if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new AnalysisError(502, "schema_validation_failed", `MAI Caddy returned an invalid ${key}.`);
+    throw new AnalysisError(502, "schema_validation_failed", `MAI Coach returned an invalid ${key}.`);
   }
   if (options.min !== undefined && value < options.min) {
-    throw new AnalysisError(502, "schema_validation_failed", `MAI Caddy returned ${key} below the allowed range.`);
+    throw new AnalysisError(502, "schema_validation_failed", `MAI Coach returned ${key} below the allowed range.`);
   }
   if (options.max !== undefined && value > options.max) {
-    throw new AnalysisError(502, "schema_validation_failed", `MAI Caddy returned ${key} above the allowed range.`);
+    throw new AnalysisError(502, "schema_validation_failed", `MAI Coach returned ${key} above the allowed range.`);
   }
   return value;
 }
@@ -655,7 +655,7 @@ function getNumber(record: Record<string, unknown>, key: string, options: { min?
 function getObject(record: Record<string, unknown>, key: string) {
   const value = record[key];
   if (!isRecord(value)) {
-    throw new AnalysisError(502, "schema_validation_failed", `MAI Caddy returned an invalid ${key}.`);
+    throw new AnalysisError(502, "schema_validation_failed", `MAI Coach returned an invalid ${key}.`);
   }
   return value;
 }
@@ -663,14 +663,14 @@ function getObject(record: Record<string, unknown>, key: string) {
 function getStringArray(record: Record<string, unknown>, key: string) {
   const value = record[key];
   if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
-    throw new AnalysisError(502, "schema_validation_failed", `MAI Caddy returned an invalid ${key}.`);
+    throw new AnalysisError(502, "schema_validation_failed", `MAI Coach returned an invalid ${key}.`);
   }
   return value;
 }
 
 function validateAnalysisOutput(value: unknown): MaiCaddyAnalysisOutput {
   if (!isRecord(value)) {
-    throw new AnalysisError(502, "schema_validation_failed", "MAI Caddy did not return structured analysis.");
+    throw new AnalysisError(502, "schema_validation_failed", "MAI Coach did not return structured analysis.");
   }
 
   const dataQuality = getObject(value, "dataQuality");
@@ -749,14 +749,14 @@ function parseOpenAIOutput(outputText: string) {
     return validateAnalysisOutput(JSON.parse(outputText) as unknown);
   } catch (error) {
     if (error instanceof AnalysisError) throw error;
-    throw new AnalysisError(502, "schema_validation_failed", "MAI Caddy did not return valid structured analysis.");
+    throw new AnalysisError(502, "schema_validation_failed", "MAI Coach did not return valid structured analysis.");
   }
 }
 
 async function callOpenAI(context: ReturnType<typeof buildAnalysisContext>, model: string) {
   const runtime = getPlatformEnvironment();
   if (!runtime.OPENAI_API_KEY) {
-    throw new AnalysisError(503, "openai_api_key_missing", "MAI Caddy is not connected yet. Add OPENAI_API_KEY to the Worker environment and retry.");
+    throw new AnalysisError(503, "openai_api_key_missing", "MAI Coach is not connected yet. Add OPENAI_API_KEY to the Worker environment and retry.");
   }
 
   const client = new OpenAI({
@@ -792,7 +792,7 @@ async function callOpenAI(context: ReturnType<typeof buildAnalysisContext>, mode
 
   const outputText = response.output_text?.trim();
   if (!outputText) {
-    throw new AnalysisError(502, "empty_openai_response", "MAI Caddy did not return a readable analysis.");
+    throw new AnalysisError(502, "empty_openai_response", "MAI Coach did not return a readable analysis.");
   }
   return parseOpenAIOutput(outputText);
 }
@@ -810,7 +810,7 @@ async function startProcessingAnalysis(database: D1Database, identity: AuthIdent
     .first<{ id: string; started_at: string | null }>();
 
   if (processing?.started_at && Date.now() - new Date(processing.started_at).getTime() < 1000 * 60 * 3) {
-    throw new AnalysisError(409, "analysis_already_processing", "MAI Caddy is already analyzing this session. Try again in a moment.");
+    throw new AnalysisError(409, "analysis_already_processing", "MAI Coach is already analyzing this session. Try again in a moment.");
   }
 
   const now = new Date().toISOString();
@@ -881,19 +881,19 @@ async function updateAnalysisRecord(values: {
 
 function analysisError(error: unknown) {
   if (error instanceof AnalysisError) return error;
-  const message = error instanceof Error ? error.message : "MAI Caddy could not analyze this session.";
+  const message = error instanceof Error ? error.message : "MAI Coach could not analyze this session.";
   if (/rate.?limit/i.test(message)) {
-    return new AnalysisError(429, "openai_rate_limited", "MAI Caddy is busy right now. Please retry in a minute.");
+    return new AnalysisError(429, "openai_rate_limited", "MAI Coach is busy right now. Please retry in a minute.");
   }
   if (/timeout|timed out|abort/i.test(message)) {
-    return new AnalysisError(504, "openai_timeout", "MAI Caddy took too long to respond. Please retry.");
+    return new AnalysisError(504, "openai_timeout", "MAI Coach took too long to respond. Please retry.");
   }
-  return new AnalysisError(502, "openai_request_failed", "MAI Caddy could not complete this analysis. Please retry.");
+  return new AnalysisError(502, "openai_request_failed", "MAI Coach could not complete this analysis. Please retry.");
 }
 
 function serializeAnalysis(row: AnalysisRow, session: StoredSession | null = null) {
-  const analysis = safeParseJson(row.analysis_json, "malformed_analysis_json", "Saved MAI Caddy analysis could not be read.");
-  const calculatedMetrics = safeParseJson(row.calculated_metrics_json, "malformed_metrics_json", "Saved MAI Caddy metrics could not be read.");
+  const analysis = safeParseJson(row.analysis_json, "malformed_analysis_json", "Saved MAI Coach analysis could not be read.");
+  const calculatedMetrics = safeParseJson(row.calculated_metrics_json, "malformed_metrics_json", "Saved MAI Coach metrics could not be read.");
   const metricsRecord = isRecord(calculatedMetrics) && isRecord(calculatedMetrics.metricSummaries)
     ? calculatedMetrics as unknown as SessionMetrics
     : null;
@@ -915,7 +915,7 @@ function serializeAnalysis(row: AnalysisRow, session: StoredSession | null = nul
     error: row.error_code
       ? {
           code: row.error_code,
-          message: row.error_message ?? "MAI Caddy could not complete this analysis.",
+          message: row.error_message ?? "MAI Coach could not complete this analysis.",
         }
       : null,
     contextSummary: session && metricsRecord
@@ -1007,7 +1007,7 @@ export async function analyzeStoredSession(identity: AuthIdentity, sessionId: st
       .first<AnalysisRow>();
 
     if (!row) {
-      throw new AnalysisError(500, "analysis_save_failed", "MAI Caddy analysis was created but could not be loaded.");
+      throw new AnalysisError(500, "analysis_save_failed", "MAI Coach analysis was created but could not be loaded.");
     }
 
     return Response.json(serializeAnalysis(row, session));

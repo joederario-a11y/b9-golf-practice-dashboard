@@ -5,7 +5,7 @@ set -euo pipefail
 cd -- "$(dirname -- "$0")"
 
 site_url="http://localhost:3000/"
-log_file="$PWD/free-range-golf-server.log"
+log_file="$PWD/mai-coach-server.log"
 bridge_pid=""
 server_pid=""
 
@@ -15,7 +15,7 @@ handle_exit() {
 
   if (( exit_code != 0 )); then
     echo
-    echo "Free Range Golf did not start. The startup details are saved here:"
+    echo "MAI Coach did not start. The startup details are saved here:"
     echo "$log_file"
     read -r "?Press Return to close."
   fi
@@ -50,11 +50,11 @@ if ! command -v npm >/dev/null 2>&1; then
 fi
 
 if [[ ! -d node_modules ]]; then
-  echo "Preparing Free Range Golf for its first launch..."
+  echo "Preparing MAI Coach for its first launch..."
   npm install
 fi
 
-echo "Starting Free Range Golf..."
+echo "Starting MAI Coach..."
 echo "Keep this window open while using the site. Press Control-C here to stop it."
 echo "Startup log: $log_file"
 

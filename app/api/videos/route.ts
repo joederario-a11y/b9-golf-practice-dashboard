@@ -5,7 +5,9 @@ import {
   validateThumbnailFile,
   validateVideoFile,
 } from "@/lib/video-policy.mjs";
+import { videoOwnershipChangeError } from "@/lib/video-upload-safety.mjs";
 import {
+  ensureCoachFeedbackSchema,
   ensurePlatformSchema,
   getAssignedMemberIds,
   getRequiredDatabase,
@@ -82,6 +84,72 @@ const VIDEO_SELECT = `
   JOIN users AS member ON member.id = videos.member_id
   LEFT JOIN users AS coach ON coach.id = videos.coach_id
 `;
+
+function feedbackArray(...values: unknown[]) {
+  const seen = new Set<string>();
+  return values
+    .map((value) => optionalText(value, 1000) ?? "")
+    .filter((value) => {
+      if (!value || seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    });
+}
+
+async function upsertStructuredCoachFeedback(database: D1Database, video: VideoRow, payload: VideoPayload) {
+  if (!video.coach_id) return;
+  await ensureCoachFeedbackSchema(database);
+  const lessonSummary = optionalText(payload.lessonSummary, 4000) ?? video.lesson_summary;
+  const workedOn = optionalText(payload.workedOn, 4000) ?? video.worked_on;
+  const keyIssue = optionalText(payload.keyIssue, 4000) ?? video.key_issue;
+  const improvement = optionalText(payload.improvement, 4000) ?? video.improvement;
+  const practiceAssignment = optionalText(payload.practiceAssignment, 4000) ?? video.practice_assignment;
+  const recommendedDrill = optionalText(payload.recommendedDrill, 4000) ?? video.recommended_drill;
+  const memberFacingNotes = optionalText(payload.memberFacingNotes, 4000) ?? video.member_facing_notes;
+  const nextSessionGoal = optionalText(payload.nextSessionGoal, 4000) ?? video.next_session_goal;
+  const coachNotes = optionalText(payload.coachNotes, 4000) ?? video.coach_notes;
+  const priority = workedOn || keyIssue || video.focus_area || video.title;
+  const id = `feedback-${video.id}`;
+
+  await database
+    .prepare(
+      `INSERT INTO coach_feedback (
+        id, golfer_id, coach_id, lesson_id, session_id, status, priority,
+        observations_json, prescribed_drills_json, swing_feels_json,
+        success_targets_json, raw_notes, source_type, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, 'lesson_video', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT(id) DO UPDATE SET
+        golfer_id = excluded.golfer_id,
+        coach_id = excluded.coach_id,
+        lesson_id = excluded.lesson_id,
+        session_id = excluded.session_id,
+        status = 'active',
+        priority = excluded.priority,
+        observations_json = excluded.observations_json,
+        prescribed_drills_json = excluded.prescribed_drills_json,
+        swing_feels_json = excluded.swing_feels_json,
+        success_targets_json = excluded.success_targets_json,
+        raw_notes = excluded.raw_notes,
+        source_type = excluded.source_type,
+        updated_at = CURRENT_TIMESTAMP,
+        resolved_at = NULL,
+        archived_at = NULL`,
+    )
+    .bind(
+      id,
+      video.member_id,
+      video.coach_id,
+      video.id,
+      optionalText(payload.sessionId, 120) ?? video.session_data_id,
+      priority,
+      JSON.stringify(feedbackArray(lessonSummary, workedOn, keyIssue, improvement, memberFacingNotes)),
+      JSON.stringify(feedbackArray(practiceAssignment, recommendedDrill)),
+      JSON.stringify([]),
+      JSON.stringify(feedbackArray(nextSessionGoal)),
+      feedbackArray(coachNotes, memberFacingNotes).join("\n\n") || null,
+    )
+    .run();
+}
 
 function text(value: unknown, maxLength: number) {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
@@ -197,6 +265,47 @@ async function requireVideoAccess(videoId: string, mode: "read" | "manage") {
   return { assignedMemberIds, database, identity, video };
 }
 
+async function coachAssignedToMember(database: D1Database, coachId: string, memberId: string) {
+  const relationship = await database
+    .prepare("SELECT id FROM coach_members WHERE coach_id = ? AND member_id = ?")
+    .bind(coachId, memberId)
+    .first<{ id: string }>();
+  return Boolean(relationship);
+}
+
+async function selectedCoachForUpload(database: D1Database, identityRole: string, payload: VideoPayload, memberId: string, wantsAi: boolean) {
+  if (identityRole === "member") {
+    return { aiDisabledReason: "Members cannot generate coach voiceover recaps.", coachId: null as string | null };
+  }
+  if (identityRole === "coach") {
+    return { aiDisabledReason: "", coachId: text(payload.coachId, 80) || null };
+  }
+  const requestedCoachId = text(payload.coachId, 80);
+  if (!requestedCoachId) {
+    return {
+      aiDisabledReason: wantsAi ? "Choose an assigned coach before generating a MAI Coach voiceover recap." : "",
+      coachId: null as string | null,
+    };
+  }
+  const coach = await database
+    .prepare("SELECT id FROM users WHERE id = ? AND role = 'coach'")
+    .bind(requestedCoachId)
+    .first<{ id: string }>();
+  if (!coach) {
+    return {
+      aiDisabledReason: wantsAi ? "The selected coach is not a coach account, so AI recap generation was disabled." : "",
+      coachId: null as string | null,
+    };
+  }
+  if (!(await coachAssignedToMember(database, requestedCoachId, memberId))) {
+    return {
+      aiDisabledReason: wantsAi ? "The selected coach is not currently assigned to this member, so AI recap generation was disabled." : "",
+      coachId: null as string | null,
+    };
+  }
+  return { aiDisabledReason: "", coachId: requestedCoachId };
+}
+
 export async function GET(request: Request) {
   try {
     const identity = await requireIdentity();
@@ -272,7 +381,12 @@ export async function POST(request: Request) {
 
     const videoId = crypto.randomUUID();
     const storagePath = `lesson-videos/${memberId}/${videoId}/video`;
-    const coachId = identity.role === "member" ? null : identity.id;
+    const wantsAiRecap = payload.generateAiRecap !== false && identity.role !== "member";
+    const coachSelection = await selectedCoachForUpload(database, identity.role, payload, memberId, wantsAiRecap);
+    const coachId = identity.role === "coach" ? identity.id : coachSelection.coachId;
+    if (identity.role === "coach" && !(await coachAssignedToMember(database, identity.id, memberId))) {
+      return Response.json({ error: "You must be assigned to this member before uploading a coach video." }, { status: 403 });
+    }
     const publicationStatus = text(payload.publicationStatus, 20) === "Published" ? "Published" : "Draft";
     await database
       .prepare(
@@ -323,7 +437,8 @@ export async function POST(request: Request) {
       )
       .run();
 
-    if (coachId && payload.generateAiRecap !== false) {
+    let aiProcessingDisabledReason = coachSelection.aiDisabledReason;
+    if (coachId && wantsAiRecap && !aiProcessingDisabledReason) {
       await createVideoRecapProcessingJob(
         database,
         identity,
@@ -331,10 +446,15 @@ export async function POST(request: Request) {
         payload.generateAiRecap,
         text(payload.processingLanguage, 12) || "en",
       );
+    } else if (!aiProcessingDisabledReason && wantsAiRecap && !coachId) {
+      aiProcessingDisabledReason = "AI recap generation was disabled because no assigned coach was selected.";
     }
 
     const row = await getVideo(database, videoId);
-    return Response.json({ video: row ? serializeVideo(row, identity.role) : null }, { status: 201 });
+    return Response.json({
+      aiProcessingDisabledReason: aiProcessingDisabledReason || undefined,
+      video: row ? serializeVideo(row, identity.role) : null,
+    }, { status: 201 });
   } catch (error) {
     return responseFromError(error);
   }
@@ -469,22 +589,17 @@ export async function PATCH(request: Request) {
       if (publicationStatus === "Published" && video.upload_status !== "ready") {
         return Response.json({ error: "Finish uploading the video file before publishing." }, { status: 409 });
       }
-      const nextMemberId = identity.role === "admin"
-        ? optionalText(payload.memberId, 80) ?? video.member_id
-        : video.member_id;
-      if (nextMemberId !== video.member_id) {
-        const nextMember = await database
-          .prepare("SELECT id FROM users WHERE id = ? AND role = 'member'")
-          .bind(nextMemberId)
-          .first<{ id: string }>();
-        if (!nextMember) {
-          return Response.json({ error: "The reassigned member does not exist." }, { status: 400 });
-        }
+      const requestedMemberId = optionalText(payload.memberId, 80);
+      const ownershipError = videoOwnershipChangeError(video.member_id, requestedMemberId);
+      if (ownershipError) {
+        return Response.json({
+          error: ownershipError,
+        }, { status: 409 });
       }
       await database
         .prepare(
           `UPDATE lesson_videos SET
-            member_id = ?, title = ?, description = ?, coach_notes = ?, coach_private_notes = ?,
+            title = ?, description = ?, coach_notes = ?, coach_private_notes = ?,
             video_type = ?, focus_area = ?, swing_type = ?, club = ?, tags_json = ?,
             session_data_id = ?, duration = ?, lesson_date = ?, publication_status = ?,
             review_status = ?, lesson_summary = ?, worked_on = ?, key_issue = ?,
@@ -493,7 +608,6 @@ export async function PATCH(request: Request) {
           WHERE id = ?`,
         )
         .bind(
-          nextMemberId,
           optionalText(payload.title, 120) ?? video.title,
           optionalText(payload.description, 4000) ?? video.description,
           optionalText(payload.coachNotes, 4000) ?? video.coach_notes,
@@ -521,16 +635,17 @@ export async function PATCH(request: Request) {
         .run();
 
       if (publicationStatus === "Published") {
+        await upsertStructuredCoachFeedback(database, video, payload);
         await recordActivity({
           action: "feedback_submitted",
           actor: identity,
           database,
           entityId: video.id,
           entityType: "video",
-          memberId: nextMemberId,
+          memberId: video.member_id,
           metadata: { publicationStatus },
           summary: `${identity.displayName} published coach feedback for a lesson video.`,
-          targetUserId: nextMemberId,
+          targetUserId: video.member_id,
         });
       }
 

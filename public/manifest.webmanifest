@@ -1,0 +1,17 @@
+{
+  "name": "MAI Coach",
+  "short_name": "MAI Coach",
+  "description": "Turn your golf swing data into clear coaching, personalized drills and actionable feedback with MAI Coach.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#10171F",
+  "theme_color": "#10171F",
+  "icons": [
+    {
+      "src": "/brand/mai-coach/mai-coach-logo-mark.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

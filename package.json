@@ -13,7 +13,7 @@
     "deploy:dry-run": "npm run build:worker && cd dist/server && wrangler deploy --config wrangler.json --dry-run --outdir ../../.wrangler/dry-run",
     "deploy": "npm run build:worker && cd dist/server && wrangler deploy --config wrangler.json",
     "start": "vinext start",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "lint": "node scripts/lint-source.mjs",
     "db:generate": "drizzle-kit generate",
     "test": "node --test tests/*.test.mjs"
   },

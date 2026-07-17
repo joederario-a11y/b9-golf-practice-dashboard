@@ -83,10 +83,10 @@ export async function requestLoginEmail(
   const loginUrl = loginUrlForToken(request, token, redirectPath);
   const runtime = getPlatformEnvironment();
   const emailSubject = isRegistration
-    ? "Your Free Range Golf account is ready"
+    ? "Your MAI Coach account is ready"
     : isPasswordReset
-      ? "Reset your Free Range Golf password"
-      : "Your Free Range Golf login link";
+      ? "Reset your MAI Coach password"
+      : "Your MAI Coach login link";
   const emailFrom = getEmailFromAddress();
   if (!runtime.RESEND_API_KEY || !emailFrom) {
     const localLoginAvailable = canExposeLocalLoginUrl(request);
@@ -111,11 +111,11 @@ export async function requestLoginEmail(
   }
 
   const introCopy = isRegistration
-    ? `Your Free Range Golf ${accountLabel} account has been created. Use this secure link to open your account and finish getting set up.`
+    ? `Your MAI Coach ${accountLabel} account has been created. Use this secure link to open your account and finish getting set up.`
     : isPasswordReset
       ? "Use this secure link to open your account and set a new password."
-    : "Use this secure link to open your Free Range Golf video library.";
-  const buttonText = isRegistration ? "Open your new account" : isPasswordReset ? "Reset password" : "Open Free Range Golf";
+    : "Use this secure link to open your MAI Coach video library.";
+  const buttonText = isRegistration ? "Open your new account" : isPasswordReset ? "Reset password" : "Open MAI Coach";
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -127,11 +127,11 @@ export async function requestLoginEmail(
       to: [normalizedEmail],
       subject: emailSubject,
       html: `
-        <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;color:#17231d;line-height:1.6;">
+        <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;color:#10171F;line-height:1.6;">
           <p>Hi ${escapeHtml(user.first_name || "there")},</p>
           <p>${escapeHtml(introCopy)}</p>
           <p style="margin:28px 0;">
-            <a href="${escapeHtml(loginUrl)}" style="display:inline-block;background:#0b1511;color:#35f27a;text-decoration:none;padding:12px 18px;border-radius:6px;font-weight:700;">${escapeHtml(buttonText)}</a>
+            <a href="${escapeHtml(loginUrl)}" style="display:inline-block;background:#10171F;color:#96cb39;text-decoration:none;padding:12px 18px;border-radius:6px;font-weight:700;">${escapeHtml(buttonText)}</a>
           </p>
           <p>This link expires soon and can only be used once.</p>
         </div>

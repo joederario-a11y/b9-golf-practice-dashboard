@@ -1,4 +1,4 @@
-# Free Range Golf Practice Dashboard
+# MAI Coach Practice Dashboard
 
 Full-stack golf practice and coach video software running on
 [vinext](https://github.com/cloudflare/vinext), Cloudflare Workers, D1, R2,
@@ -61,7 +61,7 @@ Configure these values before publishing from the coach workspace:
 
 ```bash
 RESEND_API_KEY=re_...
-VIDEO_EMAIL_FROM=Back Nine Team <lessons@example.com>
+VIDEO_EMAIL_FROM=MAI Coach <lessons@example.com>
 APP_BASE_URL=https://your-site.example
 ```
 

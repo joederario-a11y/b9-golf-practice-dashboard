@@ -32,6 +32,8 @@ type MemberRow = {
   created_at: string;
   video_count: number;
   last_video_at: string | null;
+  profile_image_id: string | null;
+  profile_image_updated_at: string | null;
 };
 
 function text(value: unknown, maxLength: number) {
@@ -48,6 +50,13 @@ function escapeHtml(value: string) {
 }
 
 function serializeMember(row: MemberRow) {
+  const profileImageUrl = row.profile_image_id
+    ? `/api/coach-photo?${new URLSearchParams({
+        imageId: row.profile_image_id,
+        userId: row.id,
+        v: row.profile_image_updated_at ?? "",
+      }).toString()}`
+    : "";
   return {
     id: row.id,
     name: [row.first_name, row.last_name].filter(Boolean).join(" "),
@@ -61,6 +70,7 @@ function serializeMember(row: MemberRow) {
     createdAt: row.created_at,
     videoCount: Number(row.video_count ?? 0),
     lastVideoAt: row.last_video_at,
+    profileImageUrl,
   };
 }
 
@@ -85,12 +95,12 @@ async function sendMemberInvite(
       body: JSON.stringify({
         from: emailFrom,
         to: [member.email],
-        subject: "Your Free Range Golf video library is ready",
+        subject: "Your MAI Coach video library is ready",
         html: `
-          <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;color:#17231d;line-height:1.6;">
+          <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;color:#10171F;line-height:1.6;">
             <p>Hi ${escapeHtml(member.firstName)},</p>
-            <p>${escapeHtml(coachName)} added you to Free Range Golf so lesson videos and coach notes can be shared with you.</p>
-            <p><a href="${escapeHtml(inviteUrl)}" style="display:inline-block;background:#0b1511;color:#35f27a;text-decoration:none;padding:12px 18px;border-radius:6px;font-weight:700;">Create your login</a></p>
+            <p>${escapeHtml(coachName)} added you to MAI Coach so lesson videos and coach notes can be shared with you.</p>
+            <p><a href="${escapeHtml(inviteUrl)}" style="display:inline-block;background:#10171F;color:#96cb39;text-decoration:none;padding:12px 18px;border-radius:6px;font-weight:700;">Create your login</a></p>
             <p>Use the same email address this invitation was sent to when you log in.</p>
           </div>
         `,
@@ -125,23 +135,31 @@ export async function GET() {
     await ensurePlatformSchema(database);
     const query = identity.role === "admin"
       ? `SELECT
-          users.id, users.first_name, users.last_name, users.email, users.phone,
-          users.skill_level, users.notes, users.invite_status, users.created_at,
-          COUNT(lesson_videos.id) AS video_count,
-          MAX(lesson_videos.created_at) AS last_video_at
-        FROM users
-        LEFT JOIN lesson_videos ON lesson_videos.member_id = users.id
-        WHERE users.role = 'member'
+	          users.id, users.first_name, users.last_name, users.email, users.phone,
+	          users.skill_level, users.notes, users.invite_status, users.created_at,
+	          profile_image.id AS profile_image_id,
+	          profile_image.updated_at AS profile_image_updated_at,
+	          COUNT(lesson_videos.id) AS video_count,
+	          MAX(lesson_videos.created_at) AS last_video_at
+	        FROM users
+	        LEFT JOIN lesson_videos ON lesson_videos.member_id = users.id
+	        LEFT JOIN user_profile_images AS profile_image
+	          ON profile_image.user_id = users.id AND profile_image.is_current = 1
+	        WHERE users.role = 'member'
         GROUP BY users.id
         ORDER BY users.last_name, users.first_name`
       : `SELECT
-          users.id, users.first_name, users.last_name, users.email, users.phone,
-          users.skill_level, users.notes, users.invite_status, users.created_at,
-          COUNT(lesson_videos.id) AS video_count,
-          MAX(lesson_videos.created_at) AS last_video_at
-        FROM coach_members
-        JOIN users ON users.id = coach_members.member_id
-        LEFT JOIN lesson_videos ON lesson_videos.member_id = users.id
+	          users.id, users.first_name, users.last_name, users.email, users.phone,
+	          users.skill_level, users.notes, users.invite_status, users.created_at,
+	          profile_image.id AS profile_image_id,
+	          profile_image.updated_at AS profile_image_updated_at,
+	          COUNT(lesson_videos.id) AS video_count,
+	          MAX(lesson_videos.created_at) AS last_video_at
+	        FROM coach_members
+	        JOIN users ON users.id = coach_members.member_id
+	        LEFT JOIN lesson_videos ON lesson_videos.member_id = users.id
+	        LEFT JOIN user_profile_images AS profile_image
+	          ON profile_image.user_id = users.id AND profile_image.is_current = 1
         WHERE coach_members.coach_id = ?
         GROUP BY users.id
         ORDER BY users.last_name, users.first_name`;
@@ -311,12 +329,16 @@ export async function POST(request: Request) {
     const row = await database
       .prepare(
         `SELECT
-          users.id, users.first_name, users.last_name, users.email, users.phone,
-          users.skill_level, users.notes, users.invite_status, users.created_at,
-          COUNT(lesson_videos.id) AS video_count,
-          MAX(lesson_videos.created_at) AS last_video_at
-        FROM users
-        LEFT JOIN lesson_videos ON lesson_videos.member_id = users.id
+	          users.id, users.first_name, users.last_name, users.email, users.phone,
+	          users.skill_level, users.notes, users.invite_status, users.created_at,
+	          profile_image.id AS profile_image_id,
+	          profile_image.updated_at AS profile_image_updated_at,
+	          COUNT(lesson_videos.id) AS video_count,
+	          MAX(lesson_videos.created_at) AS last_video_at
+	        FROM users
+	        LEFT JOIN lesson_videos ON lesson_videos.member_id = users.id
+	        LEFT JOIN user_profile_images AS profile_image
+	          ON profile_image.user_id = users.id AND profile_image.is_current = 1
         WHERE users.id = ?
         GROUP BY users.id`,
       )

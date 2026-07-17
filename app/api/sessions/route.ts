@@ -4,6 +4,7 @@ import {
   getRequiredDatabase,
   responseFromError,
 } from "@/lib/server/platform";
+import { sanitizeSessionList } from "@/lib/session-data-policy.mjs";
 
 type SessionPayload = {
   sessions?: unknown;
@@ -11,6 +12,16 @@ type SessionPayload = {
 
 function toErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unexpected error";
+}
+
+function parseStoredSessionsJson(value: string | null | undefined) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 export async function GET() {
@@ -22,17 +33,29 @@ export async function GET() {
 
     const database = getRequiredDatabase();
     await ensureUserDataOwnershipSchema(database);
-    const row = await getRequiredDatabase()
+    const row = await database
       .prepare(
         "SELECT sessions_json, updated_at FROM golf_session_snapshots WHERE user_id = ?",
       )
       .bind(identity.id)
       .first<{ sessions_json: string; updated_at: string }>();
+    const rawSessions = parseStoredSessionsJson(row?.sessions_json);
+    const sessions = sanitizeSessionList(rawSessions);
+    if (row && JSON.stringify(sessions) !== row.sessions_json) {
+      await database
+        .prepare(
+          `UPDATE golf_session_snapshots
+           SET sessions_json = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE user_id = ?`,
+        )
+        .bind(JSON.stringify(sessions), identity.id)
+        .run();
+    }
 
     return Response.json({
       mode: "user",
       user: identity,
-      sessions: row ? JSON.parse(row.sessions_json) : [],
+      sessions,
       updatedAt: row?.updated_at ?? null,
     });
   } catch (error) {
@@ -52,6 +75,7 @@ export async function POST(request: Request) {
       return Response.json({ error: "sessions must be an array" }, { status: 400 });
     }
 
+    const sessions = sanitizeSessionList(payload.sessions);
     const database = getRequiredDatabase();
     await ensureUserDataOwnershipSchema(database);
     const existing = await database
@@ -65,7 +89,7 @@ export async function POST(request: Request) {
            SET user_email = ?, display_name = ?, sessions_json = ?, updated_at = CURRENT_TIMESTAMP
            WHERE user_id = ?`,
         )
-        .bind(identity.email, identity.displayName, JSON.stringify(payload.sessions), identity.id)
+        .bind(identity.email, identity.displayName, JSON.stringify(sessions), identity.id)
         .run();
     } else {
       await database
@@ -85,11 +109,11 @@ export async function POST(request: Request) {
             sessions_json = excluded.sessions_json,
             updated_at = CURRENT_TIMESTAMP`,
         )
-        .bind(identity.email, identity.id, identity.displayName, JSON.stringify(payload.sessions))
+        .bind(identity.email, identity.id, identity.displayName, JSON.stringify(sessions))
         .run();
     }
 
-    return Response.json({ ok: true, user: identity });
+    return Response.json({ ok: true, user: identity, sessions, sanitized: sessions.length !== payload.sessions.length });
   } catch (error) {
     return responseFromError(error);
   }

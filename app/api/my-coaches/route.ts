@@ -19,9 +19,9 @@ function displayName(row: { first_name: string; last_name: string; email?: strin
   return [row.first_name, row.last_name].filter(Boolean).join(" ") || row.email || "Coach";
 }
 
-function coachPhotoUrl(coachId: string, imageId?: string | null, version?: string | null) {
+function coachPhotoUrl(userId: string, imageId?: string | null, version?: string | null) {
   if (!imageId) return "";
-  const params = new URLSearchParams({ coachId, imageId });
+  const params = new URLSearchParams({ imageId, userId });
   if (version) params.set("v", version);
   return `/api/coach-photo?${params.toString()}`;
 }
@@ -46,8 +46,8 @@ export async function GET() {
           profile_image.updated_at AS image_updated_at
         FROM coach_members
         JOIN users ON users.id = coach_members.coach_id
-        LEFT JOIN coach_profile_images AS profile_image
-          ON profile_image.coach_user_id = users.id AND profile_image.is_current = 1
+        LEFT JOIN user_profile_images AS profile_image
+          ON profile_image.user_id = users.id AND profile_image.is_current = 1
         WHERE coach_members.member_id = ?
         ORDER BY coach_members.created_at DESC`,
       )

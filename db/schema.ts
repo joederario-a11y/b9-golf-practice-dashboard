@@ -79,6 +79,104 @@ export const maiCaddySessionAnalyses = sqliteTable(
   ],
 );
 
+export const practiceActivities = sqliteTable(
+  "practice_activities",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    generatedBy: text("generated_by").notNull().references(() => users.id, { onDelete: "cascade" }),
+    activityType: text("activity_type").notNull(),
+    focusArea: text("focus_area").notNull(),
+    title: text("title").notNull(),
+    reasonSelected: text("reason_selected").notNull().default(""),
+    instructionsJson: text("instructions_json").notNull().default("{}"),
+    club: text("club"),
+    durationMinutes: integer("duration_minutes"),
+    attemptCount: integer("attempt_count"),
+    targetJson: text("target_json").notNull().default("{}"),
+    scoringJson: text("scoring_json").notNull().default("{}"),
+    sourceContextJson: text("source_context_json").notNull().default("{}"),
+    coachId: text("coach_id").references(() => users.id, { onDelete: "set null" }),
+    coachAssignmentId: text("coach_assignment_id"),
+    coachFeedbackSourceId: text("coach_feedback_source_id"),
+    relatedSessionId: text("related_session_id"),
+    status: text("status").notNull().default("generated"),
+    model: text("model"),
+    promptVersion: text("prompt_version").notNull().default("mai-practice-generator-v1"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    startedAt: text("started_at"),
+    completedAt: text("completed_at"),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("practice_activities_user_idx").on(table.userId, table.createdAt),
+    index("practice_activities_generated_by_idx").on(table.generatedBy, table.createdAt),
+    index("practice_activities_coach_idx").on(table.coachId, table.createdAt),
+    index("practice_activities_session_idx").on(table.relatedSessionId),
+    uniqueIndex("practice_activities_one_active_focus_unique")
+      .on(table.userId, table.activityType, table.focusArea)
+      .where(sql`${table.status} IN ('generated', 'in_progress')`),
+  ],
+);
+
+export const practiceActivityResults = sqliteTable(
+  "practice_activity_results",
+  {
+    id: text("id").primaryKey(),
+    practiceActivityId: text("practice_activity_id").notNull().references(() => practiceActivities.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    relatedSessionId: text("related_session_id"),
+    submissionType: text("submission_type").notNull(),
+    score: real("score"),
+    attempts: integer("attempts"),
+    successfulAttempts: integer("successful_attempts"),
+    metricsJson: text("metrics_json").notNull().default("{}"),
+    resultNotes: text("result_notes").notNull().default(""),
+    userReflection: text("user_reflection").notNull().default(""),
+    mediaReferenceJson: text("media_reference_json").notNull().default("{}"),
+    progressStatus: text("progress_status").notNull().default("insufficient_data"),
+    progressEvidenceJson: text("progress_evidence_json").notNull().default("[]"),
+    nextRecommendationJson: text("next_recommendation_json").notNull().default("{}"),
+    sharedWithCoach: integer("shared_with_coach", { mode: "boolean" }).notNull().default(false),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("practice_activity_results_activity_idx").on(table.practiceActivityId, table.createdAt),
+    index("practice_activity_results_user_idx").on(table.userId, table.createdAt),
+  ],
+);
+
+export const coachFeedback = sqliteTable(
+  "coach_feedback",
+  {
+    id: text("id").primaryKey(),
+    golferId: text("golfer_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    coachId: text("coach_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    lessonId: text("lesson_id").references(() => lessonVideos.id, { onDelete: "cascade" }),
+    sessionId: text("session_id"),
+    status: text("status").notNull().default("active"),
+    priority: text("priority").notNull().default(""),
+    observationsJson: text("observations_json").notNull().default("[]"),
+    prescribedDrillsJson: text("prescribed_drills_json").notNull().default("[]"),
+    swingFeelsJson: text("swing_feels_json").notNull().default("[]"),
+    successTargetsJson: text("success_targets_json").notNull().default("[]"),
+    rawNotes: text("raw_notes"),
+    sourceType: text("source_type").notNull().default("lesson_video"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    resolvedAt: text("resolved_at"),
+    archivedAt: text("archived_at"),
+  },
+  (table) => [
+    index("coach_feedback_golfer_status_idx").on(table.golferId, table.status, table.createdAt),
+    index("coach_feedback_coach_idx").on(table.coachId, table.createdAt),
+    uniqueIndex("coach_feedback_lesson_unique")
+      .on(table.lessonId)
+      .where(sql`${table.lessonId} IS NOT NULL`),
+  ],
+);
+
 export const coachMembers = sqliteTable(
   "coach_members",
   {
@@ -113,6 +211,29 @@ export const coachProfileImages = sqliteTable(
       .on(table.coachUserId)
       .where(sql`${table.isCurrent} = 1`),
     uniqueIndex("coach_profile_images_storage_unique").on(table.storagePath),
+  ],
+);
+
+export const userProfileImages = sqliteTable(
+  "user_profile_images",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    storagePath: text("storage_path").notNull(),
+    originalFileName: text("original_file_name").notNull(),
+    mimeType: text("mime_type").notNull(),
+    fileSize: integer("file_size").notNull(),
+    isCurrent: integer("is_current", { mode: "boolean" }).notNull().default(true),
+    createdBy: text("created_by"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("user_profile_images_user_idx").on(table.userId, table.createdAt),
+    uniqueIndex("user_profile_images_current_unique")
+      .on(table.userId)
+      .where(sql`${table.isCurrent} = 1`),
+    uniqueIndex("user_profile_images_storage_unique").on(table.storagePath),
   ],
 );
 
@@ -204,6 +325,7 @@ export const videoAiProcessingJobs = sqliteTable(
     attemptCount: integer("attempt_count").notNull().default(0),
     workflowInstanceId: text("workflow_instance_id"),
     audioStoragePath: text("audio_storage_path"),
+    audioDeletedAt: text("audio_deleted_at"),
     errorCode: text("error_code"),
     errorMessage: text("error_message"),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),

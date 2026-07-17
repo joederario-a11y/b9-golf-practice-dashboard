@@ -42,6 +42,7 @@ export type PlatformEnvironment = {
   };
   VIDEO_LESSON_RECAP_WORKFLOW?: {
     create(options?: { id?: string; params?: unknown }): Promise<{ id: string; status(): Promise<unknown> }>;
+    get(id: string): Promise<{ id: string; terminate(): Promise<void> }>;
   };
   VIDEO_EMAIL_FROM?: string;
   VIDEO_STORAGE?: R2Bucket;
@@ -288,6 +289,118 @@ export async function ensureMaiCaddyAnalysisSchema(database = getRequiredDatabas
   ]);
 }
 
+export async function ensurePracticeActivitySchema(database = getRequiredDatabase()) {
+  await database.batch([
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS practice_activities (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        generated_by TEXT NOT NULL,
+        activity_type TEXT NOT NULL CHECK (activity_type IN ('drill', 'challenge')),
+        focus_area TEXT NOT NULL,
+        title TEXT NOT NULL,
+        reason_selected TEXT NOT NULL DEFAULT '',
+        instructions_json TEXT NOT NULL DEFAULT '{}',
+        club TEXT,
+        duration_minutes INTEGER,
+        attempt_count INTEGER,
+        target_json TEXT NOT NULL DEFAULT '{}',
+        scoring_json TEXT NOT NULL DEFAULT '{}',
+        source_context_json TEXT NOT NULL DEFAULT '{}',
+        coach_id TEXT,
+        coach_assignment_id TEXT,
+        coach_feedback_source_id TEXT,
+        related_session_id TEXT,
+        status TEXT NOT NULL DEFAULT 'generated'
+          CHECK (status IN ('generated', 'in_progress', 'completed', 'results_submitted', 'cancelled', 'superseded')),
+        model TEXT,
+        prompt_version TEXT NOT NULL DEFAULT 'mai-practice-generator-v1',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        started_at TEXT,
+        completed_at TEXT,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (generated_by) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (coach_id) REFERENCES users(id) ON DELETE SET NULL
+      )`,
+    ),
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS practice_activity_results (
+        id TEXT PRIMARY KEY,
+        practice_activity_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        related_session_id TEXT,
+        submission_type TEXT NOT NULL
+          CHECK (submission_type IN ('session_upload', 'csv', 'photo', 'manual', 'score', 'reflection')),
+        score REAL,
+        attempts INTEGER,
+        successful_attempts INTEGER,
+        metrics_json TEXT NOT NULL DEFAULT '{}',
+        result_notes TEXT NOT NULL DEFAULT '',
+        user_reflection TEXT NOT NULL DEFAULT '',
+        media_reference_json TEXT NOT NULL DEFAULT '{}',
+        progress_status TEXT NOT NULL DEFAULT 'insufficient_data'
+          CHECK (progress_status IN ('improved', 'maintained', 'needs_more_work', 'insufficient_data')),
+        progress_evidence_json TEXT NOT NULL DEFAULT '[]',
+        next_recommendation_json TEXT NOT NULL DEFAULT '{}',
+        shared_with_coach INTEGER NOT NULL DEFAULT 0 CHECK (shared_with_coach IN (0, 1)),
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (practice_activity_id) REFERENCES practice_activities(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )`,
+    ),
+    database.prepare("CREATE INDEX IF NOT EXISTS practice_activities_user_idx ON practice_activities(user_id, created_at)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS practice_activities_generated_by_idx ON practice_activities(generated_by, created_at)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS practice_activities_coach_idx ON practice_activities(coach_id, created_at)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS practice_activities_session_idx ON practice_activities(related_session_id)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS practice_activity_results_activity_idx ON practice_activity_results(practice_activity_id, created_at)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS practice_activity_results_user_idx ON practice_activity_results(user_id, created_at)"),
+    database.prepare(
+      `CREATE UNIQUE INDEX IF NOT EXISTS practice_activities_one_active_focus_unique
+       ON practice_activities(user_id, activity_type, focus_area)
+       WHERE status IN ('generated', 'in_progress')`,
+    ),
+  ]);
+}
+
+export async function ensureCoachFeedbackSchema(database = getRequiredDatabase()) {
+  await database.batch([
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS coach_feedback (
+        id TEXT PRIMARY KEY,
+        golfer_id TEXT NOT NULL,
+        coach_id TEXT NOT NULL,
+        lesson_id TEXT,
+        session_id TEXT,
+        status TEXT NOT NULL DEFAULT 'active'
+          CHECK (status IN ('active', 'resolved', 'archived')),
+        priority TEXT NOT NULL DEFAULT '',
+        observations_json TEXT NOT NULL DEFAULT '[]',
+        prescribed_drills_json TEXT NOT NULL DEFAULT '[]',
+        swing_feels_json TEXT NOT NULL DEFAULT '[]',
+        success_targets_json TEXT NOT NULL DEFAULT '[]',
+        raw_notes TEXT,
+        source_type TEXT NOT NULL DEFAULT 'lesson_video',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        resolved_at TEXT,
+        archived_at TEXT,
+        FOREIGN KEY (golfer_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (coach_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (lesson_id) REFERENCES lesson_videos(id) ON DELETE CASCADE
+      )`,
+    ),
+    database.prepare("CREATE INDEX IF NOT EXISTS coach_feedback_golfer_status_idx ON coach_feedback(golfer_id, status, created_at)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS coach_feedback_coach_idx ON coach_feedback(coach_id, created_at)"),
+    database.prepare(
+      `CREATE UNIQUE INDEX IF NOT EXISTS coach_feedback_lesson_unique
+       ON coach_feedback(lesson_id)
+       WHERE lesson_id IS NOT NULL`,
+    ),
+  ]);
+}
+
 export async function ensureVideoAiProcessingSchema(database = getRequiredDatabase()) {
   await ensureColumn(database, "lesson_videos", "next_session_goal", "TEXT NOT NULL DEFAULT ''");
   await database.batch([
@@ -305,6 +418,7 @@ export async function ensureVideoAiProcessingSchema(database = getRequiredDataba
         attempt_count INTEGER NOT NULL DEFAULT 0,
         workflow_instance_id TEXT,
         audio_storage_path TEXT,
+        audio_deleted_at TEXT,
         error_code TEXT,
         error_message TEXT,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -399,6 +513,14 @@ export async function ensureVideoAiProcessingSchema(database = getRequiredDataba
        WHERE is_current = 1`,
     ),
   ]);
+  await ensureColumn(database, "video_ai_processing_jobs", "audio_deleted_at", "TEXT");
+  await database
+    .prepare(
+      `CREATE UNIQUE INDEX IF NOT EXISTS video_ai_processing_jobs_one_active_unique
+       ON video_ai_processing_jobs(video_id, processing_type)
+       WHERE status IN ('queued', 'extracting_audio', 'transcribing', 'generating_recap')`,
+    )
+    .run();
 }
 
 export function makeAuthSessionCookie(token: string, maxAgeSeconds = SESSION_TTL_SECONDS) {
@@ -500,6 +622,22 @@ export async function ensurePlatformSchema(database = getRequiredDatabase()) {
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (coach_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CHECK (is_current IN (0, 1))
+      )`,
+    ),
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS user_profile_images (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        storage_path TEXT NOT NULL UNIQUE,
+        original_file_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        file_size INTEGER NOT NULL,
+        is_current INTEGER NOT NULL DEFAULT 1,
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
         CHECK (is_current IN (0, 1))
       )`,
     ),
@@ -625,6 +763,23 @@ export async function ensurePlatformSchema(database = getRequiredDatabase()) {
        ON coach_profile_images(coach_user_id)
        WHERE is_current = 1`,
     ),
+    database.prepare(
+      `INSERT OR IGNORE INTO user_profile_images (
+         id, user_id, storage_path, original_file_name, mime_type, file_size,
+         is_current, created_by, created_at, updated_at
+       )
+       SELECT
+         id, coach_user_id, storage_path, original_file_name, mime_type, file_size,
+         is_current, created_by, created_at, updated_at
+       FROM coach_profile_images`,
+    ),
+    database.prepare("CREATE INDEX IF NOT EXISTS user_profile_images_user_idx ON user_profile_images(user_id, created_at)"),
+    database.prepare(
+      `CREATE UNIQUE INDEX IF NOT EXISTS user_profile_images_current_unique
+       ON user_profile_images(user_id)
+       WHERE is_current = 1`,
+    ),
+    database.prepare("CREATE UNIQUE INDEX IF NOT EXISTS user_profile_images_storage_unique ON user_profile_images(storage_path)"),
     database.prepare("CREATE INDEX IF NOT EXISTS member_invitations_member_idx ON member_invitations(member_id, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS lesson_videos_member_idx ON lesson_videos(member_id, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS lesson_videos_coach_idx ON lesson_videos(coach_id, created_at)"),
@@ -641,6 +796,7 @@ export async function ensurePlatformSchema(database = getRequiredDatabase()) {
   await ensureUsersAccountStatusColumn(database);
   await ensureColumn(database, "users", "password_reset_required", "INTEGER NOT NULL DEFAULT 0");
   await ensureVideoAiProcessingSchema(database);
+  await ensurePracticeActivitySchema(database);
 }
 
 export function identityForUser(row: UserRow): AuthIdentity {

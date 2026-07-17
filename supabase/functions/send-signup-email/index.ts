@@ -160,23 +160,23 @@ function buildWelcomeEmail(record: SignupRecord): ResendMessage | null {
 
   return {
     to: record.email,
-    subject: "Welcome to Free Range Golf",
+    subject: "Welcome to MAI Coach",
     text: [
       `Hi ${displayName},`,
       "",
-      "Welcome to Free Range Golf. Your account has been created.",
+      "Welcome to MAI Coach. Your account has been created.",
       "You can now sign in to view your dashboard, videos, and practice sessions.",
       "",
-      "Free Range Golf",
+      "MAI Coach",
     ].join("\n"),
     html: `
-      <div style="margin:0;padding:0;background:#f6f8f7;font-family:Arial,Helvetica,sans-serif;color:#102019;">
+      <div style="margin:0;padding:0;background:#f6f8f7;font-family:Arial,Helvetica,sans-serif;color:#10171F;">
         <div style="max-width:560px;margin:0 auto;padding:32px 20px;">
           <div style="background:#ffffff;border:1px solid #dce7e1;border-radius:16px;padding:28px;">
-            <p style="margin:0 0 12px;font-size:13px;line-height:18px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#147a42;">Free Range Golf</p>
-            <h1 style="margin:0 0 16px;font-size:28px;line-height:34px;color:#102019;">Welcome, ${safeName}.</h1>
-            <p style="margin:0 0 18px;font-size:16px;line-height:24px;color:#40524a;">Your account has been created. You can now sign in to view your dashboard, lesson videos, and practice sessions.</p>
-            <p style="margin:0;font-size:14px;line-height:22px;color:#65746d;">This email was sent automatically after your Free Range Golf signup.</p>
+            <p style="margin:0 0 12px;font-size:13px;line-height:18px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#333333;">MAI Coach</p>
+            <h1 style="margin:0 0 16px;font-size:28px;line-height:34px;color:#10171F;">Welcome, ${safeName}.</h1>
+            <p style="margin:0 0 18px;font-size:16px;line-height:24px;color:#333333;">Your account has been created. You can now sign in to view your dashboard, lesson videos, and practice sessions.</p>
+            <p style="margin:0;font-size:14px;line-height:22px;color:#333333;">This email was sent automatically after your MAI Coach signup.</p>
           </div>
         </div>
       </div>
@@ -199,7 +199,7 @@ function buildInternalNotification(record: SignupRecord): ResendMessage | null {
 
   return {
     to: notifyTo,
-    subject: "New Free Range Golf signup",
+    subject: "New MAI Coach signup",
     text: [
       "A new user signed up.",
       "",
@@ -212,8 +212,8 @@ function buildInternalNotification(record: SignupRecord): ResendMessage | null {
       compactJson(metadata),
     ].join("\n"),
     html: `
-      <div style="font-family:Arial,Helvetica,sans-serif;color:#102019;">
-        <h2 style="margin:0 0 16px;">New Free Range Golf signup</h2>
+      <div style="font-family:Arial,Helvetica,sans-serif;color:#10171F;">
+        <h2 style="margin:0 0 16px;">New MAI Coach signup</h2>
         <table style="border-collapse:collapse;font-size:14px;line-height:22px;">
           <tr><td style="padding:4px 16px 4px 0;font-weight:700;">Name</td><td>${escapeHtml(displayName)}</td></tr>
           <tr><td style="padding:4px 16px 4px 0;font-weight:700;">Email</td><td>${escapeHtml(record.email ?? "Unknown")}</td></tr>

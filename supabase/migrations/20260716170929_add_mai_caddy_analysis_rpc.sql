@@ -1,4 +1,4 @@
--- Trusted write helpers for MAI Caddy analysis status transitions.
+-- Trusted write helpers for MAI Coach analysis status transitions.
 --
 -- These functions are intentionally executable only by service_role. The Edge
 -- Function still reads sessions and shots with the caller's JWT so RLS verifies
@@ -169,8 +169,8 @@ revoke all on function public.mai_caddy_fail_session_analysis(uuid, uuid, text, 
 grant execute on function public.mai_caddy_fail_session_analysis(uuid, uuid, text, text) to service_role;
 
 comment on function public.mai_caddy_start_session_analysis(text, uuid, text, text) is
-  'Creates the current processing MAI Caddy analysis record after the Edge Function has verified user-scoped session access.';
+  'Creates the current processing MAI Coach analysis record after the Edge Function has verified user-scoped session access.';
 comment on function public.mai_caddy_complete_session_analysis(uuid, uuid, jsonb, jsonb, text, text) is
-  'Marks a MAI Caddy analysis completed with validated structured output and deterministic calculated metrics.';
+  'Marks a MAI Coach analysis completed with validated structured output and deterministic calculated metrics.';
 comment on function public.mai_caddy_fail_session_analysis(uuid, uuid, text, text) is
-  'Marks a MAI Caddy analysis failed with a safe error code and safe message.';
+  'Marks a MAI Coach analysis failed with a safe error code and safe message.';

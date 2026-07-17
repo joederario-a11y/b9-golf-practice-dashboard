@@ -1,7 +1,15 @@
 "use client";
 
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MaiCoachLogoFull, MaiCoachLogoMark } from "@/components/brand/mai-coach-logo";
 import { splitDisplayNameForRegistration } from "@/lib/admin-user-policy.mjs";
+import {
+  buildMetricEducationCards,
+  getMetricEducationContent,
+  METRIC_EDUCATION_VIDEO_PRELOAD,
+  metricEducationHasVideo,
+} from "@/lib/metric-education-policy.mjs";
+import { sanitizeSessionList } from "@/lib/session-data-policy.mjs";
 
 type Tab = "dashboard" | "sessions" | "clubs" | "videos" | "coach" | "admin" | "practice" | "import";
 type AccountMode = "pending" | "user" | "guest";
@@ -176,6 +184,31 @@ type DashboardMetricDetail = {
   value: string;
   visual: "speed" | "energy" | "range" | "pattern" | "arc" | "spin" | "path" | "plane";
   what: string;
+};
+
+type MetricEducationVideo = {
+  captionsSrc?: string;
+  description?: string;
+  durationLabel?: string;
+  poster?: string;
+  src: string;
+  title: string;
+};
+
+type MetricEducationContent = {
+  definition: string;
+  improvementAdvice: string;
+  metricKey: string;
+  numberMeaning: string;
+  targetExplanation: string;
+  title: string;
+  video?: MetricEducationVideo;
+};
+
+type MetricEducationCardContent = {
+  body: string;
+  id: string;
+  title: string;
 };
 
 type ProTourStats = {
@@ -400,6 +433,7 @@ type CoachMember = {
   membershipStatus?: "Active" | "Paused";
   recentLessonDate?: string;
   coachIds?: string[];
+  profileImageUrl?: string;
 };
 
 type StaffUserRecord = {
@@ -535,6 +569,79 @@ type AccountUser = {
   firstName: string;
   lastName: string;
   passwordResetRequired?: boolean;
+  profileImageUrl?: string;
+};
+
+type PracticeActivityType = "drill" | "challenge";
+type PracticeActivityStatus = "generated" | "in_progress" | "completed" | "results_submitted" | "cancelled" | "superseded";
+type PracticeProgressStatus = "improved" | "maintained" | "needs_more_work" | "insufficient_data";
+
+type PracticeActivity = {
+  id: string;
+  userId: string;
+  activityType: PracticeActivityType;
+  focusArea: string;
+  title: string;
+  reasonSelected: string;
+  instructions: {
+    setup?: string;
+    instructions?: string[];
+    equipment?: string[];
+    feel?: string;
+    commonMistake?: string;
+    easierVersion?: string;
+    harderVersion?: string;
+    resultRequest?: {
+      shouldRequest?: boolean;
+      reason?: string;
+      preferredMethod?: string;
+    };
+    resultFields?: string[];
+    nextStepLogic?: string;
+    coachConnection?: {
+      connected?: boolean;
+      coachName?: string | null;
+      summary?: string;
+    };
+    sourceMode?: "coach_and_session" | "coach_feedback" | "lesson_notes" | "session_data" | "profile_fallback";
+    sourceSummary?: string;
+    confidence?: number;
+  };
+  club?: string;
+  durationMinutes?: number;
+  attemptCount?: number;
+  target?: {
+    successTarget?: string;
+  };
+  scoring?: {
+    enabled?: boolean;
+    system?: string;
+    targetScore?: number | null;
+    stretchTarget?: number | null;
+  };
+  coachId?: string;
+  relatedSessionId?: string;
+  status: PracticeActivityStatus;
+  model?: string;
+  promptVersion: string;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  updatedAt: string;
+  latestResult?: {
+    id: string;
+    progressStatus: PracticeProgressStatus;
+    score?: number;
+    attempts?: number;
+    successfulAttempts?: number;
+    notes?: string;
+    reflection?: string;
+    evidence?: string[];
+    nextRecommendation?: {
+      recommendation?: string;
+    };
+    createdAt: string;
+  } | null;
 };
 
 type VideoEmailNotificationLog = {
@@ -617,7 +724,7 @@ type VideoRecapDraft = {
   reviewedAt?: string | null;
   reviewedBy?: string | null;
   status: string;
-  transcriptEvidence: Array<{ excerpt: string; field: string; timestamp: string }>;
+  transcriptEvidence: Array<{ excerpt: string; field: string; timestamp?: string | null }>;
   updatedAt: string;
   workedOn: string;
 };
@@ -750,11 +857,11 @@ const DEFAULT_FACILITY_NAME = "Back Nine Woodstock";
 const DEFAULT_IMPORT_DATE = "2026-06-24";
 const DEFAULT_SIMULATOR = "Full Swing";
 const LOCATION_UNAVAILABLE = "NA";
-const PRACTICE_PROFILE_STORAGE_KEY = "free-range-golf.practice-profile.v1";
-const ONBOARDING_DRAFT_STORAGE_KEY = "free-range-golf.onboarding-draft.v1";
-const ONBOARDING_SKIP_STORAGE_KEY = "free-range-golf.onboarding-skipped.v1";
-const SESSIONS_STORAGE_KEY = "free-range-golf.sessions.v1";
-const LAST_IMPORT_STORAGE_KEY = "free-range-golf.last-import.v1";
+const PRACTICE_PROFILE_STORAGE_KEY = "mai-coach.practice-profile.v1";
+const ONBOARDING_DRAFT_STORAGE_KEY = "mai-coach.onboarding-draft.v1";
+const ONBOARDING_SKIP_STORAGE_KEY = "mai-coach.onboarding-skipped.v1";
+const SESSIONS_STORAGE_KEY = "mai-coach.sessions.v1";
+const LAST_IMPORT_STORAGE_KEY = "mai-coach.last-import.v1";
 
 const CLUB_METRIC_OPTIONS: ClubMetricConfig[] = [
   { key: "carry", label: "Carry", shortLabel: "Carry", unit: "yd", decimals: 1 },
@@ -3758,7 +3865,7 @@ function parseStoredSessions(value: string | null) {
   try {
     const stored = JSON.parse(value);
     if (!Array.isArray(stored) || !stored.length) return null;
-    return (stored as Session[]).map((session) => ({
+    const sessions = (stored as Session[]).map((session) => ({
       ...session,
       location:
         session.location ??
@@ -3766,6 +3873,8 @@ function parseStoredSessions(value: string | null) {
           ? LOCATION_UNAVAILABLE
           : undefined),
     }));
+    const sanitized = sanitizeSessionList(sessions);
+    return sanitized.length ? sanitized as Session[] : null;
   } catch {
     return null;
   }
@@ -3825,7 +3934,12 @@ function storeImportState(sessions: Session[], lastImport: LastImport) {
   if (typeof window === "undefined") return;
 
   try {
-    window.localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(sessions));
+    const sanitizedSessions = sanitizeSessionList(sessions);
+    if (!sanitizedSessions.length) {
+      clearStoredImportState();
+      return;
+    }
+    window.localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(sanitizedSessions));
     window.localStorage.setItem(LAST_IMPORT_STORAGE_KEY, JSON.stringify(lastImport));
   } catch {
     // Imports still work in the active tab when browser storage is unavailable.
@@ -3924,6 +4038,48 @@ async function readVideoLibrary(memberId?: string) {
   return (payload.videos ?? []) as VideoLibraryRecord[];
 }
 
+function combineRecapText(...values: Array<string | null | undefined>) {
+  const seen = new Set<string>();
+  return values
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter((value) => {
+      if (!value || seen.has(value)) return false;
+      seen.add(value);
+      return true;
+    })
+    .join("\n\n");
+}
+
+function getLessonMainFocus(video: Pick<VideoLibraryRecord, "keyIssue" | "workedOn">) {
+  return combineRecapText(video.workedOn, video.keyIssue);
+}
+
+function getLessonPracticeNext(video: Pick<VideoLibraryRecord, "practiceAssignment" | "recommendedDrill">) {
+  return combineRecapText(video.practiceAssignment, video.recommendedDrill);
+}
+
+function simplifiedFieldsFromVideoRecapDraft(draft: VideoRecapDraft) {
+  return {
+    lessonSummary: draft.lessonSummary,
+    mainFocus: combineRecapText(draft.workedOn, draft.keyIssue),
+    nextSessionGoal: draft.nextSessionGoal,
+    practiceNext: combineRecapText(draft.practiceAssignment, draft.recommendedDrill),
+    progressObserved: draft.improvement,
+  };
+}
+
+function videoRecapProcessingStatusText(status: string) {
+  if (status === "queued") return "Video uploaded";
+  if (status === "extracting_audio") return "Checking for coach audio";
+  if (status === "transcribing") return "Transcribing coach feedback";
+  if (status === "generating_recap") return "Creating lesson recap";
+  if (status === "ready_for_review") return "Ready for coach review";
+  if (status === "no_usable_audio") return "No clear coach voiceover was detected.";
+  if (status === "published") return "Coach-approved recap published";
+  if (status === "failed") return "Audio processing needs attention";
+  return status || "Not queued";
+}
+
 function videoPatchPayload(video: VideoLibraryRecord) {
   return {
     videoId: video.id,
@@ -4009,9 +4165,9 @@ async function postStaffAction(payload: Record<string, unknown>) {
   return result;
 }
 
-async function uploadCoachPhoto(coachId: string, file: File) {
+async function uploadCoachPhoto(userId: string, file: File) {
   const form = new FormData();
-  form.append("coachId", coachId);
+  form.append("userId", userId);
   form.append("image", file);
   const response = await fetch("/api/coach-photo", {
     method: "POST",
@@ -4022,11 +4178,11 @@ async function uploadCoachPhoto(coachId: string, file: File) {
   return payload.photo;
 }
 
-async function deleteCoachPhoto(coachId: string) {
+async function deleteCoachPhoto(userId: string) {
   const response = await fetch("/api/coach-photo", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ coachId }),
+    body: JSON.stringify({ userId }),
   });
   const payload = await response.json().catch(() => ({})) as { error?: string };
   if (!response.ok) throw new Error(payload.error ?? "Coach photo could not be removed.");
@@ -4047,6 +4203,15 @@ function CoachAvatar({ coach, size = "normal" }: { coach: Pick<CoachSummary, "na
     <img alt={`${coach.name} headshot`} className={cls("coach-avatar", size === "large" && "large")} src={coach.profileImageUrl} />
   ) : (
     <span className={cls("member-initials", "coach-avatar-fallback", size === "large" && "large")}>{initialsForName(coach.name)}</span>
+  );
+}
+
+function AccountAvatar({ user, size = "normal" }: { user: Pick<AccountUser, "displayName" | "profileImageUrl">; size?: "normal" | "large" }) {
+  return user.profileImageUrl ? (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img alt={`${user.displayName} headshot`} className={cls("coach-avatar", size === "large" && "large")} src={user.profileImageUrl} />
+  ) : (
+    <span className={cls("member-initials", "coach-avatar-fallback", size === "large" && "large")}>{initialsForName(user.displayName)}</span>
   );
 }
 
@@ -4130,7 +4295,7 @@ async function readVideoRecap(videoId: string) {
   const response = await fetch(`/api/video-recaps?videoId=${encodeURIComponent(videoId)}`, { cache: "no-store" });
   const payload = await response.json();
   if (!response.ok) {
-    throw new Error(payload.error ?? "The MAI Caddy recap could not be loaded.");
+    throw new Error(payload.error ?? "The MAI Coach recap could not be loaded.");
   }
   return payload as VideoRecapState;
 }
@@ -4143,7 +4308,7 @@ async function updateVideoRecap(payload: Record<string, unknown>) {
   });
   const result = await response.json();
   if (!response.ok) {
-    throw new Error(result.error ?? "The MAI Caddy recap could not be updated.");
+    throw new Error(result.error ?? "The MAI Coach recap could not be updated.");
   }
   return result as VideoRecapState;
 }
@@ -4413,8 +4578,8 @@ export default function Home() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [selectedClub, setSelectedClub] = useState("6-Iron");
-  const [csvText, setCsvText] = useState(DEMO_CSV);
-  const [importMessage, setImportMessage] = useState("Sample CSV rows ready");
+  const [csvText, setCsvText] = useState("");
+  const [importMessage, setImportMessage] = useState("Upload a CSV, photo, or manual entry to start.");
   const [importConfirmation, setImportConfirmation] = useState<string | null>(null);
   const [pendingImportReview, setPendingImportReview] = useState<ImportReview | null>(null);
   const [accountMode, setAccountMode] = useState<AccountMode>("pending");
@@ -4434,7 +4599,7 @@ export default function Home() {
   const [showAccountGate, setShowAccountGate] = useState(false);
   const [loginModalMode, setLoginModalMode] = useState<LoginModalMode>("login");
   const [registrationDraft, setRegistrationDraft] = useState<RegistrationDraft | null>(null);
-  const [syncStatus, setSyncStatus] = useState("Choose how you want to use Free Range Golf.");
+  const [syncStatus, setSyncStatus] = useState("Choose how you want to use MAI Coach.");
   const [performanceTimeframe, setPerformanceTimeframe] = useState<PerformanceTimeframe>(DEFAULT_PERFORMANCE_TIMEFRAME);
 
   const clubs = useMemo(() => summarizeClubs(sessions), [sessions]);
@@ -4580,12 +4745,13 @@ export default function Home() {
 
   async function saveUserSessions(nextSessions: Session[]) {
     if (accountMode !== "user") return;
+    const sanitizedSessions = sanitizeSessionList(nextSessions) as Session[];
 
     try {
       const response = await fetch("/api/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessions: nextSessions }),
+        body: JSON.stringify({ sessions: sanitizedSessions }),
       });
 
       if (!response.ok) {
@@ -4600,19 +4766,20 @@ export default function Home() {
   }
 
   function commitSessionDataChange(nextSessions: Session[], successMessage: string) {
+    const sanitizedSessions = sanitizeSessionList(nextSessions) as Session[];
     const nextSelectedSession =
-      nextSessions.find((session) => session.id === selectedSessionId) ??
-      nextSessions[0] ??
+      sanitizedSessions.find((session) => session.id === selectedSessionId) ??
+      sanitizedSessions[0] ??
       null;
     const nextLastImport = makeLastImportFromSession(
-      nextSessions.find((session) => session.id.startsWith("import-")) ?? nextSessions[0],
+      sanitizedSessions.find((session) => session.id.startsWith("import-")) ?? sanitizedSessions[0],
     );
     const nextClub =
       nextSelectedSession?.shots.some((shot) => shot.club === selectedClub)
         ? selectedClub
         : nextSelectedSession?.shots[0]?.club ?? "6-Iron";
 
-    setSessions(nextSessions);
+    setSessions(sanitizedSessions);
     setSelectedSessionId(nextSelectedSession?.id ?? "");
     setSelectedClub(nextClub);
     setLastImport(nextLastImport);
@@ -4621,12 +4788,12 @@ export default function Home() {
     setSyncStatus(accountMode === "user" ? "Saving updated session data..." : "Updated this guest session data.");
 
     if (accountMode === "user") {
-      void saveUserSessions(nextSessions);
+      void saveUserSessions(sanitizedSessions);
       return;
     }
 
-    if (nextSessions.length) {
-      storeImportState(nextSessions, nextLastImport);
+    if (sanitizedSessions.length) {
+      storeImportState(sanitizedSessions, nextLastImport);
     } else {
       clearStoredImportState();
     }
@@ -4831,7 +4998,7 @@ export default function Home() {
         return false;
       }
 
-      const savedSessions = Array.isArray(payload.sessions) ? payload.sessions as Session[] : [];
+      const savedSessions = sanitizeSessionList(Array.isArray(payload.sessions) ? payload.sessions : []) as Session[];
       const signedInRole: VideoViewerRole =
         accountPayload.user?.role === "coach" || accountPayload.user?.role === "admin"
           ? accountPayload.user.role
@@ -4944,6 +5111,28 @@ export default function Home() {
     setSyncStatus("Signed out. Create a new account or sign in.");
   }
 
+  async function handleOwnProfilePhoto(file: File | null) {
+    if (!file || !accountUser) return;
+    try {
+      const photo = await uploadCoachPhoto(accountUser.id, file);
+      setAccountUser((current) => current ? { ...current, profileImageUrl: photo?.url ?? current.profileImageUrl } : current);
+      setSyncStatus("Profile photo updated.");
+    } catch (error) {
+      setSyncStatus(error instanceof Error ? error.message : "Profile photo could not be saved.");
+    }
+  }
+
+  async function removeOwnProfilePhoto() {
+    if (!accountUser) return;
+    try {
+      await deleteCoachPhoto(accountUser.id);
+      setAccountUser((current) => current ? { ...current, profileImageUrl: "" } : current);
+      setSyncStatus("Profile photo removed.");
+    } catch (error) {
+      setSyncStatus(error instanceof Error ? error.message : "Profile photo could not be removed.");
+    }
+  }
+
   function changeWorkspaceRole(role: VideoViewerRole) {
     setWorkspaceRole(role);
     if (role === "user") setVideoLibraryMemberId("current-user");
@@ -5031,7 +5220,11 @@ export default function Home() {
       review.notes,
       review.missingMetrics,
     );
-    const nextSessions = [nextSession, ...sessions];
+    const nextSessions = sanitizeSessionList([nextSession, ...sessions]) as Session[];
+    if (!nextSessions.some((session) => session.id === nextSession.id)) {
+      setImportMessage("That import did not include usable shot data. Add club plus at least one real launch-monitor metric.");
+      return;
+    }
     const nextLastImport = makeLastImport(
       review.submissionType,
       review.shots,
@@ -5062,6 +5255,11 @@ export default function Home() {
   }
 
   function importCsv(submissionType: LastImport["submissionType"] = "CSV / Excel", notes = "") {
+    if (accountMode === "user" && csvText.trim() === DEMO_CSV.trim()) {
+      setImportMessage("Sample CSV rows are demo data. Upload or paste your own simulator rows before saving to your account.");
+      setImportConfirmation(null);
+      return;
+    }
     importShots(parseCsv(csvText), submissionType, "CSV", {}, notes);
   }
 
@@ -5097,24 +5295,41 @@ export default function Home() {
 
   return (
     <main className="app-shell">
-      <aside className="rail" aria-label="Free Range Golf navigation">
+      <aside className="rail" aria-label="MAI Coach navigation">
         <div className="brand-lockup">
           <div className="brand-logo">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img alt="Free Range Golf logo" src="/logos/free-range-golf.png" />
+            <MaiCoachLogoMark />
           </div>
           <div>
-            <strong>Free Range Golf</strong>
-            <span>Sim performance</span>
+            <strong>MAI Coach</strong>
+            <span>Your swing, explained.</span>
           </div>
         </div>
         <div className={cls("rail-account-status", accountMode)}>
+          {accountMode === "user" && accountUser && <AccountAvatar user={accountUser} />}
           <span>{accountStatusLabel}</span>
           <strong>{accountStatusName}</strong>
           {accountMode === "user" ? (
-            <button onClick={() => void logOut()} type="button">
-              Log out
-            </button>
+            <>
+              <div className="rail-photo-actions">
+                <label>
+                  Photo
+                  <input
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={(event) => {
+                      const file = event.currentTarget.files?.[0] ?? null;
+                      void handleOwnProfilePhoto(file);
+                      event.currentTarget.value = "";
+                    }}
+                    type="file"
+                  />
+                </label>
+                <button disabled={!accountUser?.profileImageUrl} onClick={() => void removeOwnProfilePhoto()} type="button">Remove</button>
+              </div>
+              <button onClick={() => void logOut()} type="button">
+                Log out
+              </button>
+            </>
           ) : (
             <button onClick={openSignup} type="button">
               Sign up
@@ -5143,7 +5358,7 @@ export default function Home() {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">{activeTab === "dashboard" ? "Swing analytics" : "Free Range Golf"}</p>
+            <p className="eyebrow">{activeTab === "dashboard" ? "Swing analytics" : "MAI Coach"}</p>
             <h1>{activeTab === "dashboard" ? "Performance Review" : activeNavItem?.label}</h1>
             <p className="page-description">{PAGE_DESCRIPTIONS[activeTab]}</p>
           </div>
@@ -5213,7 +5428,7 @@ export default function Home() {
           />
         )}
 
-        {activeTab === "clubs" && <ClubsView clubs={clubs} selectedClub={activeClub} />}
+        {activeTab === "clubs" && <ClubsView clubs={clubs} selectedClub={activeClub} setActiveTab={setActiveTab} />}
 
         {activeTab === "videos" && (
           <VideosView
@@ -5269,7 +5484,15 @@ export default function Home() {
           />
         )}
 
-        {activeTab === "practice" && <PracticeView insights={insights} practiceProfile={practiceProfile} />}
+        {activeTab === "practice" && (
+          <PracticeView
+            accountUser={accountUser}
+            insights={insights}
+            practiceProfile={practiceProfile}
+            sessions={sessions}
+            setActiveTab={setActiveTab}
+          />
+        )}
 
         {activeTab === "import" && (
           <ImportView
@@ -5767,7 +5990,7 @@ function DashboardHeroVisual({ shots }: { shots: Shot[] }) {
     <svg className="home-shot-visual" role="img" viewBox="0 0 460 260" aria-label="Shot distance and dispersion grid">
       <defs>
         <linearGradient id="homeShotGlow" x1="0" x2="1" y1="0" y2="1">
-          <stop offset="0%" stopColor="#35f27a" stopOpacity="0.32" />
+          <stop offset="0%" stopColor="#96cb39" stopOpacity="0.32" />
           <stop offset="100%" stopColor="#38bdf8" stopOpacity="0.14" />
         </linearGradient>
       </defs>
@@ -5858,37 +6081,183 @@ function DashboardMetricRow({
         </span>
         <span className="dashboard-metric-chevron" aria-hidden="true">&gt;</span>
       </button>
-      {expanded && (
-        <div className="dashboard-metric-detail">
-          <div>
-            <span>What is it?</span>
-            <p>{metric.what}</p>
-          </div>
-          <div>
-            <span>What does my number mean?</span>
-            <p>{metric.meaning}</p>
-          </div>
-          <div>
-            <span>What should I aim for?</span>
-            <p>{metric.aimFor}</p>
-          </div>
-          <div>
-            <span>How can I improve it?</span>
-            <p>{metric.howToImprove}</p>
-          </div>
-          <div>
-            <span>How do I compare?</span>
-            <p>{metric.compare}</p>
-          </div>
-          {metric.tourBenchmark && (
-            <div>
-              <span>Optional tour benchmark</span>
-              <p>{metric.tourBenchmark}</p>
+      {expanded && <MetricEducationPanel metric={metric} />}
+    </article>
+  );
+}
+
+function MetricEducationPanel({ metric }: { metric: DashboardMetricDetail }) {
+  const educationContent = getMetricEducationContent(metric) as MetricEducationContent;
+  const cards = buildMetricEducationCards(educationContent) as MetricEducationCardContent[];
+  const hasVideo = metricEducationHasVideo(educationContent);
+
+  return (
+    <div className={cls("dashboard-metric-detail", hasVideo && "has-video")}>
+      <div className="metric-education-card-grid">
+        {cards.map((card) => (
+          <MetricEducationCard card={card} key={card.id} />
+        ))}
+      </div>
+      {educationContent.video && (
+        <MetricVideoThumbnail
+          metricLabel={metric.label}
+          video={educationContent.video}
+        />
+      )}
+    </div>
+  );
+}
+
+function MetricEducationCard({ card }: { card: MetricEducationCardContent }) {
+  return (
+    <section className="metric-education-card">
+      <span>{card.title}</span>
+      <p>{card.body}</p>
+    </section>
+  );
+}
+
+function MetricVideoThumbnail({
+  metricLabel,
+  video,
+}: {
+  metricLabel: string;
+  video: MetricEducationVideo;
+}) {
+  const [open, setOpen] = useState(false);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const modalRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const modalTitleId = `metric-video-title-${metricLabel.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+
+  const closeModal = useCallback(() => {
+    const player = videoRef.current;
+    if (player) {
+      player.pause();
+      player.currentTime = 0;
+    }
+    setOpen(false);
+    window.requestAnimationFrame(() => triggerRef.current?.focus());
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    closeButtonRef.current?.focus();
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeModal();
+        return;
+      }
+
+      if (event.key !== "Tab") return;
+
+      const focusable = Array.from(
+        modalRef.current?.querySelectorAll<HTMLElement>(
+          'button, video[controls], [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      ).filter((element) => !element.hasAttribute("disabled"));
+
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+
+      const firstElement = focusable[0];
+      const lastElement = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === firstElement) {
+        event.preventDefault();
+        lastElement.focus();
+      } else if (!event.shiftKey && document.activeElement === lastElement) {
+        event.preventDefault();
+        firstElement.focus();
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [closeModal, open]);
+
+  return (
+    <>
+      <button
+        aria-haspopup="dialog"
+        aria-label={`Play ${video.title} video`}
+        className="metric-video-thumbnail"
+        onClick={() => setOpen(true)}
+        ref={triggerRef}
+        type="button"
+      >
+        {video.poster && <img alt="" loading="lazy" src={video.poster} />}
+        <span className="metric-video-play" aria-hidden="true">▶</span>
+        <span className="metric-video-copy">
+          <span className="metric-video-eyebrow">Watch the explanation</span>
+          <strong>{video.title}</strong>
+          {video.description && <small>{video.description}</small>}
+        </span>
+        {video.durationLabel && <span className="metric-video-duration">{video.durationLabel}</span>}
+      </button>
+      {open && (
+        <div
+          className="metric-video-modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeModal();
+          }}
+        >
+          <div
+            aria-labelledby={modalTitleId}
+            aria-modal="true"
+            className="metric-video-modal"
+            ref={modalRef}
+            role="dialog"
+          >
+            <div className="metric-video-modal-header">
+              <div>
+                <span>Metric video</span>
+                <h3 id={modalTitleId}>{video.title}</h3>
+              </div>
+              <button
+                aria-label="Close video"
+                className="metric-video-close"
+                onClick={closeModal}
+                ref={closeButtonRef}
+                type="button"
+              >
+                ×
+              </button>
             </div>
-          )}
+            <video
+              autoPlay
+              className="metric-video-player"
+              controls
+              playsInline
+              poster={video.poster}
+              preload={METRIC_EDUCATION_VIDEO_PRELOAD}
+              ref={videoRef}
+            >
+              <source src={video.src} type="video/mp4" />
+              {video.captionsSrc && (
+                <track
+                  default
+                  kind="captions"
+                  label="English captions"
+                  src={video.captionsSrc}
+                  srcLang="en"
+                />
+              )}
+            </video>
+          </div>
         </div>
       )}
-    </article>
+    </>
   );
 }
 
@@ -6047,7 +6416,7 @@ function SessionsView({
         ...current,
         [sessionId]: {
           status: "loading",
-          message: "Checking for a saved MAI Caddy analysis...",
+          message: "Checking for a saved MAI Coach analysis...",
         },
       };
     });
@@ -6069,7 +6438,7 @@ function SessionsView({
         }
 
         if (!response.ok || !payload.sessionId || !payload.status) {
-          throw new Error(payload.error?.message ?? "Saved MAI Caddy analysis could not be loaded.");
+          throw new Error(payload.error?.message ?? "Saved MAI Coach analysis could not be loaded.");
         }
 
         setAnalysisBySessionId((current) => ({
@@ -6078,9 +6447,9 @@ function SessionsView({
             status: payload.status === "failed" ? "error" : payload.status === "processing" ? "loading" : "ready",
             message:
               payload.status === "failed"
-                ? payload.error?.message ?? "MAI Caddy could not complete this analysis."
+                ? payload.error?.message ?? "MAI Coach could not complete this analysis."
                 : payload.status === "processing"
-                  ? "MAI Caddy is still analyzing this session."
+                  ? "MAI Coach is still analyzing this session."
                   : payload.status === "insufficient_data"
                     ? "More usable shot data needed"
                     : "Saved analysis loaded",
@@ -6093,7 +6462,7 @@ function SessionsView({
           ...current,
           [sessionId]: {
             status: "error",
-            message: error instanceof Error ? error.message : "Saved MAI Caddy analysis could not be loaded.",
+            message: error instanceof Error ? error.message : "Saved MAI Coach analysis could not be loaded.",
           },
         }));
       }
@@ -6111,7 +6480,7 @@ function SessionsView({
         ...current,
         [selectedSession.id]: {
           status: "error",
-          message: "Sign in before running MAI Caddy. This first version only analyzes saved account sessions.",
+          message: "Sign in before running MAI Coach. This first version only analyzes saved account sessions.",
         },
       }));
       return;
@@ -6121,7 +6490,7 @@ function SessionsView({
         ...current,
         [selectedSession.id]: {
           status: "error",
-          message: "Save a session with shot data before running MAI Caddy.",
+          message: "Save a session with shot data before running MAI Coach.",
         },
       }));
       return;
@@ -6131,7 +6500,7 @@ function SessionsView({
       ...current,
       [selectedSession.id]: {
         status: "loading",
-        message: "MAI Caddy is reading your stored session data...",
+        message: "MAI Coach is reading your stored session data...",
       },
     }));
 
@@ -6145,7 +6514,7 @@ function SessionsView({
       const errorMessage =
         typeof payload.error === "string"
           ? payload.error
-          : payload.error?.message ?? "MAI Caddy could not analyze this saved session.";
+          : payload.error?.message ?? "MAI Coach could not analyze this saved session.";
       if (!response.ok || !payload.sessionId || !payload.status) {
         throw new Error(errorMessage);
       }
@@ -6168,10 +6537,18 @@ function SessionsView({
         ...current,
         [selectedSession.id]: {
           status: "error",
-          message: error instanceof Error ? error.message : "MAI Caddy could not analyze this session.",
+          message: error instanceof Error ? error.message : "MAI Coach could not analyze this session.",
         },
       }));
     }
+  }
+
+  if (!sessions.length) {
+    return (
+      <div className="view-stack">
+        <FirstSessionEmptyState setActiveTab={setActiveTab} />
+      </div>
+    );
   }
 
   return (
@@ -6215,10 +6592,10 @@ function SessionsView({
           action={
             <div className="button-row panel-header-actions">
               <button
-                className="primary-action mai-caddy-action"
+                className="primary-action mai-coach-action"
                 disabled={!canRequestAnalysis}
                 onClick={() => void analyzeSelectedSession()}
-                title={canAnalyzeSession ? "Analyze this saved session with MAI Caddy" : "Sign in to analyze a saved session"}
+                title={canAnalyzeSession ? "Analyze this saved session with MAI Coach" : "Sign in to analyze a saved session"}
                 type="button"
               >
                 Analyze Session
@@ -6237,7 +6614,7 @@ function SessionsView({
           <div className={cls("mai-analysis-panel", selectedAnalysis.status)}>
             <div className="mai-analysis-heading">
               <div>
-                <p className="eyebrow">MAI Caddy</p>
+                <p className="eyebrow">MAI Coach</p>
                 <h3>Session analysis</h3>
               </div>
               <span>
@@ -6309,7 +6686,7 @@ function SessionsView({
                             ))}
                           </ul>
                         ) : (
-                          <p>MAI Caddy needs more usable shots before calling out a reliable strength.</p>
+                          <p>MAI Coach needs more usable shots before calling out a reliable strength.</p>
                         )}
                       </section>
                       <section>
@@ -6361,7 +6738,7 @@ function SessionsView({
                     </div>
                   </div>
                 ) : (
-                  <p className="mai-analysis-status">{selectedAnalysis.message || "No saved MAI Caddy analysis yet."}</p>
+                  <p className="mai-analysis-status">{selectedAnalysis.message || "No saved MAI Coach analysis yet."}</p>
                 )}
               </>
             )}
@@ -6447,9 +6824,32 @@ function SessionsView({
   );
 }
 
-function ClubsView({ clubs, selectedClub }: { clubs: ClubSummary[]; selectedClub: string }) {
+function ClubsView({
+  clubs,
+  selectedClub,
+  setActiveTab,
+}: {
+  clubs: ClubSummary[];
+  selectedClub: string;
+  setActiveTab: (tab: Tab) => void;
+}) {
   const [clubMetricKey, setClubMetricKey] = useState<ClubMetricKey>("total");
   const metric = getClubMetricConfig(clubMetricKey);
+
+  if (!clubs.length) {
+    return (
+      <div className="view-stack">
+        <section className="control-strip">
+          <div>
+            <p className="eyebrow">Club comparison</p>
+            <h2>Bag benchmarks</h2>
+            <span>Club stats appear after you upload or save your first session.</span>
+          </div>
+        </section>
+        <FirstSessionEmptyState setActiveTab={setActiveTab} />
+      </div>
+    );
+  }
 
   return (
     <div className="view-stack">
@@ -6942,27 +7342,27 @@ function AdminView({
   async function handleAdminCoachPhoto(user: StaffUserRecord, file: File | null) {
     if (!file) return;
     if (user.profileImageUrl) {
-      const confirmed = window.confirm(`Replace ${user.name}'s coach headshot? Their account, roster, videos, sessions, and relationships will remain unchanged.`);
+      const confirmed = window.confirm(`Replace ${user.name}'s profile photo? Their account, roster, videos, sessions, and relationships will remain unchanged.`);
       if (!confirmed) return;
     }
     try {
       await uploadCoachPhoto(user.id, file);
-      setMessage(`${user.name}'s coach photo was saved.`);
+      setMessage(`${user.name}'s profile photo was saved.`);
       await refreshWorkspace(detail?.member.id ?? selectedMemberId);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Coach photo could not be saved.");
+      setMessage(error instanceof Error ? error.message : "Profile photo could not be saved.");
     }
   }
 
   async function removeAdminCoachPhoto(user: StaffUserRecord) {
-    const confirmed = window.confirm(`Delete ${user.name}'s coach headshot? This removes only the photo, not the coach account, roster, videos, sessions, or assignments.`);
+    const confirmed = window.confirm(`Delete ${user.name}'s profile photo? This removes only the photo, not the account, roster, videos, sessions, or assignments.`);
     if (!confirmed) return;
     try {
       await deleteCoachPhoto(user.id);
-      setMessage(`${user.name}'s coach photo was removed.`);
+      setMessage(`${user.name}'s profile photo was removed.`);
       await refreshWorkspace(detail?.member.id ?? selectedMemberId);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Coach photo could not be removed.");
+      setMessage(error instanceof Error ? error.message : "Profile photo could not be removed.");
     }
   }
 
@@ -7162,7 +7562,7 @@ function AdminView({
             {filteredUsers.map((user) => (
               <div className="admin-table-row" key={user.id}>
                 <div className="admin-user-cell">
-                  {user.role === "coach" && <CoachAvatar coach={user} />}
+                  <CoachAvatar coach={user} />
                   <span>
                     <strong>{user.name}</strong>
                     <small>{user.email}</small>
@@ -7247,29 +7647,27 @@ function AdminView({
                 <div><span>Created</span><strong>{formatDate(detail.member.createdAt)}</strong></div>
                 <div><span>Updated</span><strong>{formatDate(detail.member.updatedAt)}</strong></div>
               </div>
-              {detail.member.role === "coach" && (
-                <section className="coach-photo-admin-card">
-                  <div>
-                    <CoachAvatar coach={detail.member} size="large" />
-                    <span><strong>{detail.member.name}</strong><small>Coach headshot</small></span>
-                  </div>
-                  <div className="button-row">
-                    <label className="secondary-action coach-photo-picker">
-                      Upload / replace
-                      <input
-                        accept="image/jpeg,image/png,image/webp"
-                        onChange={(event) => {
-                          const file = event.currentTarget.files?.[0] ?? null;
-                          void handleAdminCoachPhoto(detail.member, file);
-                          event.currentTarget.value = "";
-                        }}
-                        type="file"
-                      />
-                    </label>
-                    <button className="secondary-action danger-text-button" disabled={!detail.member.profileImageUrl} onClick={() => void removeAdminCoachPhoto(detail.member)} type="button">Remove photo</button>
-                  </div>
-                </section>
-              )}
+              <section className="coach-photo-admin-card">
+                <div>
+                  <CoachAvatar coach={detail.member} size="large" />
+                  <span><strong>{detail.member.name}</strong><small>{detail.member.role} profile photo</small></span>
+                </div>
+                <div className="button-row">
+                  <label className="secondary-action coach-photo-picker">
+                    Upload / replace
+                    <input
+                      accept="image/jpeg,image/png,image/webp"
+                      onChange={(event) => {
+                        const file = event.currentTarget.files?.[0] ?? null;
+                        void handleAdminCoachPhoto(detail.member, file);
+                        event.currentTarget.value = "";
+                      }}
+                      type="file"
+                    />
+                  </label>
+                  <button className="secondary-action danger-text-button" disabled={!detail.member.profileImageUrl} onClick={() => void removeAdminCoachPhoto(detail.member)} type="button">Remove photo</button>
+                </div>
+              </section>
               {detail.assignedCoaches.length > 0 && (
                 <section className="assigned-coach-strip">
                   {detail.assignedCoaches.map((coach) => (
@@ -7516,7 +7914,7 @@ function CoachView({
   const [coachMessages, setCoachMessages] = useState<CoachMessage[]>([
     makeCoachMessage(
       "assistant",
-      "I’m MatRat AI. Pick a club or ask what to fix first, and I’ll turn the numbers into one clear swing priority, one drill, and one next-swing feel.",
+      "I’m your MAI Coach. Pick a club or ask what to fix first, and I’ll turn the numbers into one clear swing priority, one drill, and one next-swing feel.",
     ),
   ]);
 
@@ -7550,7 +7948,7 @@ function CoachView({
       activeFindings: insights.slice(0, 6),
       recentShots: contextShots.map(compactShot),
       coachPreferences: {
-        brand: "MatRat AI",
+        brand: "MAI Coach",
         feedbackStyle: "plain English, focused, feel-based, no swing overhaul",
         outputGoal: "one priority, one drill, one measurable target, one follow-up question when useful",
       },
@@ -7569,18 +7967,18 @@ function CoachView({
       const payload = await response.json();
 
       if (!response.ok) {
-        throw new Error(payload.error ?? "MatRat AI could not answer right now.");
+        throw new Error(payload.error ?? "MAI Coach could not answer right now.");
       }
 
       setCoachMessages((current) => [
         ...current,
-        makeCoachMessage("assistant", payload.answer ?? "MatRat AI did not return a readable answer."),
+        makeCoachMessage("assistant", payload.answer ?? "MAI Coach did not return a readable answer."),
       ]);
       setCoachStatus(payload.mode === "setup" ? "API key needed" : "Answered");
     } catch (error) {
       setCoachMessages((current) => [
         ...current,
-        makeCoachMessage("assistant", error instanceof Error ? error.message : "MatRat AI could not answer right now."),
+        makeCoachMessage("assistant", error instanceof Error ? error.message : "MAI Coach could not answer right now."),
       ]);
       setCoachStatus("Needs attention");
     }
@@ -7633,12 +8031,12 @@ function CoachView({
       ) : (
         <section className="coach-layout">
           <article className="panel coach-chat-panel">
-        <PanelHeader kicker="MatRat AI coach" title={`${selectedClubLabel} conversation`} meta={coachStatus} />
+        <PanelHeader kicker="MAI Coach assistant" title={`${selectedClubLabel} conversation`} meta={coachStatus} />
 
         <div className="chat-transcript" aria-live="polite">
           {coachMessages.map((message) => (
             <div className={cls("chat-message", message.role)} key={message.id}>
-              <span>{message.role === "assistant" ? "MatRat AI" : "You"}</span>
+              <span>{message.role === "assistant" ? "MAI Coach" : "You"}</span>
               <p>{message.content}</p>
             </div>
           ))}
@@ -7660,7 +8058,7 @@ function CoachView({
           }}
         >
           <textarea
-            aria-label="Ask MatRat AI"
+            aria-label="Ask MAI Coach"
             onChange={(event) => setCoachInput(event.target.value)}
             placeholder={`Ask about your ${selectedClubLabel} misses, distance gaps, or next drill`}
             value={coachInput}
@@ -7694,12 +8092,12 @@ function CoachView({
               </div>
             </div>
           ) : (
-            <EmptyState title="No club data" body="Choose a club with shots before asking MatRat AI." />
+            <EmptyState title="No club data" body="Choose a club with shots before asking MAI Coach." />
           )}
         </article>
 
         <article className="panel">
-          <PanelHeader kicker="Active findings" title="What MatRat sees" meta={`${insights.length} flags`} />
+          <PanelHeader kicker="Active findings" title="What MAI Coach sees" meta={`${insights.length} flags`} />
           <InsightList insights={insights.slice(0, 3)} compact />
         </article>
           </aside>
@@ -8101,6 +8499,13 @@ function CoachVideoWorkspace({
     let pendingVideoId = editingVideo?.id ?? "";
     try {
       const duration = videoFile ? await readVideoDuration(videoFile) : editingVideo?.duration ?? 0;
+      const lessonSummaryText = lessonSummary.trim();
+      const mainFocusText = workedOn.trim();
+      const progressObservedText = improvement.trim();
+      const practiceNextText = practiceAssignment.trim();
+      const nextSessionGoalText = nextSessionGoal.trim();
+      const preserveLegacyKeyIssue = Boolean(editingVideo && mainFocusText === getLessonMainFocus(editingVideo));
+      const preserveLegacyRecommendedDrill = Boolean(editingVideo && practiceNextText === getLessonPracticeNext(editingVideo));
       const metadata = {
         memberId: selectedMember.id,
         title: videoTitle.trim(),
@@ -8114,19 +8519,20 @@ function CoachVideoWorkspace({
         duration,
         publicationStatus,
         lessonDate,
-        lessonSummary: lessonSummary.trim(),
-        workedOn: workedOn.trim(),
-        keyIssue: keyIssue.trim(),
-        improvement: improvement.trim(),
-        practiceAssignment: practiceAssignment.trim(),
-        recommendedDrill: recommendedDrill.trim(),
-        memberFacingNotes: memberFacingNotes.trim(),
-        nextSessionGoal: nextSessionGoal.trim(),
-        coachPrivateNotes: coachPrivateNotes.trim(),
-        coachNotes: memberFacingNotes.trim(),
-        generateAiRecap: Boolean(generateAiRecap && !editingVideo && videoFile),
-        processingLanguage: "en",
-      };
+        lessonSummary: lessonSummaryText,
+        workedOn: mainFocusText,
+        keyIssue: preserveLegacyKeyIssue ? editingVideo?.keyIssue ?? "" : "",
+        improvement: progressObservedText,
+        practiceAssignment: practiceNextText,
+        recommendedDrill: preserveLegacyRecommendedDrill ? editingVideo?.recommendedDrill ?? "" : "",
+        memberFacingNotes: editingVideo?.memberFacingNotes ?? "",
+        nextSessionGoal: nextSessionGoalText,
+	        coachPrivateNotes: coachPrivateNotes.trim(),
+	        coachNotes: lessonSummaryText || mainFocusText || practiceNextText,
+	        coachId: accountUser?.role === "coach" ? accountUser.id : undefined,
+	        generateAiRecap: Boolean(generateAiRecap && !editingVideo && videoFile && accountUser?.role === "coach"),
+	        processingLanguage: "en",
+	      };
 
       if (!pendingVideoId) {
         const created = await createVideoRecord(metadata, videoFile!);
@@ -8152,7 +8558,7 @@ function CoachVideoWorkspace({
       setUploadProgress(100);
 
       const aiStatusNote = generateAiRecap && !editingVideo
-        ? " MAI Caddy recap processing is queued for coach review."
+        ? " MAI Coach recap processing is queued for coach review."
         : "";
 
       if (publicationStatus === "Draft") {
@@ -8192,10 +8598,10 @@ function CoachVideoWorkspace({
     setTags(video.tags.join(", "));
     setSelectedSessionId(video.sessionId ?? "");
     setLessonSummary(video.lessonSummary ?? "");
-    setWorkedOn(video.workedOn ?? "");
+    setWorkedOn(getLessonMainFocus(video));
     setKeyIssue(video.keyIssue ?? "");
     setImprovement(video.improvement ?? "");
-    setPracticeAssignment(video.practiceAssignment ?? "");
+    setPracticeAssignment(getLessonPracticeNext(video));
     setRecommendedDrill(video.recommendedDrill ?? "");
     setMemberFacingNotes(video.memberFacingNotes ?? "");
     setNextSessionGoal(video.nextSessionGoal ?? "");
@@ -8294,6 +8700,20 @@ function CoachVideoWorkspace({
     setStep((current) => Math.min(5, current + 1));
   }
 
+  function requestAudioRecapGeneration() {
+    if (editingVideo) {
+      setRecapReviewVideo(editingVideo);
+      return;
+    }
+    if (!videoFile) {
+      setWorkspaceMessage("Choose a video first. MAI Coach can generate notes after the upload is saved.");
+      setStep(2);
+      return;
+    }
+    setGenerateAiRecap(true);
+    setWorkspaceMessage("MAI Coach will generate lesson notes from the video audio after the upload finishes. The draft stays hidden until a coach approves it.");
+  }
+
   function canOpenWorkflowStep(stepNumber: number) {
     if (stepNumber <= step) return true;
     if (stepNumber !== step + 1) return false;
@@ -8379,7 +8799,7 @@ function CoachVideoWorkspace({
 
       <section className="coach-upload-shell">
         <nav className="coach-upload-steps" aria-label="Coach video upload steps">
-          {["Member", "Video", "Session", "Notes", "Review"].map((label, index) => {
+          {["Member", "Video", "Session", "Recap", "Review"].map((label, index) => {
             const stepNumber = index + 1;
             const stepComplete =
               stepNumber === 1
@@ -8426,8 +8846,8 @@ function CoachVideoWorkspace({
                     className={cls("coach-member-row", member.id === selectedMemberId && "selected")}
                     key={member.id}
                     onClick={() => chooseMember(member)}
-                  >
-                    <span className="member-initials">{member.name.split(" ").map((part) => part[0]).join("")}</span>
+	                  >
+	                    <CoachAvatar coach={member} />
                     <span>
                       <strong>{member.name}</strong>
                       <small>{member.email} · {member.phone}</small>
@@ -8446,8 +8866,8 @@ function CoachVideoWorkspace({
               {!selectedMember && <p className="coach-inline-warning">Select a member before uploading a lesson video.</p>}
               {selectedMember && (
                 <>
-                  <div className="selected-member-confirmation">
-                    <span className="member-initials">{selectedMember.name.split(" ").map((part) => part[0]).join("")}</span>
+	                  <div className="selected-member-confirmation">
+	                    <CoachAvatar coach={selectedMember} />
                     <div><span>Selected member</span><strong>{selectedMember.name}</strong><small>{selectedMember.email}</small></div>
                     <div><span>Contact</span><strong>{selectedMember.phone || "No phone"}</strong><small>{selectedMember.inviteStatus === "accepted" ? "Login active" : "Invitation pending"}</small></div>
                     <div><span>Lesson archive</span><strong>{selectedMember.videoCount ?? 0} videos</strong><small>{selectedMember.lastVideoAt ? formatVideoUploadDate(selectedMember.lastVideoAt) : "No lesson videos yet"}</small></div>
@@ -8559,19 +8979,43 @@ function CoachVideoWorkspace({
             <div className="coach-step-stack">
               <div className="coach-step-heading">
                 <p className="eyebrow">Step 4</p>
-                <h3>Add coach notes</h3>
-                <p>Keep the member-facing guidance concise enough to revisit during practice.</p>
+                <h3>Create lesson recap</h3>
+                <p>Use your spoken feedback from the video to create a lesson recap, or enter a few notes manually.</p>
               </div>
+              <label className="coach-email-toggle">
+                <input
+                  checked={generateAiRecap}
+                  disabled={Boolean(editingVideo) || accountUser?.role === "admin"}
+                  onChange={(event) => setGenerateAiRecap(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>
+                  <strong>Use video audio to generate lesson notes</strong>
+                  <small>{editingVideo ? "Use Generate Notes From Video Audio to review or regenerate an existing video recap." : accountUser?.role === "admin" ? "Admin uploads can still use the manual recap fields." : "Enabled for coach uploads. Nothing is published until you approve it."}</small>
+                </span>
+              </label>
+              <section className="ai-recap-status-card">
+                <div>
+                  <span>{generateAiRecap ? "Video uploaded → checking audio" : "Manual recap mode"}</span>
+                  <strong>{generateAiRecap ? "MAI Coach is listening after upload" : "Skip AI and enter notes manually"}</strong>
+                  <p>
+                    {generateAiRecap
+                      ? "After the video finishes uploading, MAI Coach checks for coach audio, transcribes the feedback, creates a draft recap, and keeps it ready for coach review."
+                      : "Audio processing is skipped. All recap fields below are optional, and the video can still be published without notes."}
+                  </p>
+                </div>
+                <button className="primary-action" disabled={saveState === "saving" || (!editingVideo && !videoFile)} onClick={requestAudioRecapGeneration} type="button">
+                  Generate Notes From Video Audio
+                </button>
+              </section>
+              <button className="text-button" onClick={() => setGenerateAiRecap(false)} type="button">Skip AI and enter notes manually</button>
               <div className="coach-notes-grid">
                 <label><span>Lesson summary</span><textarea onChange={(event) => setLessonSummary(event.target.value)} placeholder="Today we worked on takeaway and face control with the 7 iron." value={lessonSummary} /></label>
-                <label><span>What we worked on</span><textarea onChange={(event) => setWorkedOn(event.target.value)} placeholder="Takeaway structure, face control, and start line." value={workedOn} /></label>
-                <label><span>Key swing issue</span><textarea onChange={(event) => setKeyIssue(event.target.value)} placeholder="The club was rolling inside with the face opening early." value={keyIssue} /></label>
-                <label><span>What improved</span><textarea onChange={(event) => setImprovement(event.target.value)} placeholder="Start line tightened and contact moved toward center." value={improvement} /></label>
-                <label><span>What to practice next</span><textarea onChange={(event) => setPracticeAssignment(event.target.value)} placeholder="3 sets of slow takeaway drills and 20 half-speed 7-iron swings." value={practiceAssignment} /></label>
-                <label><span>Recommended drill</span><textarea onChange={(event) => setRecommendedDrill(event.target.value)} placeholder="Headcover outside the hands takeaway drill." value={recommendedDrill} /></label>
+                <label><span>Main focus</span><textarea onChange={(event) => setWorkedOn(event.target.value)} placeholder="Keeping the club from rolling inside while maintaining a square clubface." value={workedOn} /></label>
+                <label><span>Progress observed</span><textarea onChange={(event) => setImprovement(event.target.value)} placeholder="Start line tightened and contact moved closer to the center of the face." value={improvement} /></label>
+                <label><span>Practice next</span><textarea onChange={(event) => setPracticeAssignment(event.target.value)} placeholder="Three sets of the headcover takeaway drill, then 20 half-speed 7-iron swings." value={practiceAssignment} /></label>
                 <label><span>Next session goal</span><textarea onChange={(event) => setNextSessionGoal(event.target.value)} placeholder="Arrive next session with a neutral takeaway checkpoint and tighter start line." value={nextSessionGoal} /></label>
-                <label><span>Member-facing notes</span><textarea onChange={(event) => setMemberFacingNotes(event.target.value)} placeholder="A short message the member will see." value={memberFacingNotes} /></label>
-                <label><span>Coach private notes</span><textarea onChange={(event) => setCoachPrivateNotes(event.target.value)} placeholder="Only coaches and admins can see this." value={coachPrivateNotes} /></label>
+                <label><span>Coach private notes</span><textarea onChange={(event) => setCoachPrivateNotes(event.target.value)} placeholder="Only coaches and admins can see this. Never shown to the member." value={coachPrivateNotes} /></label>
               </div>
             </div>
           )}
@@ -8589,27 +9033,32 @@ function CoachVideoWorkspace({
                   <strong>{thumbnailFile?.name ?? videoFile?.name ?? editingVideo?.fileName ?? "Lesson video"}</strong>
                 </div>
                 <dl className="coach-review-list">
-                  <div><dt>Member</dt><dd>{selectedMember.name}<small>{selectedMember.email}</small></dd></div>
+                  <div><dt>Member</dt><dd><CoachAvatar coach={selectedMember} /><span>{selectedMember.name}<small>{selectedMember.email}</small></span></dd></div>
+                  <div><dt>Coach</dt><dd><CoachAvatar coach={{ name: coachName, profileImageUrl: coachProfileImageUrl }} /><span>{coachName}<small>{viewerRole === "admin" ? "Admin upload" : "Coach upload"}</small></span></dd></div>
                   <div><dt>Video</dt><dd>{videoTitle || "Untitled"}<small>{videoType}</small></dd></div>
                   <div><dt>Lesson</dt><dd>{formatFullDate(lessonDate)}<small>{focusArea}</small></dd></div>
                   <div><dt>Session</dt><dd>{selectedSession?.title ?? "No session attached"}<small>{selectedSession?.source ?? "Standalone video"}</small></dd></div>
-                  <div><dt>Practice focus</dt><dd>{practiceAssignment || "No assignment added"}<small>{recommendedDrill || "No drill added"}</small></dd></div>
-                  <div><dt>Next session goal</dt><dd>{nextSessionGoal || "No goal added"}<small>Shared after coach approval.</small></dd></div>
-                  <div><dt>Coach note</dt><dd>{memberFacingNotes || lessonSummary || "No member-facing note"}<small>Private notes are not shared.</small></dd></div>
+                  <div><dt>Lesson Summary</dt><dd>{lessonSummary || "Blank"}<small>Editable before approval.</small></dd></div>
+                  <div><dt>Main Focus</dt><dd>{workedOn || "Blank"}<small>Combines the old worked-on and key-issue fields.</small></dd></div>
+                  <div><dt>Progress Observed</dt><dd>{improvement || "Blank"}<small>Only what the coach confirms.</small></dd></div>
+                  <div><dt>Practice Next</dt><dd>{practiceAssignment || "Blank"}<small>Assignment and drill in one field.</small></dd></div>
+                  <div><dt>Next Session Goal</dt><dd>{nextSessionGoal || "Blank"}<small>Shared after coach approval.</small></dd></div>
+                  <div><dt>Private Coach Notes</dt><dd>{coachPrivateNotes || "None"}<small>Private to coaches and admins.</small></dd></div>
+                  <div><dt>Audio status</dt><dd>{generateAiRecap ? "Video uploaded, checking for coach audio after save" : "Manual notes mode"}<small>{generateAiRecap ? "Transcribing coach feedback, then creating lesson recap." : "No audio processing will run."}</small></dd></div>
                 </dl>
               </div>
               <label className="coach-email-toggle">
                 <input
-                  checked={generateAiRecap}
-                  disabled={Boolean(editingVideo)}
-                  onChange={(event) => setGenerateAiRecap(event.target.checked)}
-                  type="checkbox"
-                />
-                <span>
-                  <strong>Generate lesson recap from my voiceover</strong>
-                  <small>{editingVideo ? "Available for new coach uploads. Use Review AI Recap to retry an existing video." : "Starts after upload and stays hidden until a coach approves it."}</small>
-                </span>
-              </label>
+	                  checked={generateAiRecap}
+	                  disabled={Boolean(editingVideo) || accountUser?.role === "admin"}
+	                  onChange={(event) => setGenerateAiRecap(event.target.checked)}
+	                  type="checkbox"
+	                />
+	                <span>
+	                  <strong>Use video audio to generate lesson notes</strong>
+	                  <small>{editingVideo ? "Available for new coach uploads. Use Review AI Recap to retry an existing video." : accountUser?.role === "admin" ? "Admin uploads need a selected assigned coach before AI processing can run." : "Starts after upload and stays hidden until a coach approves it."}</small>
+	                </span>
+	              </label>
               <label className="coach-email-toggle">
                 <input checked={emailMember} onChange={(event) => setEmailMember(event.target.checked)} type="checkbox" />
                 <span><strong>Email {selectedMember.name} when published</strong><small>Notification is sent only after the video is saved successfully.</small></span>
@@ -8630,9 +9079,9 @@ function CoachVideoWorkspace({
             ) : (
               <div className="button-row">
                 <button className="secondary-action" disabled={saveState === "saving"} onClick={() => void saveCoachVideo("Draft", false)}>Save as Draft</button>
-                <button className="secondary-action" disabled={saveState === "saving"} onClick={() => void saveCoachVideo("Published", false)}>Publish to Member</button>
+                <button className="secondary-action" disabled={saveState === "saving"} onClick={() => void saveCoachVideo("Published", false)}>Publish Video Without Recap</button>
                 <button className="primary-action" disabled={saveState === "saving"} onClick={() => void saveCoachVideo("Published", true)}>
-                  {saveState === "saving" ? "Publishing..." : "Publish and Email Member"}
+                  {saveState === "saving" ? "Publishing..." : "Approve & Publish to Member"}
                 </button>
               </div>
             )}
@@ -8866,115 +9315,355 @@ function CoachVideoWorkspace({
   );
 }
 
-function PracticeView({ insights, practiceProfile }: { insights: Insight[]; practiceProfile?: UserPracticeProfile | null }) {
+function PracticeView({
+  accountUser,
+  insights,
+  practiceProfile,
+  sessions,
+  setActiveTab,
+}: {
+  accountUser: AccountUser | null;
+  insights: Insight[];
+  practiceProfile?: UserPracticeProfile | null;
+  sessions: Session[];
+  setActiveTab: (tab: Tab) => void;
+}) {
   const priority = insights[0];
-  const [expandedBlock, setExpandedBlock] = useState<string | null>("calibration");
-  const skill = practiceProfile?.path ?? "Casual";
-  const skillNote =
-    skill === "Beginner"
-      ? "Keep the targets simple and reward solid contact first."
-      : skill === "Competitive"
-        ? "Run the block with randomized targets and score every rep."
-        : "Balance feedback with a small scoring challenge.";
-  const practiceBlocks = [
-    {
-      id: "calibration",
-      time: "10 min",
-      title: "Calibration",
-      body: "Half-speed swings with face tape, then record launch and smash only.",
-      club: priority ? getClubDisplayName(priority.club) : "Any club",
-      difficulty: skill === "Beginner" ? "Easy" : "Moderate",
-      metric: "Contact cluster",
-      shotCount: skill === "Beginner" ? "12 shots" : "15 shots",
-      target: "Center-face contact on at least 7 of 10 scored swings.",
-      success: "Contact pattern tightens and smash stays inside a small repeatable band.",
-      why: "Selected first because cleaner contact makes every later metric easier to trust.",
-      easier: "Use half swings and ignore distance.",
-      harder: "Alternate target lines while keeping strike quality.",
-    },
-    {
-      id: "priority",
-      time: "20 min",
-      title: priority?.club === "Driver" ? "Start-line gate" : "Carry window ladder",
-      body: priority?.action ?? "Alternate target yardages and keep dispersion inside the working window.",
-      club: priority ? getClubDisplayName(priority.club) : "Primary club",
-      difficulty: skill === "Competitive" ? "Advanced" : "Moderate",
-      metric: priority?.metric ?? "Dispersion",
-      shotCount: "24 shots",
-      target: priority?.target ?? "Keep most shots inside the selected carry or start-line window.",
-      success: "At least 60% of shots meet the target window before moving on.",
-      why: priority ? `This addresses the current ${priority.metric.toLowerCase()} priority.` : "This creates a measurable baseline for the next upload.",
-      easier: "Make the window wider or use a shorter club.",
-      harder: "Randomize target, club, or shot shape every three balls.",
-    },
-    {
-      id: "transfer",
-      time: "15 min",
-      title: "Transfer set",
-      body: "Randomize clubs and commit to one target before stepping into each ball.",
-      club: "Mixed",
-      difficulty: skill === "Competitive" ? "Advanced" : "Moderate",
-      metric: "Decision quality",
-      shotCount: "15 shots",
-      target: "Name target, club, and shot shape before every swing.",
-      success: "Keep routine consistent and log one note after every five shots.",
-      why: "Transfer practice connects the technical work to actual golf decisions.",
-      easier: "Use one club and two targets.",
-      harder: "Play a simulated hole and count penalties for poor commitment.",
-    },
+  const defaultFocus = priority?.metric?.toLowerCase().includes("face")
+    ? "Face control"
+    : priority?.club === "Driver"
+      ? "Driver accuracy"
+      : practiceProfile?.goals?.[0] ?? "Better contact";
+  const focusOptions = [
+    "Driver accuracy",
+    "More distance",
+    "Better contact",
+    "Iron consistency",
+    "Wedge distance control",
+    "Launch conditions",
+    "Shot shape",
+    "Club path",
+    "Face control",
+    "Short game",
+    "Putting",
+    "Coach-assigned focus",
+    "Surprise me",
   ];
+  const [selectedFocus, setSelectedFocus] = useState(defaultFocus);
+  const [activities, setActivities] = useState<PracticeActivity[]>([]);
+  const [currentActivity, setCurrentActivity] = useState<PracticeActivity | null>(null);
+  const [loadingAction, setLoadingAction] = useState<"" | PracticeActivityType | "load" | "update">("");
+  const [practiceMessage, setPracticeMessage] = useState("");
+  const [showFocusChoices, setShowFocusChoices] = useState(false);
+  const [showResultEntry, setShowResultEntry] = useState(false);
+  const [replaceReason, setReplaceReason] = useState("Just want another option");
+  const [resultForm, setResultForm] = useState({
+    attempts: "",
+    score: "",
+    successfulAttempts: "",
+    notes: "",
+    reflection: "",
+  });
+  const coachConnection = currentActivity?.instructions.coachConnection;
+  const hasSessionData = sessions.some((session) => session.shots.length > 0);
+  const latestSession = sessions.find((session) => session.shots.length > 0);
+  const recentActivity = activities[0];
+  const lastResult = activities.find((activity) => activity.latestResult)?.latestResult ?? null;
+  const improvementTrend = lastResult
+    ? lastResult.progressStatus === "improved"
+      ? "Improved"
+      : lastResult.progressStatus === "maintained"
+        ? "Maintained"
+        : lastResult.progressStatus === "needs_more_work"
+          ? "Needs More Work"
+          : "Insufficient Data"
+    : "No result yet";
+  const nextStep = lastResult?.nextRecommendation?.recommendation
+    ?? currentActivity?.instructions.nextStepLogic
+    ?? "Generate a drill or challenge to start the loop.";
+  const priorityCopy = currentActivity?.instructions.sourceSummary ??
+    (priority
+    ? `Based on your recent sessions, coach feedback, and goals, your biggest opportunity is currently ${priority.metric.toLowerCase()} with your ${getClubDisplayName(priority.club)}.`
+    : hasSessionData
+      ? "MAI Coach will use your saved session data conservatively until a stronger trend emerges."
+      : practiceProfile
+        ? "Starter plan based on your golfer profile. Upload a session or ask your coach to add feedback for a more specific plan."
+        : "Create a golfer profile or upload your first session before MAI Coach can personalize the practice plan.");
+
+  useEffect(() => {
+    if (!accountUser) {
+      setActivities([]);
+      setCurrentActivity(null);
+      setPracticeMessage("");
+      return;
+    }
+    let active = true;
+    setLoadingAction("load");
+    fetch("/api/practice")
+      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.error || "Practice data is unavailable."))))
+      .then((payload: { activities?: PracticeActivity[]; currentActivity?: PracticeActivity | null }) => {
+        if (!active) return;
+        setActivities(payload.activities ?? []);
+        setCurrentActivity(payload.currentActivity ?? payload.activities?.[0] ?? null);
+      })
+      .catch((error) => {
+        if (active) setPracticeMessage(error instanceof Error ? error.message : "Practice data is unavailable.");
+      })
+      .finally(() => {
+        if (active) setLoadingAction("");
+      });
+    return () => {
+      active = false;
+    };
+  }, [accountUser]);
+
+  async function requestActivity(activityType: PracticeActivityType, options: { replace?: boolean } = {}) {
+    if (!accountUser) {
+      setPracticeMessage("Sign in to generate a personal MAI Coach practice activity.");
+      return;
+    }
+    setLoadingAction(activityType);
+    setPracticeMessage(activityType === "drill" ? "MAI Coach is building your drill." : "MAI Coach is building your challenge.");
+    try {
+      const response = await fetch("/api/practice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          activityType,
+          focusArea: selectedFocus,
+          replaceReason: options.replace ? replaceReason : undefined,
+        }),
+      });
+      const payload = await response.json() as { activity?: PracticeActivity | null; activities?: PracticeActivity[]; error?: string; message?: string; reused?: boolean };
+      if (!response.ok) throw new Error(payload.error || "MAI Coach could not generate that activity.");
+      if (payload.activity) {
+        setCurrentActivity(payload.activity);
+        setActivities((current) => {
+          const withoutDuplicate = current.filter((activity) => activity.id !== payload.activity?.id);
+          return [payload.activity as PracticeActivity, ...withoutDuplicate].slice(0, 8);
+        });
+      }
+      setShowResultEntry(false);
+      setPracticeMessage(payload.reused ? payload.message || "MAI Coach reused your active activity." : "Practice activity saved.");
+    } catch (error) {
+      setPracticeMessage(error instanceof Error ? error.message : "MAI Coach could not generate that activity.");
+    } finally {
+      setLoadingAction("");
+    }
+  }
+
+  async function updateActivity(action: "start" | "complete" | "submit_result" | "share_with_coach") {
+    if (!currentActivity) return;
+    setLoadingAction("update");
+    try {
+      const response = await fetch("/api/practice", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action,
+          activityId: currentActivity.id,
+          score: resultForm.score,
+          attempts: resultForm.attempts,
+          successfulAttempts: resultForm.successfulAttempts,
+          notes: resultForm.notes,
+          reflection: resultForm.reflection,
+          submissionType: resultForm.score ? "score" : resultForm.reflection ? "reflection" : "manual",
+        }),
+      });
+      const payload = await response.json() as { activities?: PracticeActivity[]; currentActivity?: PracticeActivity | null; error?: string };
+      if (!response.ok) throw new Error(payload.error || "Practice activity could not be updated.");
+      setActivities(payload.activities ?? activities);
+      setCurrentActivity(payload.currentActivity ?? payload.activities?.find((activity) => activity.id === currentActivity.id) ?? currentActivity);
+      if (action === "start") setPracticeMessage("Activity started.");
+      if (action === "complete") {
+        setShowResultEntry(true);
+        setPracticeMessage("How did you do?");
+      }
+      if (action === "submit_result") {
+        setShowResultEntry(false);
+        setResultForm({ attempts: "", score: "", successfulAttempts: "", notes: "", reflection: "" });
+        setPracticeMessage("Result submitted. MAI Coach updated the next step.");
+      }
+      if (action === "share_with_coach") setPracticeMessage("Result marked to share with your assigned coach.");
+    } catch (error) {
+      setPracticeMessage(error instanceof Error ? error.message : "Practice activity could not be updated.");
+    } finally {
+      setLoadingAction("");
+    }
+  }
 
   return (
-    <section className="practice-board">
-      <div className="panel panel-large">
-        <PanelHeader
-          kicker="Next session"
-          title={priority ? priority.title : "Maintenance block"}
-          meta={priority ? `${getClubDisplayName(priority.club)} · ${priority.metric} · ${skill} plan` : `${skill} balanced practice`}
-        />
-        <p className="practice-skill-note">{skillNote}</p>
-        <div className="practice-track">
-          {practiceBlocks.map((block, index) => (
-            <article className={cls("practice-step", expandedBlock === block.id && "expanded")} key={block.title}>
-              <span className="step-index">{index + 1}</span>
-              <div>
-                <small>{block.time}</small>
-                <h3>{block.title}</h3>
-                <p>{block.body}</p>
-                <strong>{block.metric}</strong>
-                <button className="text-button practice-expand-button" onClick={() => setExpandedBlock((current) => current === block.id ? null : block.id)} type="button">
-                  {expandedBlock === block.id ? "Hide details" : "Show drill details"}
+    <section className="practice-workspace">
+      <div className="practice-hero panel">
+        <div className="practice-hero-copy">
+          <div className="practice-avatar-row">
+            {accountUser && <AccountAvatar user={accountUser} />}
+            <span>MAI Coach Practice</span>
+          </div>
+          <h2>What should we work on today?</h2>
+          <p>{priorityCopy}</p>
+          {coachConnection?.connected && (
+            <div className="practice-coach-note">
+              <span>Recommended from {coachConnection.coachName || "your coach"}</span>
+              <strong>{coachConnection.summary}</strong>
+              <small>MAI Coach organized this practice around approved lesson feedback.</small>
+            </div>
+          )}
+        </div>
+        <div className="practice-action-panel">
+          <button className="primary-action practice-primary-action" disabled={Boolean(loadingAction)} onClick={() => void requestActivity("drill")} type="button">
+            {loadingAction === "drill" ? "Building Drill..." : "Generate a Drill"}
+          </button>
+          <button className="primary-action practice-primary-action challenge" disabled={Boolean(loadingAction)} onClick={() => void requestActivity("challenge")} type="button">
+            {loadingAction === "challenge" ? "Building Challenge..." : "Generate a Challenge"}
+          </button>
+          <button className="secondary-action" onClick={() => setShowFocusChoices((current) => !current)} type="button">
+            Choose a different focus
+          </button>
+          {showFocusChoices && (
+            <div className="practice-focus-picker">
+              {focusOptions.map((focus) => (
+                <button className={cls(selectedFocus === focus && "selected")} key={focus} onClick={() => setSelectedFocus(focus)} type="button">
+                  {focus}
                 </button>
-                {expandedBlock === block.id && (
-                  <dl className="practice-drill-detail">
-                    <div><dt>Club</dt><dd>{block.club}</dd></div>
-                    <div><dt>Shot count</dt><dd>{block.shotCount}</dd></div>
-                    <div><dt>Skill level</dt><dd>{skill}</dd></div>
-                    <div><dt>Difficulty</dt><dd>{block.difficulty}</dd></div>
-                    <div><dt>Target</dt><dd>{block.target}</dd></div>
-                    <div><dt>Success</dt><dd>{block.success}</dd></div>
-                    <div><dt>Why selected</dt><dd>{block.why}</dd></div>
-                    <div><dt>Easier</dt><dd>{block.easier}</dd></div>
-                    <div><dt>Harder</dt><dd>{block.harder}</dd></div>
-                  </dl>
-                )}
-              </div>
-            </article>
-          ))}
+              ))}
+            </div>
+          )}
+          {selectedFocus !== defaultFocus && (
+            <p className="practice-focus-warning">
+              MAI Coach recommends {defaultFocus} first. You can choose {selectedFocus}, but coach-approved priorities still get extra weight.
+            </p>
+          )}
         </div>
       </div>
 
-      <div className="panel">
-        <PanelHeader kicker="Targets" title="Session scorecard" meta="Track after each block" />
-        <div className="scorecard-list">
-          {["Start line inside 12 yd", "Smash within 0.03 band", "Carry window inside 8 yd", "One note after each club"].map((item) => (
-            <label key={item} className="check-row">
-              <input type="checkbox" />
-              <span>{item}</span>
-            </label>
-          ))}
-        </div>
+      <div className="practice-progress-strip">
+        <div><span>Current focus</span><strong>{selectedFocus}</strong></div>
+        <div><span>Recent practice activity</span><strong>{recentActivity?.title ?? "None yet"}</strong></div>
+        <div><span>Last reported result</span><strong>{lastResult ? `${lastResult.progressStatus.replaceAll("_", " ")}` : "NA"}</strong></div>
+        <div><span>Improvement trend</span><strong>{improvementTrend}</strong></div>
+        <div><span>Next recommended step</span><strong>{nextStep}</strong></div>
       </div>
+
+      {practiceMessage && <div className="practice-status-message" role="status">{practiceMessage}</div>}
+
+      {!accountUser ? (
+        <div className="panel practice-empty-panel">
+          <PanelHeader kicker="Sign in required" title="Your practice generator is private" meta="Activities and results attach to your account only" />
+          <p>Sign in or create an account before MAI Coach saves drills, challenges, results, or coach-share settings.</p>
+        </div>
+      ) : currentActivity ? (
+        <div className="practice-current-grid">
+          <article className="panel practice-activity-card">
+            <div className="practice-card-head">
+              <span>{currentActivity.activityType === "challenge" ? "Challenge" : "Drill"}</span>
+              <strong>{currentActivity.status.replaceAll("_", " ")}</strong>
+            </div>
+            <h3>{currentActivity.title}</h3>
+            <p>{currentActivity.reasonSelected}</p>
+            {currentActivity.instructions.sourceSummary && (
+              <div className="practice-source-summary">
+                <span>{currentActivity.instructions.sourceMode?.replaceAll("_", " ") ?? "source"}</span>
+                <strong>{currentActivity.instructions.sourceSummary}</strong>
+              </div>
+            )}
+            <dl className="practice-activity-meta">
+              <div><dt>Focus</dt><dd>{currentActivity.focusArea}</dd></div>
+              <div><dt>Club</dt><dd>{currentActivity.club || "Any club"}</dd></div>
+              <div><dt>Time</dt><dd>{currentActivity.durationMinutes ?? "NA"} min</dd></div>
+              <div><dt>Attempts</dt><dd>{currentActivity.attemptCount ?? "NA"}</dd></div>
+            </dl>
+            <section>
+              <h4>Setup</h4>
+              <p>{currentActivity.instructions.setup}</p>
+            </section>
+            <section>
+              <h4>Practice</h4>
+              <ol className="practice-instruction-list">
+                {(currentActivity.instructions.instructions ?? []).map((step) => <li key={step}>{step}</li>)}
+              </ol>
+            </section>
+            <section className="practice-target-box">
+              <span>Success target</span>
+              <strong>{currentActivity.target?.successTarget ?? "Record the result MAI Coach requested."}</strong>
+              {currentActivity.scoring?.enabled && <small>{currentActivity.scoring.system}</small>}
+            </section>
+            <dl className="practice-drill-detail">
+              <div><dt>Feel</dt><dd>{currentActivity.instructions.feel ?? "NA"}</dd></div>
+              <div><dt>Common mistake</dt><dd>{currentActivity.instructions.commonMistake ?? "NA"}</dd></div>
+              <div><dt>Make it easier</dt><dd>{currentActivity.instructions.easierVersion ?? "NA"}</dd></div>
+              <div><dt>Make it harder</dt><dd>{currentActivity.instructions.harderVersion ?? "NA"}</dd></div>
+            </dl>
+            <div className="practice-activity-actions">
+              <button className="primary-action" disabled={loadingAction === "update"} onClick={() => void updateActivity("start")} type="button">Start Activity</button>
+              <button className="secondary-action" disabled={loadingAction === "update"} onClick={() => void updateActivity("complete")} type="button">Mark Complete</button>
+              <button className="secondary-action" onClick={() => setShowResultEntry((current) => !current)} type="button">How Did You Do?</button>
+            </div>
+          </article>
+
+          <aside className="panel practice-result-panel">
+            <PanelHeader kicker="Results" title="How did you do?" meta="Upload is optional" />
+            <div className="practice-result-options">
+              <button onClick={() => setActiveTab("import")} type="button">Upload Session Results</button>
+              <button onClick={() => setActiveTab("import")} type="button">Upload Screenshot or Photo</button>
+              <button onClick={() => setActiveTab("import")} type="button">Upload CSV</button>
+              <button onClick={() => setShowResultEntry(true)} type="button">Enter Results Manually</button>
+              <button onClick={() => setShowResultEntry(true)} type="button">Enter Challenge Score</button>
+              <button onClick={() => setShowResultEntry(true)} type="button">Tell MAI Coach What Happened</button>
+              <button onClick={() => setPracticeMessage("No problem. MAI Coach will keep this activity open until you are ready.")} type="button">Skip for Now</button>
+            </div>
+            {showResultEntry && (
+              <div className="practice-result-form">
+                <label><span>Attempts</span><input inputMode="numeric" value={resultForm.attempts} onChange={(event) => setResultForm((current) => ({ ...current, attempts: event.target.value }))} /></label>
+                <label><span>Successful attempts</span><input inputMode="numeric" value={resultForm.successfulAttempts} onChange={(event) => setResultForm((current) => ({ ...current, successfulAttempts: event.target.value }))} /></label>
+                <label><span>Challenge score</span><input inputMode="decimal" value={resultForm.score} onChange={(event) => setResultForm((current) => ({ ...current, score: event.target.value }))} /></label>
+                <label><span>Result notes</span><textarea value={resultForm.notes} onChange={(event) => setResultForm((current) => ({ ...current, notes: event.target.value }))} placeholder="What improved or missed the target?" /></label>
+                <label><span>Reflection</span><textarea value={resultForm.reflection} onChange={(event) => setResultForm((current) => ({ ...current, reflection: event.target.value }))} placeholder="What did it feel like?" /></label>
+                <button className="primary-action" disabled={loadingAction === "update"} onClick={() => void updateActivity("submit_result")} type="button">Submit Result</button>
+              </div>
+            )}
+            {currentActivity.latestResult && (
+              <div className="practice-progress-result">
+                <span>Result</span>
+                <strong>{currentActivity.latestResult.progressStatus.replaceAll("_", " ")}</strong>
+                {(currentActivity.latestResult.evidence ?? []).map((item) => <p key={item}>{item}</p>)}
+                <small>{currentActivity.latestResult.nextRecommendation?.recommendation ?? "MAI Coach will use this for the next recommendation."}</small>
+                <button className="secondary-action" onClick={() => void updateActivity("share_with_coach")} type="button">Share Results With Coach</button>
+              </div>
+            )}
+            <div className="practice-generate-another">
+              <label><span>Generate another because...</span><select value={replaceReason} onChange={(event) => setReplaceReason(event.target.value)}>
+                <option>Too easy</option>
+                <option>Too hard</option>
+                <option>Not enough time</option>
+                <option>Wrong equipment</option>
+                <option>Different focus</option>
+                <option>Just want another option</option>
+              </select></label>
+              <button className="secondary-action" disabled={Boolean(loadingAction)} onClick={() => void requestActivity(currentActivity.activityType, { replace: true })} type="button">Generate Another</button>
+            </div>
+          </aside>
+        </div>
+      ) : (
+        <div className="panel practice-empty-panel">
+          <PanelHeader kicker="Ready when you are" title="Generate one focused activity" meta={latestSession ? `Latest session: ${latestSession.title}` : "No session required"} />
+          <p>Choose a drill for technical work or a challenge for a measurable test. MAI Coach will save the activity before showing it.</p>
+        </div>
+      )}
+
+      <section className="panel practice-history-panel">
+        <PanelHeader kicker="Practice history" title="Recent activity" meta="Last saved drills and challenges" />
+        <div className="practice-history-list">
+          {activities.slice(0, 5).map((activity) => (
+            <button className={cls(currentActivity?.id === activity.id && "selected")} key={activity.id} onClick={() => setCurrentActivity(activity)} type="button">
+              <span>{formatDate(activity.createdAt)} · {activity.activityType}</span>
+              <strong>{activity.title}</strong>
+              <small>{activity.focusArea} · {activity.latestResult?.progressStatus?.replaceAll("_", " ") ?? activity.status.replaceAll("_", " ")}</small>
+            </button>
+          ))}
+          {activities.length === 0 && <p>No generated practice activities yet.</p>}
+        </div>
+      </section>
     </section>
   );
 }
@@ -9041,6 +9730,15 @@ function VideoLibraryCard({
   session?: Session;
   video: VideoLibraryItem;
 }) {
+  const hasPublishedLessonRecap = Boolean(
+    video.lessonSummary ||
+    getLessonMainFocus(video) ||
+    video.improvement ||
+    getLessonPracticeNext(video) ||
+    video.nextSessionGoal ||
+    video.memberFacingNotes ||
+    (video.coachNotes && !video.coachNotesPrivate),
+  );
   return (
     <article className="video-library-card">
       <button className="video-card-open" onClick={onOpen}>
@@ -9068,7 +9766,7 @@ function VideoLibraryCard({
             <span>{session ? session.title : "No session attached"}</span>
             {video.focusArea && <span>{video.focusArea}</span>}
             {video.club && <span>{getClubDisplayName(video.club)}</span>}
-            {(video.memberFacingNotes || (video.coachNotes && !video.coachNotesPrivate)) && <span>Coach notes</span>}
+            {hasPublishedLessonRecap && <span>Lesson recap</span>}
           </div>
         </div>
       </button>
@@ -9136,64 +9834,123 @@ function AiLessonRecapReviewModal({
   video: VideoLibraryItem;
 }) {
   const [state, setState] = useState<VideoRecapState | null>(null);
-  const [message, setMessage] = useState("Loading MAI Caddy recap state...");
+  const [message, setMessage] = useState("Loading MAI Coach recap state...");
   const [saving, setSaving] = useState<"idle" | "saving">("idle");
   const [transcriptText, setTranscriptText] = useState("");
   const [fields, setFields] = useState({
-    improvement: video.improvement ?? "",
-    keyIssue: video.keyIssue ?? "",
     lessonSummary: video.lessonSummary ?? "",
-    memberFacingNotes: video.memberFacingNotes ?? "",
+    mainFocus: getLessonMainFocus(video),
     nextSessionGoal: video.nextSessionGoal ?? "",
-    practiceAssignment: video.practiceAssignment ?? "",
-    recommendedDrill: video.recommendedDrill ?? "",
-    workedOn: video.workedOn ?? "",
+    practiceNext: getLessonPracticeNext(video),
+    progressObserved: video.improvement ?? "",
   });
+  const activeJobStatuses = new Set(["queued", "extracting_audio", "transcribing", "generating_recap"]);
+
+  function legacyPayloadFromFields() {
+    return {
+      improvement: fields.progressObserved,
+      keyIssue: "",
+      lessonSummary: fields.lessonSummary,
+      memberFacingNotes: "",
+      nextSessionGoal: fields.nextSessionGoal,
+      practiceAssignment: fields.practiceNext,
+      recommendedDrill: "",
+      workedOn: fields.mainFocus,
+    };
+  }
 
   useEffect(() => {
     let cancelled = false;
+    function applyPayload(payload: VideoRecapState) {
+      setState(payload);
+      if (payload.transcript?.text) setTranscriptText(payload.transcript.text);
+      if (payload.draft) {
+        setFields(simplifiedFieldsFromVideoRecapDraft(payload.draft));
+        setMessage(payload.draft.status === "published" ? "Published and locked. Regenerate from video audio to create a new draft revision." : "Generated from your video voiceover. Review before publishing.");
+      } else if (payload.job) {
+        setMessage(payload.job.errorMessage || videoRecapProcessingStatusText(payload.job.status));
+      } else {
+        setMessage("No AI recap has been generated yet. Generate Notes From Video Audio will queue this video for processing.");
+      }
+    }
+
     readVideoRecap(video.id)
       .then((payload) => {
         if (cancelled) return;
-        setState(payload);
-        if (payload.transcript?.text) setTranscriptText(payload.transcript.text);
-        if (payload.draft) {
-          setFields({
-            improvement: payload.draft.improvement,
-            keyIssue: payload.draft.keyIssue,
-            lessonSummary: payload.draft.lessonSummary,
-            memberFacingNotes: payload.draft.memberFacingNotes,
-            nextSessionGoal: payload.draft.nextSessionGoal,
-            practiceAssignment: payload.draft.practiceAssignment,
-            recommendedDrill: payload.draft.recommendedDrill,
-            workedOn: payload.draft.workedOn,
-          });
-          setMessage(payload.draft.status === "published" ? "This recap is already published." : "Review the draft before publishing it to the member.");
-        } else if (payload.job) {
-          setMessage(payload.job.errorMessage || `Processing status: ${payload.job.status}.`);
-        } else {
-          setMessage("No AI recap has been generated yet. Retry will queue this video for processing.");
-        }
+        applyPayload(payload);
       })
       .catch((error) => {
-        if (!cancelled) setMessage(error instanceof Error ? error.message : "The MAI Caddy recap could not be loaded.");
+        if (!cancelled) setMessage(error instanceof Error ? error.message : "The MAI Coach recap could not be loaded.");
       });
     return () => {
       cancelled = true;
     };
   }, [video.id]);
 
+  const isProcessingActive = Boolean(state?.job && activeJobStatuses.has(state.job.status));
+
+  useEffect(() => {
+    if (!isProcessingActive) return;
+    let cancelled = false;
+    let inFlight = false;
+    const timer = window.setInterval(() => {
+      if (inFlight) return;
+      inFlight = true;
+      readVideoRecap(video.id)
+        .then((payload) => {
+          if (cancelled) return;
+          setState(payload);
+          if (payload.transcript?.text) setTranscriptText(payload.transcript.text);
+          if (payload.draft) {
+            setFields(simplifiedFieldsFromVideoRecapDraft(payload.draft));
+            setMessage(payload.draft.status === "published" ? "Published and locked. Regenerate from video audio to create a new draft revision." : "Generated from your video voiceover. Review before publishing.");
+          } else if (payload.job) {
+            setMessage(payload.job.errorMessage || videoRecapProcessingStatusText(payload.job.status));
+          }
+        })
+        .catch((error) => {
+          if (!cancelled) setMessage(error instanceof Error ? error.message : "The MAI Coach recap could not be refreshed.");
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    }, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [isProcessingActive, video.id]);
+
   function updateField(key: keyof typeof fields, value: string) {
     setFields((current) => ({ ...current, [key]: value }));
   }
 
-  async function submit(action: "approveAndPublish" | "editTranscript" | "markIncorrect" | "retry" | "saveDraft") {
+  async function refreshNow() {
+    setSaving("saving");
+    try {
+      const payload = await readVideoRecap(video.id);
+      setState(payload);
+      if (payload.transcript?.text) setTranscriptText(payload.transcript.text);
+      if (payload.draft) {
+        setFields(simplifiedFieldsFromVideoRecapDraft(payload.draft));
+      }
+      setMessage(payload.job?.errorMessage || "MAI Coach recap state refreshed.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The MAI Coach recap could not be refreshed.");
+    } finally {
+      setSaving("idle");
+    }
+  }
+
+  async function submit(action: "approveAndPublish" | "cancelProcessing" | "editTranscript" | "markIncorrect" | "regenerateRecapFromTranscript" | "retranscribeVideo" | "saveDraft") {
     if (action === "approveAndPublish" && !window.confirm("Publish this coach-approved recap and transcript to the member?")) return;
     if (action === "markIncorrect" && !window.confirm("Mark this AI recap as incorrect? It will stay hidden from the member.")) return;
+    if (action === "cancelProcessing" && !window.confirm("Cancel the active MAI Coach processing job? Published recaps will remain available.")) return;
+    if (action === "retranscribeVideo" && !window.confirm("Retranscribe the original video and create a new draft revision?")) return;
     setSaving("saving");
     try {
       const nextState = await updateVideoRecap({
-        ...fields,
+        ...legacyPayloadFromFields(),
         action,
         transcriptText,
         videoId: video.id,
@@ -9203,21 +9960,25 @@ function AiLessonRecapReviewModal({
       if (action === "approveAndPublish") {
         onPublished({
           ...stripVideoObjectUrl(video),
-          improvement: fields.improvement,
-          keyIssue: fields.keyIssue,
+          improvement: fields.progressObserved,
+          keyIssue: "",
           lessonSummary: fields.lessonSummary,
-          memberFacingNotes: fields.memberFacingNotes,
+          memberFacingNotes: "",
           nextSessionGoal: fields.nextSessionGoal,
-          practiceAssignment: fields.practiceAssignment,
+          practiceAssignment: fields.practiceNext,
           publicationStatus: "Published",
-          recommendedDrill: fields.recommendedDrill,
+          recommendedDrill: "",
           status: "Coach Feedback",
           updatedAt: new Date().toISOString(),
-          workedOn: fields.workedOn,
+          workedOn: fields.mainFocus,
         });
         setMessage("Recap approved and published to the member.");
-      } else if (action === "retry") {
-        setMessage("MAI Caddy processing was queued again.");
+      } else if (action === "retranscribeVideo") {
+        setMessage("Generate Notes From Video Audio was queued.");
+      } else if (action === "regenerateRecapFromTranscript") {
+        setMessage("A new recap draft was generated from the saved transcript.");
+      } else if (action === "cancelProcessing") {
+        setMessage("Processing cancellation was requested.");
       } else if (action === "markIncorrect") {
         setMessage("The generated recap was marked incorrect and remains hidden.");
       } else if (action === "editTranscript") {
@@ -9226,7 +9987,25 @@ function AiLessonRecapReviewModal({
         setMessage("Draft saved.");
       }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "The MAI Caddy action could not be completed.");
+      setMessage(error instanceof Error ? error.message : "The MAI Coach action could not be completed.");
+    } finally {
+      setSaving("idle");
+    }
+  }
+
+  async function publishVideoWithoutRecap() {
+    if (!window.confirm("Publish this video without approving an AI recap? Any unapproved draft will remain hidden from the member.")) return;
+    setSaving("saving");
+    try {
+      const updated = await finalizeVideoRecord(video.id, {
+        ...videoPatchPayload(stripVideoObjectUrl(video)),
+        publicationStatus: "Published",
+        notifyMember: false,
+      });
+      onPublished(updated);
+      setMessage("Video published without a recap. Unapproved AI drafts remain hidden.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The video could not be published without a recap.");
     } finally {
       setSaving("idle");
     }
@@ -9234,14 +10013,19 @@ function AiLessonRecapReviewModal({
 
   const jobStatus = state?.job?.status ?? "Not queued";
   const hasDraft = Boolean(state?.draft);
-  const canPublish = hasDraft;
+  const draftStatus = state?.draft?.status ?? "";
+  const draftLocked = draftStatus === "published";
+  const canPublish = hasDraft && (draftStatus === "ready_for_review" || draftStatus === "needs_coach_input");
+  const evidence = state?.draft?.transcriptEvidence ?? [];
+  const noUsableAudio = jobStatus === "no_usable_audio";
+  const statusLabel = videoRecapProcessingStatusText(draftStatus === "published" ? "published" : jobStatus);
 
   return (
     <div className="video-modal-overlay">
       <section className="video-upload-modal ai-recap-modal">
         <div className="video-modal-header">
           <div>
-            <p className="eyebrow">MAI Caddy voiceover</p>
+            <p className="eyebrow">MAI Coach voiceover</p>
             <h2>Review lesson recap</h2>
           </div>
           <button aria-label="Close AI recap review" className="icon-button" onClick={onClose} type="button">×</button>
@@ -9254,41 +10038,67 @@ function AiLessonRecapReviewModal({
               <div><dt>Video</dt><dd>{video.title}<small>{video.fileName}</small></dd></div>
               <div><dt>Member</dt><dd>{video.memberName ?? "Member"}<small>{video.memberEmail ?? "No email"}</small></dd></div>
               <div><dt>Coach</dt><dd>{video.coachName ?? video.uploadedBy}<small>{video.lessonDate ? formatFullDate(video.lessonDate) : formatVideoUploadDate(video.uploadedAt)}</small></dd></div>
-              <div><dt>Status</dt><dd>{jobStatus}<small>{state?.job?.currentStep ?? "No workflow step yet"}</small></dd></div>
+              <div><dt>Audio status</dt><dd>{statusLabel}<small>{state?.job?.currentStep ?? "No workflow step yet"}</small></dd></div>
             </dl>
             {state?.job?.errorMessage && <p className="coach-inline-warning">{state.job.errorMessage}</p>}
+            {noUsableAudio && (
+              <div className="coach-inline-warning">
+                No clear coach voiceover was detected. You can add a short lesson recap manually, or publish the video without a recap.
+              </div>
+            )}
           </div>
 
           <div className="ai-recap-editor-column">
-            <label className="video-form-wide"><span>Transcript</span><textarea onChange={(event) => setTranscriptText(event.target.value)} placeholder="Transcript will appear here after processing." value={transcriptText} /></label>
+            <section className="ai-recap-status-card">
+              <div>
+                <span>{hasDraft ? "AI Draft" : "Audio processing"}</span>
+                <strong>{statusLabel}</strong>
+                <p>{hasDraft ? "Generated from your video voiceover. Review before publishing." : "MAI Coach is listening to your coaching feedback and organizing the lesson recap."}</p>
+              </div>
+            </section>
+            <details className="approved-transcript ai-transcript-disclosure">
+              <summary>View Video Transcript</summary>
+              <textarea disabled={draftLocked} onChange={(event) => setTranscriptText(event.target.value)} placeholder="Transcript will appear here after processing." value={transcriptText} />
+            </details>
             <div className="coach-notes-grid">
-              <label><span>Lesson summary</span><textarea onChange={(event) => updateField("lessonSummary", event.target.value)} value={fields.lessonSummary} /></label>
-              <label><span>What we worked on</span><textarea onChange={(event) => updateField("workedOn", event.target.value)} value={fields.workedOn} /></label>
-              <label><span>Key swing issue</span><textarea onChange={(event) => updateField("keyIssue", event.target.value)} value={fields.keyIssue} /></label>
-              <label><span>What improved</span><textarea onChange={(event) => updateField("improvement", event.target.value)} value={fields.improvement} /></label>
-              <label><span>Practice assignment</span><textarea onChange={(event) => updateField("practiceAssignment", event.target.value)} value={fields.practiceAssignment} /></label>
-              <label><span>Recommended drill</span><textarea onChange={(event) => updateField("recommendedDrill", event.target.value)} value={fields.recommendedDrill} /></label>
-              <label><span>Next session goal</span><textarea onChange={(event) => updateField("nextSessionGoal", event.target.value)} value={fields.nextSessionGoal} /></label>
-              <label><span>Member-facing notes</span><textarea onChange={(event) => updateField("memberFacingNotes", event.target.value)} value={fields.memberFacingNotes} /></label>
+              <label><span>Lesson summary</span><textarea disabled={draftLocked} onChange={(event) => updateField("lessonSummary", event.target.value)} value={fields.lessonSummary} /></label>
+              <label><span>Main focus</span><textarea disabled={draftLocked} onChange={(event) => updateField("mainFocus", event.target.value)} value={fields.mainFocus} /></label>
+              <label><span>Progress observed</span><textarea disabled={draftLocked} onChange={(event) => updateField("progressObserved", event.target.value)} value={fields.progressObserved} /></label>
+              <label><span>Practice next</span><textarea disabled={draftLocked} onChange={(event) => updateField("practiceNext", event.target.value)} value={fields.practiceNext} /></label>
+              <label><span>Next session goal</span><textarea disabled={draftLocked} onChange={(event) => updateField("nextSessionGoal", event.target.value)} value={fields.nextSessionGoal} /></label>
             </div>
             <div className="ai-recap-supporting-data">
-              <span>Confidence {Math.round((state?.draft?.confidence ?? 0) * 100)}%</span>
               <span>{state?.draft?.metricsMentioned?.length ?? 0} metrics mentioned</span>
               <span>{state?.draft?.transcriptEvidence?.length ?? 0} transcript references</span>
             </div>
+            {evidence.length > 0 && (
+              <ul className="ai-evidence-list">
+                {evidence.slice(0, 4).map((item, index) => (
+                  <li key={`${item.field}-${index}`}>
+                    <strong>{item.field}</strong>
+                    <span>{item.excerpt}</span>
+                    {item.timestamp ? <small>{item.timestamp}</small> : null}
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
 
         <div className="video-modal-actions">
           <span>{message}</span>
           <div className="button-row">
-            <button className="secondary-action" disabled={saving === "saving" || !hasDraft} onClick={() => void submit("editTranscript")} type="button">Save Transcript</button>
-            <button className="secondary-action" disabled={saving === "saving" || !hasDraft} onClick={() => void submit("saveDraft")} type="button">Save Draft</button>
-            <button className="secondary-action" disabled={saving === "saving"} onClick={() => void submit("retry")} type="button">Regenerate</button>
-            <button className="text-button danger-text-button" disabled={saving === "saving" || !hasDraft} onClick={() => void submit("markIncorrect")} type="button">Mark Incorrect</button>
-            <button className="secondary-action" onClick={onClose} type="button">Cancel</button>
+            <button className="secondary-action" disabled={saving === "saving" || draftLocked} onClick={() => setMessage("The recap fields are editable. Save the draft before leaving.")} type="button">Edit Recap</button>
+            <button className="secondary-action" disabled={saving === "saving" || !hasDraft || draftLocked} onClick={() => void submit("saveDraft")} type="button">Save Draft</button>
+            <button className="secondary-action" disabled={saving === "saving"} onClick={() => void refreshNow()} type="button">Refresh</button>
+            <button className="secondary-action" disabled={saving === "saving" || !hasDraft || draftLocked} onClick={() => void submit("editTranscript")} type="button">Save Transcript</button>
+            <button className="secondary-action" disabled={saving === "saving" || isProcessingActive} onClick={() => void submit("retranscribeVideo")} type="button">Regenerate From Video Audio</button>
+            <button className="secondary-action" disabled={saving === "saving"} onClick={() => void publishVideoWithoutRecap()} type="button">Publish Video Without Recap</button>
+            {isProcessingActive && <button className="text-button danger-text-button" disabled={saving === "saving"} onClick={() => void submit("cancelProcessing")} type="button">Cancel Processing</button>}
+            <button className="text-button danger-text-button" disabled={saving === "saving" || !hasDraft || draftLocked} onClick={() => void submit("markIncorrect")} type="button">Mark Incorrect</button>
+            <button className="secondary-action" onClick={onClose} type="button">Back</button>
             <button className="primary-action" disabled={saving === "saving" || !canPublish} onClick={() => void submit("approveAndPublish")} type="button">
-              {saving === "saving" ? "Saving..." : "Approve & Publish"}
+              {saving === "saving" ? "Saving..." : "Approve & Publish to Member"}
             </button>
           </div>
         </div>
@@ -9356,7 +10166,16 @@ function VideoDetailView({
   const relatedInsights = session
     ? computeInsights(summarizeClubs([session]), [session]).slice(0, 2)
     : [];
-  const sharedCoachNote = video.memberFacingNotes || (video.coachNotesPrivate ? "" : video.coachNotes);
+  const approvedLessonSummary = video.lessonSummary || video.memberFacingNotes || (video.coachNotesPrivate ? "" : video.coachNotes);
+  const approvedMainFocus = getLessonMainFocus(video);
+  const approvedPracticeNext = getLessonPracticeNext(video);
+  const hasApprovedRecap = Boolean(
+    approvedLessonSummary ||
+    approvedMainFocus ||
+    video.improvement ||
+    approvedPracticeNext ||
+    video.nextSessionGoal,
+  );
 
   return (
     <section className="view-stack">
@@ -9405,7 +10224,7 @@ function VideoDetailView({
 
         <aside className="video-notes-column">
           <section className="panel video-note-panel">
-            <PanelHeader kicker="Coach notes" title="Feedback" meta={canEditCoachNotes ? "Coach workspace" : "Shared with you"} />
+            <PanelHeader kicker={canEditCoachNotes ? "Coach notes" : "Coach-approved lesson recap"} title={canEditCoachNotes ? "Feedback" : "Lesson recap"} meta={canEditCoachNotes ? "Coach workspace" : "Shared with you"} />
             {canEditCoachNotes ? (
               <>
                 <textarea value={coachNotes} onChange={(event) => setCoachNotes(event.target.value)} placeholder="Key issue, improvement, next focus, and recommended drill..." />
@@ -9426,25 +10245,23 @@ function VideoDetailView({
                   Save coach notes
                 </button>
               </>
-            ) : sharedCoachNote || video.lessonSummary || video.workedOn || video.keyIssue || video.improvement || video.recommendedDrill || video.nextSessionGoal ? (
+            ) : hasApprovedRecap ? (
               <div className="structured-video-notes">
-                {video.lessonSummary && <div><span>Lesson summary</span><p>{video.lessonSummary}</p></div>}
-                {video.workedOn && <div><span>What we worked on</span><p>{video.workedOn}</p></div>}
-                {video.keyIssue && <div><span>Key swing issue</span><p>{video.keyIssue}</p></div>}
-                {video.improvement && <div><span>What improved</span><p>{video.improvement}</p></div>}
-                {video.recommendedDrill && <div><span>Recommended drill</span><p>{video.recommendedDrill}</p></div>}
+                {approvedLessonSummary && <div><span>Lesson summary</span><p>{approvedLessonSummary}</p></div>}
+                {approvedMainFocus && <div><span>Main focus</span><p>{approvedMainFocus}</p></div>}
+                {video.improvement && <div><span>Progress observed</span><p>{video.improvement}</p></div>}
+                {approvedPracticeNext && <div><span>Practice next</span><p>{approvedPracticeNext}</p></div>}
                 {video.nextSessionGoal && <div><span>Next session goal</span><p>{video.nextSessionGoal}</p></div>}
-                {sharedCoachNote && <div><span>Coach message</span><p>{sharedCoachNote}</p></div>}
               </div>
             ) : (
               <p className="video-note-empty">No coach feedback has been shared yet.</p>
             )}
           </section>
 
-          {video.practiceAssignment && (
+          {approvedPracticeNext && (
             <section className="practice-focus-callout">
               <span>Practice Focus Before Your Next Session</span>
-              <strong>{video.practiceAssignment}</strong>
+              <strong>{approvedPracticeNext}</strong>
               {video.nextSessionGoal && <small>{video.nextSessionGoal}</small>}
             </section>
           )}
@@ -11247,12 +12064,9 @@ function OnboardingFlow({
     <main className="onboarding-shell">
       <section className={cls("onboarding-card", step === 1 && "compact")}>
         <header className="onboarding-brand">
-          <div className="onboarding-logo">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img alt="Free Range Golf logo" src="/logos/free-range-golf.png" />
-          </div>
+          <MaiCoachLogoFull className="onboarding-logo-full" />
           <div>
-            <span>Free Range Golf</span>
+            <span>Your swing, explained.</span>
             <strong>Personalized practice setup</strong>
           </div>
         </header>
@@ -11265,7 +12079,7 @@ function OnboardingFlow({
           <>
             <div className="onboarding-question">
               <span>Step 1 of 2</span>
-              <h1>How will you use Free Range Golf?</h1>
+              <h1>How will you use MAI Coach?</h1>
               <p>Choose the workspace that fits you. You can still connect with a coach or player later.</p>
             </div>
 
@@ -11586,8 +12400,10 @@ function LoginRequestModal({
       <form className="video-upload-modal auth-modal" onSubmit={submitPasswordAuth}>
         <div className="video-modal-header">
           <div>
-            <p className="eyebrow">Secure login</p>
+            <MaiCoachLogoFull className="auth-modal-logo" />
+            <p className="eyebrow">Your swing, explained.</p>
             <h2>{mode === "register" ? "Create your account" : "Sign in to your account"}</h2>
+            <small>My AI Golf Coach</small>
           </div>
           <button aria-label="Close login dialog" className="icon-button" onClick={onClose} type="button">×</button>
         </div>
@@ -11751,7 +12567,7 @@ function PasswordResetModal({
   const [message, setMessage] = useState(
     force
       ? "You are signed in with a temporary password. Choose a new password before continuing."
-      : "Choose a new password for your Free Range Golf account.",
+      : "Choose a new password for your MAI Coach account.",
   );
 
   async function savePassword(event: React.FormEvent<HTMLFormElement>) {
@@ -11791,6 +12607,7 @@ function PasswordResetModal({
       <form className="video-upload-modal auth-modal" onSubmit={savePassword}>
         <div className="video-modal-header">
           <div>
+            <MaiCoachLogoMark className="auth-modal-mark" />
             <p className="eyebrow">{force ? "Temporary password" : "Password reset"}</p>
             <h2>Set a new password</h2>
           </div>
@@ -11850,9 +12667,11 @@ function AccountGate({
   return (
     <div className="account-overlay">
       <section className="account-modal">
-        <div>
-          <p className="eyebrow">Welcome to Free Range Golf</p>
+        <div className="account-brand-header">
+          <MaiCoachLogoFull className="account-logo-full" />
+          <p className="eyebrow">Your swing, explained.</p>
           <h2>Create your account or continue as guest.</h2>
+          <small>My AI Golf Coach</small>
           <span>{syncStatus}</span>
         </div>
         <div className="account-choice-grid">
@@ -11897,7 +12716,7 @@ function PanelHeader({
   );
 }
 
-const SHOT_MAP_COLORS = ["#35f27a", "#38bdf8", "#facc15", "#ef4444", "#a78bfa", "#2dd4bf"];
+const SHOT_MAP_COLORS = ["#96cb39", "#38bdf8", "#facc15", "#ef4444", "#a78bfa", "#2dd4bf"];
 const SHOT_SHAPE_METRICS: NumericShotMetric[] = [
   "offline",
   "sideTotal",
@@ -12062,7 +12881,7 @@ function ShotMap({ shots }: { shots: Shot[] }) {
                   x2={x}
                   y1={plot.top}
                   y2={plot.bottom}
-                  stroke={distance === 0 ? "#35f27a" : "rgba(255,255,255,0.09)"}
+                  stroke={distance === 0 ? "#96cb39" : "rgba(255,255,255,0.09)"}
                   strokeDasharray={distance === 0 ? "7 6" : undefined}
                   strokeWidth={distance === 0 ? "1.8" : "1"}
                 />
@@ -12113,13 +12932,13 @@ function ShotMap({ shots }: { shots: Shot[] }) {
                     opacity="0.65"
                   />
                 )}
-                <circle cx={carryX} cy={carryY} fill="#111d19" r="7" stroke={color} strokeWidth="2.5" />
+                <circle cx={carryX} cy={carryY} fill="#151f29" r="7" stroke={color} strokeWidth="2.5" />
                 <text className="shot-number" x={carryX} y={carryY + 3} textAnchor="middle">{index + 1}</text>
               </g>
             );
           })}
 
-          <circle cx={xScale(0)} cy={yScale(0)} fill="#35f27a" r="5" />
+          <circle cx={xScale(0)} cy={yScale(0)} fill="#96cb39" r="5" />
           <text className="tee-label" x={xScale(0) + 10} y={yScale(0) - 10}>Tee</text>
         </svg>
       </div>
@@ -12247,12 +13066,12 @@ function TrendChart({ sessions }: { sessions: Session[] }) {
           const y = height - 34 - (line / 100) * (height - 68);
           return <line key={line} x1="34" x2={width - 28} y1={y} y2={y} stroke="rgba(255,255,255,0.09)" strokeWidth="1" />;
         })}
-        <path d={path} fill="none" stroke="#35f27a" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+        <path d={path} fill="none" stroke="#96cb39" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
         {plotted.map((point) => (
           <g key={point.label}>
-            <circle cx={point.x} cy={point.y} r="6" fill="#111d19" stroke={Number.isFinite(point.quality) ? "#35f27a" : "#6f7d76"} strokeWidth="3" />
+            <circle cx={point.x} cy={point.y} r="6" fill="#151f29" stroke={Number.isFinite(point.quality) ? "#96cb39" : "#6f7d76"} strokeWidth="3" />
             <text x={point.x} y={height - 10} textAnchor="middle" fill="#a8b3ad" fontSize="12">{point.label}</text>
-            <text x={point.x} y={point.y - 12} textAnchor="middle" fill="#f4f7f5" fontSize="12" fontWeight="700">
+            <text x={point.x} y={point.y - 12} textAnchor="middle" fill="#FFFFFF" fontSize="12" fontWeight="700">
               {Number.isFinite(point.quality) ? point.quality : "NA"}
             </text>
           </g>

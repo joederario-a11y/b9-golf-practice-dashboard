@@ -364,7 +364,7 @@ async function loadSession(userClient: SupabaseClient, config: TableConfig, sess
     .maybeSingle();
 
   if (error) {
-    console.error("MAI Caddy session lookup failed.", { code: error.code });
+    console.error("MAI Coach session lookup failed.", { code: error.code });
     throw new SafeHttpError(500, "session_lookup_failed", "The session could not be loaded.");
   }
 
@@ -392,7 +392,7 @@ async function loadProfile(userClient: SupabaseClient, config: TableConfig, user
     .maybeSingle();
 
   if (error) {
-    console.error("MAI Caddy profile lookup failed.", { code: error.code });
+    console.error("MAI Coach profile lookup failed.", { code: error.code });
     return null;
   }
 
@@ -446,7 +446,7 @@ async function loadShots(userClient: SupabaseClient, config: TableConfig, sessio
     .limit(1000);
 
   if (error) {
-    console.error("MAI Caddy shot lookup failed.", { code: error.code });
+    console.error("MAI Coach shot lookup failed.", { code: error.code });
     throw new SafeHttpError(500, "shot_lookup_failed", "The shot data could not be loaded.");
   }
 
@@ -532,7 +532,7 @@ async function loadPreviousComparableShots(
 
   if (error || !data?.length) {
     if (error) {
-      console.error("MAI Caddy comparable session lookup skipped.", { code: error.code });
+      console.error("MAI Coach comparable session lookup skipped.", { code: error.code });
     }
     return [];
   }
@@ -562,7 +562,7 @@ async function loadPreviousComparableShots(
       .limit(1000);
 
     if (shotError) {
-      console.error("MAI Caddy comparable shot lookup skipped.", { code: shotError.code });
+      console.error("MAI Coach comparable shot lookup skipped.", { code: shotError.code });
       continue;
     }
 
@@ -597,7 +597,7 @@ async function startAnalysis(serviceClient: SupabaseClient, sessionId: string, u
   });
 
   if (error || !data) {
-    console.error("MAI Caddy analysis start failed.", { code: error?.code });
+    console.error("MAI Coach analysis start failed.", { code: error?.code });
     throw new SafeHttpError(500, "analysis_start_failed", "The analysis could not be started.");
   }
 
@@ -622,7 +622,7 @@ async function completeAnalysis(
   });
 
   if (error || !data) {
-    console.error("MAI Caddy analysis completion failed.", { code: error?.code });
+    console.error("MAI Coach analysis completion failed.", { code: error?.code });
     throw new SafeHttpError(500, "analysis_save_failed", "The analysis could not be saved.");
   }
 
@@ -648,7 +648,7 @@ async function failAnalysis(
   });
 
   if (error) {
-    console.error("MAI Caddy failed-state save failed.", { code: error.code });
+    console.error("MAI Coach failed-state save failed.", { code: error.code });
   }
 }
 
@@ -777,13 +777,13 @@ function validateAnalysis(value: unknown): AnalysisOutput {
 
 function buildInsufficientDataAnalysis(metrics: SessionMetrics): AnalysisOutput {
   return {
-    headline: "More usable shot data is needed before MAI Caddy can coach this session responsibly.",
+    headline: "More usable shot data is needed before MAI Coach can coach this session responsibly.",
     dataQuality: {
       confidence: "low",
       usableShotCount: metrics.validShotCount,
       limitations: [
         "Fewer than three usable shots were available.",
-        "MAI Caddy did not infer missing measurements or create coaching conclusions from incomplete data.",
+        "MAI Coach did not infer missing measurements or create coaching conclusions from incomplete data.",
       ],
     },
     sessionSummary: "This session was saved, but it does not contain enough usable launch-monitor data for a reliable swing analysis.",
@@ -797,7 +797,7 @@ function buildInsufficientDataAnalysis(metrics: SessionMetrics): AnalysisOutput 
     strengths: [],
     primaryPriority: {
       title: "Upload or record more complete shots",
-      whyItMatters: "MAI Caddy needs repeated measurements before it can separate a trend from a one-off result.",
+      whyItMatters: "MAI Coach needs repeated measurements before it can separate a trend from a one-off result.",
       evidence: `${metrics.validShotCount} usable shots were available.`,
     },
     issues: [
@@ -820,7 +820,7 @@ function buildInsufficientDataAnalysis(metrics: SessionMetrics): AnalysisOutput 
         metricToMonitor: "Carry, offline, launch, spin, club path, face angle, and face-to-path",
         measurableTarget: "At least 8 valid shots with carry and direction data",
         durationOrSwingCount: "8 to 10 swings",
-        progressionRule: "Run MAI Caddy again after the baseline set is uploaded.",
+        progressionRule: "Run MAI Coach again after the baseline set is uploaded.",
       },
     ],
     nextSessionGoal: "Upload a same-club baseline with at least 8 valid shots.",
@@ -968,7 +968,7 @@ Deno.serve(async (req) => {
         ? error
         : new SafeHttpError(500, "analysis_failed", "The analysis could not be completed.");
 
-    console.error("MAI Caddy analysis request failed.", { code: safeError.code, status: safeError.status });
+    console.error("MAI Coach analysis request failed.", { code: safeError.code, status: safeError.status });
     await failAnalysis(serviceClient, analysisId, userId, safeError.code, safeError.message);
 
     return jsonResponse(

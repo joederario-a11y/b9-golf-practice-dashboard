@@ -11,6 +11,7 @@ import {
   singleCoachAssignmentGuard,
   validatePasswordConfirmation,
 } from "@/lib/admin-user-policy.mjs";
+import { sanitizeSession, sanitizeSessionList } from "@/lib/session-data-policy.mjs";
 import {
   ensurePlatformSchema,
   ensureUserDataOwnershipSchema,
@@ -110,9 +111,9 @@ function isEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
-function coachPhotoUrl(coachId: string, imageId?: string | null, version?: string | null) {
+function coachPhotoUrl(userId: string, imageId?: string | null, version?: string | null) {
   if (!imageId) return "";
-  const params = new URLSearchParams({ coachId, imageId });
+  const params = new URLSearchParams({ imageId, userId });
   if (version) params.set("v", version);
   return `/api/coach-photo?${params.toString()}`;
 }
@@ -293,8 +294,8 @@ async function listUsers(database: D1Database, identity: AuthIdentity) {
     LEFT JOIN coach_members ON coach_members.member_id = users.id
     LEFT JOIN users AS assigned_coach ON assigned_coach.id = coach_members.coach_id
     LEFT JOIN user_passwords ON user_passwords.user_id = users.id
-    LEFT JOIN coach_profile_images AS profile_image
-      ON profile_image.coach_user_id = users.id AND profile_image.is_current = 1
+    LEFT JOIN user_profile_images AS profile_image
+      ON profile_image.user_id = users.id AND profile_image.is_current = 1
     LEFT JOIN lesson_videos ON lesson_videos.member_id = users.id
     LEFT JOIN golf_session_snapshots ON golf_session_snapshots.user_id = users.id
   `;
@@ -349,8 +350,8 @@ async function listCoaches(database: D1Database) {
         NULL AS sessions_json
       FROM users
       LEFT JOIN user_passwords ON user_passwords.user_id = users.id
-      LEFT JOIN coach_profile_images AS profile_image
-        ON profile_image.coach_user_id = users.id AND profile_image.is_current = 1
+      LEFT JOIN user_profile_images AS profile_image
+        ON profile_image.user_id = users.id AND profile_image.is_current = 1
       WHERE role = 'coach' ORDER BY last_name, first_name`,
     )
     .all<UserRow>();
@@ -459,8 +460,8 @@ async function memberDetail(database: D1Database, identity: AuthIdentity, member
             profile_image.updated_at AS image_updated_at
            FROM coach_members
            JOIN users ON users.id = coach_members.coach_id
-           LEFT JOIN coach_profile_images AS profile_image
-             ON profile_image.coach_user_id = users.id AND profile_image.is_current = 1
+           LEFT JOIN user_profile_images AS profile_image
+             ON profile_image.user_id = users.id AND profile_image.is_current = 1
            WHERE coach_members.member_id = ?
            ORDER BY users.last_name, users.first_name`,
         )
@@ -970,7 +971,11 @@ async function addSession(database: D1Database, identity: AuthIdentity, payload:
     location: "Back Nine Woodstock",
     shots: [shot],
   };
-  const nextSessions = [nextSession, ...sessions].slice(0, 80);
+  const sanitizedSession = sanitizeSession(nextSession);
+  if (!sanitizedSession) {
+    throw new Response("Add a club plus at least one usable launch-monitor metric before saving this session.", { status: 400 });
+  }
+  const nextSessions = sanitizeSessionList([sanitizedSession, ...sessions]).slice(0, 80);
   await database
     .prepare(
       row

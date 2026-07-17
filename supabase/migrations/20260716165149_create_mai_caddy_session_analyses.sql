@@ -1,4 +1,4 @@
--- MAI Caddy stored session analysis records.
+-- MAI Coach stored session analysis records.
 --
 -- Current repository note:
 -- The application currently stores golf sessions and shots in the Cloudflare D1
@@ -51,15 +51,15 @@ create table if not exists public.mai_caddy_session_analyses (
 );
 
 comment on table public.mai_caddy_session_analyses is
-  'MAI Caddy AI analysis records for stored golf sessions. Session records currently live in the application D1 session snapshot model.';
+  'MAI Coach AI analysis records for stored golf sessions. Session records currently live in the application D1 session snapshot model.';
 comment on column public.mai_caddy_session_analyses.session_id is
   'Existing application session identifier from stored session JSON. Add a foreign key when sessions are represented as Supabase rows.';
 comment on column public.mai_caddy_session_analyses.player_id is
   'Supabase Auth user that owns the session analysis request.';
 comment on column public.mai_caddy_session_analyses.analysis is
-  'Structured MAI Caddy analysis output. Tour Twin data is intentionally out of scope.';
+  'Structured MAI Coach analysis output. Tour Twin data is intentionally out of scope.';
 comment on column public.mai_caddy_session_analyses.calculated_metrics is
-  'Server-calculated launch-monitor summaries used by MAI Caddy.';
+  'Server-calculated launch-monitor summaries used by MAI Coach.';
 comment on column public.mai_caddy_session_analyses.is_current is
   'Marks the current analysis for a player/session while preserving room for historical analysis versions.';
 
@@ -107,19 +107,19 @@ revoke all on public.mai_caddy_session_analyses from authenticated;
 grant select, insert on public.mai_caddy_session_analyses to authenticated;
 grant select, insert, update, delete on public.mai_caddy_session_analyses to service_role;
 
-drop policy if exists "Players can read own MAI Caddy analyses"
+drop policy if exists "Players can read own MAI Coach analyses"
   on public.mai_caddy_session_analyses;
 
-create policy "Players can read own MAI Caddy analyses"
+create policy "Players can read own MAI Coach analyses"
 on public.mai_caddy_session_analyses
 for select
 to authenticated
 using (player_id = auth.uid());
 
-drop policy if exists "Players can create own pending MAI Caddy analyses"
+drop policy if exists "Players can create own pending MAI Coach analyses"
   on public.mai_caddy_session_analyses;
 
-create policy "Players can create own pending MAI Caddy analyses"
+create policy "Players can create own pending MAI Coach analyses"
 on public.mai_caddy_session_analyses
 for insert
 to authenticated
