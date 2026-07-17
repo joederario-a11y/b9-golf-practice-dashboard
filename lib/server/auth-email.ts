@@ -23,7 +23,14 @@ function escapeHtml(value: string) {
 
 function appUrl(request: Request, path: string) {
   const runtime = getPlatformEnvironment();
-  const baseUrl = runtime.APP_BASE_URL?.replace(/\/$/, "") || new URL(request.url).origin;
+  const requestUrl = new URL(request.url);
+  const isLocalRequest =
+    requestUrl.hostname === "localhost" ||
+    requestUrl.hostname === "127.0.0.1" ||
+    requestUrl.hostname === "::1";
+  const baseUrl = isLocalRequest
+    ? requestUrl.origin
+    : runtime.APP_BASE_URL?.replace(/\/$/, "") || requestUrl.origin;
   return `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
 }
 

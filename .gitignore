@@ -42,6 +42,8 @@ wrangler.jsonc.save
 next-env.d.ts
 *.tsbuildinfo
 /dist/
+/local-preview/dist/
+/supabase/.temp/
 /.wrangler/
 /.vinext/
 /.local-run/

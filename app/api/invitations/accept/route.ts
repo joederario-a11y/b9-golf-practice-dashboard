@@ -65,7 +65,7 @@ export async function POST(request: Request) {
 
     const response = Response.json({ ok: true });
     if (!identity) {
-      const session = await createAuthSession(invite.member_id);
+      const session = await createAuthSession(invite.member_id, { requestUrl: request.url });
       response.headers.append("Set-Cookie", session.cookie);
     }
     return response;

@@ -36,7 +36,7 @@ export async function POST(request: Request) {
       return Response.json({ error: "Email or password did not match an account." }, { status: 401 });
     }
 
-    const session = await createAuthSession(user.id);
+    const session = await createAuthSession(user.id, { requestUrl: request.url });
     const response = Response.json({ ok: true, user });
     response.headers.append("Set-Cookie", session.cookie);
     return response;

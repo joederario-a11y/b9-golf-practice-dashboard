@@ -1,10 +1,10 @@
 INSERT INTO user_passwords (
   user_id, password_hash, password_salt, iterations, created_at, updated_at
 ) VALUES
-  ('demo-admin-ava', 'YI+8vTKBTPqA3qvbRcq4Cr2eNqR4Pd4F93Wudlh86Og=', 'yEdGXLSlMS364vopVghAAw==', 100000, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-  ('demo-coach-zac', 'V2A6Xh3y50acB2iPKYAG9jplvbb9f4PesiqVsYGASo4=', 'UUWR2GMUj3ZE7cqUhiLqHg==', 100000, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-  ('demo-member-joe', 'HuquW3j/oeuXK6LacaLQmH+YLXd1QgMd1abZSH6RHJ0=', 'eQjdNAoIHXdB+AEL6W3tAA==', 100000, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-  ('demo-member-sam', 'y4zaEjN0aaNpS+rd5/lx9+qzR+gWST+qB6Vy4LDBGEA=', '1o8DCLQNC1P/+HYbv/qwMg==', 100000, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  ('demo-admin-ava', 'i5qli2Xaye/2vKd1H2n1cDrEW9REQRL/dEcntfPj1i4=', 'FyuO/e7NNCm0tP3T+/b6Kg==', 100000, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('demo-coach-zac', '7qYq1ZdCvgcxwgaE+5xEA0iFL40qVr9TF87WNhALhmI=', 'jZ6vqyZrcPNHxFzEIjxizg==', 100000, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('demo-member-joe', 'rm/6uyhWWmZWu2nccO+5cu6IpxL083ME3Aio3vrofwA=', 'RLZd3FpEklnE9EuvLDu9Uw==', 100000, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  ('demo-member-sam', 'fmGc2jQkF05zPxl39Y06YQaisQFcJrzp/dWn9oo4GTc=', 'WVECzIMEQAjEQlAiQYk/Fw==', 100000, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 ON CONFLICT(user_id) DO UPDATE SET
   password_hash = excluded.password_hash,
   password_salt = excluded.password_salt,
@@ -35,7 +35,7 @@ INSERT INTO lesson_videos (
   'Wedge',
   'SW',
   '["demo","wedge","r2"]',
-  'demo-session-sand-wedge',
+  'seeded-sand-wedge-session',
   'lesson-videos/demo-member-sam/demo-video-sam-lesson/video',
   NULL,
   'demo-lesson-video.txt',

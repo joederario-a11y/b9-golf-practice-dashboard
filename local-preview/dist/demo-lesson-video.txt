@@ -1,2 +1,0 @@
-Free Range Golf demo lesson video payload.
-This file verifies private R2 media retrieval through the app API.

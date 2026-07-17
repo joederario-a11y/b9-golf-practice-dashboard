@@ -81,7 +81,7 @@ export async function POST(request: Request) {
       accountType: accountType === "coach" ? "coach" : "player",
       purpose: "registration",
     });
-    const session = await createAuthSession(user.id);
+    const session = await createAuthSession(user.id, { requestUrl: request.url });
     const response = Response.json({
       ...result,
       emailStatus: result.status,

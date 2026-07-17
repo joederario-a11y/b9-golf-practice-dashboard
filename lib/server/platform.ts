@@ -1,5 +1,10 @@
 import { env } from "cloudflare:workers";
 import { cookies, headers } from "next/headers";
+import {
+  AUTH_SESSION_COOKIE_NAME,
+  buildAuthSessionCookie,
+  buildClearAuthSessionCookie,
+} from "@/lib/auth-session-policy.mjs";
 
 export type UserRole = "admin" | "coach" | "member";
 
@@ -68,7 +73,7 @@ type PasswordRow = UserRow & {
   iterations: number;
 };
 
-export const AUTH_SESSION_COOKIE = "frg-session";
+export const AUTH_SESSION_COOKIE = AUTH_SESSION_COOKIE_NAME;
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 const LOGIN_TOKEN_TTL_SECONDS = 60 * 30;
 const VIDEO_LINK_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 14;
@@ -523,16 +528,35 @@ export async function ensureVideoAiProcessingSchema(database = getRequiredDataba
     .run();
 }
 
-export function makeAuthSessionCookie(token: string, maxAgeSeconds = SESSION_TTL_SECONDS) {
-  const appBaseUrl = getPlatformEnvironment().APP_BASE_URL ?? "";
-  const secure = !appBaseUrl.startsWith("http://localhost") && !appBaseUrl.startsWith("http://127.0.0.1");
-  return `${AUTH_SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly;${secure ? " Secure;" : ""} SameSite=Lax; Path=/; Max-Age=${maxAgeSeconds}`;
+type AuthSessionCookieOptions = {
+  maxAgeSeconds?: number;
+  requestUrl?: string;
+  secure?: boolean;
+};
+
+function cookieOptionsWithRuntime(options: AuthSessionCookieOptions = {}) {
+  return {
+    appBaseUrl: getPlatformEnvironment().APP_BASE_URL ?? "",
+    maxAgeSeconds: options.maxAgeSeconds ?? SESSION_TTL_SECONDS,
+    name: AUTH_SESSION_COOKIE,
+    requestUrl: options.requestUrl,
+    secure: options.secure,
+  };
 }
 
-export function clearAuthSessionCookie() {
-  const appBaseUrl = getPlatformEnvironment().APP_BASE_URL ?? "";
-  const secure = !appBaseUrl.startsWith("http://localhost") && !appBaseUrl.startsWith("http://127.0.0.1");
-  return `${AUTH_SESSION_COOKIE}=; HttpOnly;${secure ? " Secure;" : ""} SameSite=Lax; Path=/; Max-Age=0`;
+export function makeAuthSessionCookie(
+  token: string,
+  options: number | AuthSessionCookieOptions = {},
+) {
+  const normalizedOptions = typeof options === "number" ? { maxAgeSeconds: options } : options;
+  return buildAuthSessionCookie({
+    ...cookieOptionsWithRuntime(normalizedOptions),
+    token,
+  });
+}
+
+export function clearAuthSessionCookie(options: AuthSessionCookieOptions = {}) {
+  return buildClearAuthSessionCookie(cookieOptionsWithRuntime(options));
 }
 
 function identityFromUser(row: UserRow): AuthIdentity {
@@ -844,7 +868,7 @@ export async function upsertUserForEmail(values: {
   } satisfies UserRow;
 }
 
-export async function createAuthSession(userId: string) {
+export async function createAuthSession(userId: string, options: AuthSessionCookieOptions = {}) {
   const database = getRequiredDatabase();
   await ensurePlatformSchema(database);
   const token = randomToken();
@@ -858,7 +882,7 @@ export async function createAuthSession(userId: string) {
     .bind(crypto.randomUUID(), userId, await hashToken(token), expiresAt)
     .run();
   return {
-    cookie: makeAuthSessionCookie(token),
+    cookie: makeAuthSessionCookie(token, options),
     expiresAt,
     token,
   };
@@ -972,7 +996,7 @@ export async function createLoginToken(values: {
   return token;
 }
 
-export async function consumeLoginToken(token: string) {
+export async function consumeLoginToken(token: string, options: AuthSessionCookieOptions = {}) {
   const database = getRequiredDatabase();
   await ensurePlatformSchema(database);
   const tokenHash = await hashToken(token);
@@ -1012,7 +1036,7 @@ export async function consumeLoginToken(token: string) {
     .prepare("UPDATE auth_login_tokens SET used_at = CURRENT_TIMESTAMP WHERE id = ?")
     .bind(loginToken.id)
     .run();
-  const session = await createAuthSession(user.id);
+  const session = await createAuthSession(user.id, options);
   return {
     cookie: session.cookie,
     purpose: loginToken.purpose,

@@ -2,6 +2,7 @@
 
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MaiCoachLogoFull, MaiCoachLogoMark } from "@/components/brand/mai-coach-logo";
+import { accountPayloadConfirmsUser } from "@/lib/auth-session-policy.mjs";
 import { splitDisplayNameForRegistration } from "@/lib/admin-user-policy.mjs";
 import {
   buildMetricEducationCards,
@@ -570,6 +571,19 @@ type AccountUser = {
   lastName: string;
   passwordResetRequired?: boolean;
   profileImageUrl?: string;
+};
+
+type AccountPayload = {
+  devAuthEnabled?: boolean;
+  mode?: "guest" | "user";
+  user?: AccountUser | null;
+  error?: string;
+};
+
+type SessionsPayload = {
+  mode?: "guest" | "user";
+  sessions?: unknown;
+  error?: string;
 };
 
 type PracticeActivityType = "drill" | "challenge";
@@ -4601,6 +4615,7 @@ export default function Home() {
   const [registrationDraft, setRegistrationDraft] = useState<RegistrationDraft | null>(null);
   const [syncStatus, setSyncStatus] = useState("Choose how you want to use MAI Coach.");
   const [performanceTimeframe, setPerformanceTimeframe] = useState<PerformanceTimeframe>(DEFAULT_PERFORMANCE_TIMEFRAME);
+  const accountConnectRequestRef = useRef(0);
 
   const clubs = useMemo(() => summarizeClubs(sessions), [sessions]);
   const insights = useMemo(() => computeInsights(clubs, sessions), [clubs, sessions]);
@@ -4750,6 +4765,7 @@ export default function Home() {
     try {
       const response = await fetch("/api/sessions", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessions: sanitizedSessions }),
       });
@@ -4923,6 +4939,8 @@ export default function Home() {
     try {
       const response = await fetch("/api/auth/verify", {
         method: "POST",
+        cache: "no-store",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token }),
       });
@@ -4956,6 +4974,8 @@ export default function Home() {
     try {
       const response = await fetch("/api/invitations/accept", {
         method: "POST",
+        cache: "no-store",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token }),
       });
@@ -4975,22 +4995,23 @@ export default function Home() {
   }
 
   async function connectAccount(options: { promptForEmail?: boolean } = {}) {
+    const requestId = accountConnectRequestRef.current + 1;
+    accountConnectRequestRef.current = requestId;
+    const isCurrentRequest = () => accountConnectRequestRef.current === requestId;
     setSyncStatus("Checking your account...");
     try {
       await consumeLoginFromUrl();
       await acceptInvitationFromUrl();
-      const [sessionsResponse, accountResponse] = await Promise.all([
-        fetch("/api/sessions"),
-        fetch("/api/account"),
-      ]);
-      const payload = await sessionsResponse.json();
-      const accountPayload = await accountResponse.json();
+      const accountResponse = await fetch("/api/account", {
+        cache: "no-store",
+        credentials: "same-origin",
+      });
+      const accountPayload = await accountResponse.json().catch(() => ({})) as AccountPayload;
+      if (!isCurrentRequest()) return false;
       setDevAuthEnabled(accountPayload.devAuthEnabled === true);
 
-      if (payload.mode !== "user" || accountPayload.mode !== "user") {
-        setAccountMode("guest");
-        setForcePasswordReset(false);
-        setSyncStatus("Use an email login link to open your private account.");
+      if (!accountResponse.ok) {
+        setSyncStatus(accountPayload.error ?? "Your account could not be checked right now. Retry.");
         if (options.promptForEmail) {
           setLoginModalMode("login");
           setShowLoginModal(true);
@@ -4998,7 +5019,26 @@ export default function Home() {
         return false;
       }
 
-      const savedSessions = sanitizeSessionList(Array.isArray(payload.sessions) ? payload.sessions : []) as Session[];
+      if (!accountPayloadConfirmsUser(accountPayload)) {
+        setAccountMode("guest");
+        setAccountUser(null);
+        setUserName(null);
+        setWorkspaceRole("user");
+        setVideoLibraryMemberId("current-user");
+        setVideoLibraryMemberName("");
+        setSessions([]);
+        setSelectedSessionId("");
+        setSelectedClub("6-Iron");
+        setPracticeProfile(null);
+        setForcePasswordReset(false);
+        setSyncStatus("Sign in or create an account to open your private workspace.");
+        if (options.promptForEmail) {
+          setLoginModalMode("login");
+          setShowLoginModal(true);
+        }
+        return false;
+      }
+
       const signedInRole: VideoViewerRole =
         accountPayload.user?.role === "coach" || accountPayload.user?.role === "admin"
           ? accountPayload.user.role
@@ -5013,9 +5053,9 @@ export default function Home() {
       setUserName(accountPayload.user?.displayName ?? accountPayload.user?.email ?? "Signed-in golfer");
       setVideoLibraryMemberId(signedInUser.id);
       setVideoLibraryMemberName(signedInUser.displayName);
-      setSessions(savedSessions);
-      setSelectedSessionId(savedSessions[0]?.id ?? "");
-      setSelectedClub(savedSessions[0]?.shots?.[0]?.club ?? "6-Iron");
+      setSessions([]);
+      setSelectedSessionId("");
+      setSelectedClub("6-Iron");
       setLastImport(EMPTY_LAST_IMPORT);
       setImportConfirmation(null);
       setPendingImportReview(null);
@@ -5025,27 +5065,53 @@ export default function Home() {
         tabFromValue(new URLSearchParams(window.location.search).get("tab")) ??
         tabFromPathname(window.location.pathname);
       const hasRequestedVideo = requestedTab === "videos" && new URLSearchParams(window.location.search).has("video");
-      const defaultMemberTab = savedSessions.length ? "videos" : "dashboard";
-      const nextTab =
-        signedInRole === "user" && !savedSessions.length && !hasRequestedVideo
-          ? "dashboard"
-          : requestedTab ?? (signedInRole === "user" ? defaultMemberTab : "coach");
+      const nextTab = requestedTab ?? (signedInRole === "user" ? "dashboard" : "coach");
       setActiveTab(nextTab);
       setShowOnboarding(false);
       setSyncStatus(
         requiresPasswordReset
           ? "Signed in with a temporary password. Choose a new password to continue."
           : signedInRole === "user"
-          ? savedSessions.length ? "Loaded your saved sessions." : "Signed in. Upload your first session to start analysis."
-          : `${signedInRole === "admin" ? "Admin" : "Coach"} workspace ready.`,
+          ? "Signed in. Loading your sessions..."
+          : `${signedInRole === "admin" ? "Admin" : "Coach"} workspace ready. Loading data...`,
       );
 
+      try {
+        const sessionsResponse = await fetch("/api/sessions", {
+          cache: "no-store",
+          credentials: "same-origin",
+        });
+        const payload = await sessionsResponse.json().catch(() => ({})) as SessionsPayload;
+        if (!isCurrentRequest()) return false;
+        if (!sessionsResponse.ok || payload.mode !== "user") {
+          throw new Error(payload.error ?? "Session history could not be loaded.");
+        }
+        const savedSessions = sanitizeSessionList(Array.isArray(payload.sessions) ? payload.sessions : []) as Session[];
+        const defaultMemberTab = savedSessions.length ? "videos" : "dashboard";
+        const sessionsTab =
+          signedInRole === "user" && !savedSessions.length && !hasRequestedVideo
+            ? "dashboard"
+            : requestedTab ?? (signedInRole === "user" ? defaultMemberTab : "coach");
+        setSessions(savedSessions);
+        setSelectedSessionId(savedSessions[0]?.id ?? "");
+        setSelectedClub(savedSessions[0]?.shots?.[0]?.club ?? "6-Iron");
+        setActiveTab(sessionsTab);
+        setSyncStatus(
+          requiresPasswordReset
+            ? "Signed in with a temporary password. Choose a new password to continue."
+            : signedInRole === "user"
+            ? savedSessions.length ? "Loaded your saved sessions." : "Signed in. Upload your first session to start analysis."
+            : `${signedInRole === "admin" ? "Admin" : "Coach"} workspace ready.`,
+        );
+      } catch {
+        if (!isCurrentRequest()) return false;
+        setSyncStatus("You are signed in, but your session history could not be loaded. Retry.");
+      }
       await syncUserPracticeProfileAfterSignIn();
       return true;
     } catch {
-      setAccountMode("guest");
-      setForcePasswordReset(false);
-      setSyncStatus("Using guest mode. Saved history is unavailable right now.");
+      if (!isCurrentRequest()) return false;
+      setSyncStatus("Your account could not be checked right now. Retry.");
       if (options.promptForEmail) {
         setLoginModalMode("login");
         setShowLoginModal(true);
@@ -5083,8 +5149,8 @@ export default function Home() {
   async function logOut() {
     setSyncStatus("Signing out...");
     await Promise.allSettled([
-      fetch("/api/auth/verify", { method: "DELETE" }),
-      devAuthEnabled ? fetch("/api/dev-auth", { method: "DELETE" }) : Promise.resolve(),
+      fetch("/api/auth/verify", { method: "DELETE", cache: "no-store", credentials: "same-origin" }),
+      devAuthEnabled ? fetch("/api/dev-auth", { method: "DELETE", cache: "no-store", credentials: "same-origin" }) : Promise.resolve(),
     ]);
     setAccountMode("guest");
     setAccountUser(null);
@@ -5517,7 +5583,6 @@ export default function Home() {
       {(showAccountGate || accountMode === "pending") && (
         <AccountGate
           connectAccount={() => {
-            setShowAccountGate(false);
             setShowPasswordResetModal(false);
             setLoginModalMode("login");
             return connectAccount({ promptForEmail: true });
@@ -5536,7 +5601,14 @@ export default function Home() {
       {showLoginModal && (
         <LoginRequestModal
           initialMode={loginModalMode}
-          onAuthenticated={() => connectAccount()}
+          onAuthenticated={async () => {
+            const authenticated = await connectAccount();
+            if (authenticated) {
+              setShowLoginModal(false);
+              setShowAccountGate(false);
+            }
+            return authenticated;
+          }}
           onClose={() => setShowLoginModal(false)}
           onStatus={setSyncStatus}
           registrationDraft={registrationDraft}
@@ -12233,7 +12305,7 @@ function LoginRequestModal({
   registrationDraft,
 }: {
   initialMode: LoginModalMode;
-  onAuthenticated: () => void | Promise<boolean>;
+  onAuthenticated: () => boolean | Promise<boolean>;
   onClose: () => void;
   onStatus: (message: string) => void;
   registrationDraft?: RegistrationDraft | null;
@@ -12254,6 +12326,7 @@ function LoginRequestModal({
       : "Enter your email and password to open your account.",
   );
   const [debugLoginUrl, setDebugLoginUrl] = useState("");
+  const messageRef = useRef<HTMLParagraphElement>(null);
 
   useEffect(() => {
     if (!coachHeadshotFile) {
@@ -12277,20 +12350,29 @@ function LoginRequestModal({
     );
   }
 
+  function reportMessage(nextMessage: string, options: { focus?: boolean } = {}) {
+    setMessage(nextMessage);
+    onStatus(nextMessage);
+    if (options.focus) {
+      requestAnimationFrame(() => messageRef.current?.focus());
+    }
+  }
+
   async function submitPasswordAuth(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (state !== "idle") return;
     setState("sending");
     setDebugLoginUrl("");
     if (mode === "register" && password !== confirmPassword) {
-      const nextMessage = "Passwords must match.";
-      setMessage(nextMessage);
-      onStatus(nextMessage);
+      reportMessage("Passwords must match.", { focus: true });
       setState("idle");
       return;
     }
     try {
       const response = await fetch(mode === "register" ? "/api/auth/register" : "/api/auth/password", {
         method: "POST",
+        cache: "no-store",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ accountType, email, firstName, lastName, password, redirectPath: "/?tab=videos" }),
       });
@@ -12301,12 +12383,20 @@ function LoginRequestModal({
         needsRegistration?: boolean;
         publicMessage?: string;
       };
-      const nextMessage = payload.publicMessage ?? payload.error ?? (mode === "register" ? "Account created." : "Signed in.");
-      setMessage(nextMessage);
-      onStatus(nextMessage);
+      if (!response.ok) {
+        const nextMessage = payload.publicMessage ?? payload.error ?? "That request could not be completed.";
+        reportMessage(nextMessage, { focus: true });
+        if (payload.debugLoginUrl) setDebugLoginUrl(payload.debugLoginUrl);
+        if (payload.needsRegistration) setMode("register");
+        return;
+      }
+      const nextMessage = mode === "register"
+        ? "Account created. Confirming your session..."
+        : "Password accepted. Confirming your session...";
+      reportMessage(nextMessage);
       if (payload.debugLoginUrl) setDebugLoginUrl(payload.debugLoginUrl);
       if (payload.needsRegistration) setMode("register");
-      if (response.ok && payload.user) {
+      if (payload.user) {
         if (mode === "register" && accountType === "coach" && coachHeadshotFile) {
           try {
             await uploadCoachPhoto(payload.user.id, coachHeadshotFile);
@@ -12315,13 +12405,16 @@ function LoginRequestModal({
             onStatus(`Account created. ${photoMessage}`);
           }
         }
-        await onAuthenticated();
-        onClose();
+        const authenticated = await onAuthenticated();
+        if (!authenticated) {
+          reportMessage("Your password was accepted, but this browser session could not be confirmed. Please try again.", { focus: true });
+          return;
+        }
+        reportMessage(mode === "register" ? "Account created and signed in." : "Signed in.");
       }
     } catch {
       const nextMessage = mode === "register" ? "The account could not be created right now." : "The account could not be opened right now.";
-      setMessage(nextMessage);
-      onStatus(nextMessage);
+      reportMessage(nextMessage, { focus: true });
     } finally {
       setState("idle");
     }
@@ -12339,6 +12432,8 @@ function LoginRequestModal({
     try {
       const response = await fetch("/api/auth/request", {
         method: "POST",
+        cache: "no-store",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, redirectPath: "/?tab=videos" }),
       });
@@ -12374,6 +12469,8 @@ function LoginRequestModal({
     try {
       const response = await fetch("/api/auth/password-reset", {
         method: "POST",
+        cache: "no-store",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email }),
       });
@@ -12511,7 +12608,7 @@ function LoginRequestModal({
             />
           </label>
         )}
-        <p className="muted-copy">{message}</p>
+        <p className="muted-copy" ref={messageRef} role="status" tabIndex={-1}>{message}</p>
         {mode === "login" && (
           <div className="auth-action-row">
             <button className="text-button login-inline-action" disabled={state !== "idle"} onClick={sendLoginLink} type="button">
@@ -12582,6 +12679,8 @@ function PasswordResetModal({
     try {
       const response = await fetch("/api/auth/password", {
         method: "PUT",
+        cache: "no-store",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password }),
       });

@@ -43,7 +43,7 @@ INSERT INTO golf_session_snapshots (
   'joe.demo@thebackninegolf.com',
   'demo-member-joe',
   'Joe Demo Player',
-  '[{"id":"demo-session-sand-wedge","title":"Demo sand wedge session","date":"2026-07-15","source":"Seed data","focus":"Wedge distance control","location":"Back Nine Woodstock","shots":[{"id":"demo-shot-1","club":"SW","carry":93,"total":100,"ballSpeed":77,"clubSpeed":68,"smash":1.13,"launch":31.7,"spin":6626,"offline":5.5,"shape":"Fade","proximity":18,"apex":68,"descent":39.8},{"id":"demo-shot-2","club":"SW","carry":102,"total":110,"ballSpeed":81,"clubSpeed":70,"smash":1.16,"launch":26.8,"spin":7000,"offline":7.4,"shape":"Fade","proximity":24,"apex":61,"descent":46}]}]',
+  '[{"id":"seeded-sand-wedge-session","title":"Seeded sand wedge session","date":"2026-07-15","source":"Seed data","focus":"Wedge distance control","location":"Back Nine Woodstock","shots":[{"id":"seeded-shot-1","club":"SW","carry":93,"total":100,"ballSpeed":77,"clubSpeed":68,"smash":1.13,"launch":31.7,"spin":6626,"offline":5.5,"shape":"Fade","proximity":18,"apex":68,"descent":39.8},{"id":"seeded-shot-2","club":"SW","carry":102,"total":110,"ballSpeed":81,"clubSpeed":70,"smash":1.16,"launch":26.8,"spin":7000,"offline":7.4,"shape":"Fade","proximity":24,"apex":61,"descent":46}]}]',
   CURRENT_TIMESTAMP,
   CURRENT_TIMESTAMP
 )
@@ -82,7 +82,7 @@ INSERT INTO member_content_items (
     'Hit 3 sets of 6 balls at 70, 85, and 100 yards. Score landing-zone proximity after each set.',
     'member',
     'active',
-    'demo-session-sand-wedge',
+    'seeded-sand-wedge-session',
     '{"club":"SW","priority":"Wedge distance control"}',
     CURRENT_TIMESTAMP,
     CURRENT_TIMESTAMP
@@ -96,7 +96,7 @@ INSERT INTO member_content_items (
     'Begin each practice with 10 half-speed wedges through a start-line gate before moving to carry targets.',
     'member',
     'active',
-    'demo-session-sand-wedge',
+    'seeded-sand-wedge-session',
     '{"club":"SW","priority":"Start line"}',
     CURRENT_TIMESTAMP,
     CURRENT_TIMESTAMP
