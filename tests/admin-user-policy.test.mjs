@@ -2,9 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  adminCreateUserGuard,
+  buildCoachReconciliationCandidates,
+  canManageCoachPhoto,
+  canViewCoachPhoto,
   deriveSetupStatus,
+  finalActiveAdminChangeGuard,
   normalizeEmail,
+  singleCoachAssignmentGuard,
   sniffImageMimeType,
+  splitDisplayNameForRegistration,
   validateCoachHeadshotFile,
   validatePasswordConfirmation,
 } from "../lib/admin-user-policy.mjs";
@@ -45,4 +52,171 @@ test("image MIME sniffing recognizes jpeg png and webp signatures", () => {
     "image/webp",
   );
   assert.equal(sniffImageMimeType(new Uint8Array([1, 2, 3, 4])), "");
+});
+
+test("admin create user is admin-only and never updates an existing account by email", () => {
+  assert.deepEqual(adminCreateUserGuard("coach", null), {
+    message: "Only admins can create users from the admin workspace.",
+    status: 403,
+  });
+  assert.deepEqual(adminCreateUserGuard("admin", { id: "admin-1", role: "admin" }), {
+    message: "That email already exists. Open the existing user and edit by ID instead.",
+    status: 409,
+  });
+  assert.equal(adminCreateUserGuard("admin", null), null);
+});
+
+test("coach-created student relationship enforces single-coach ownership", () => {
+  const unassigned = singleCoachAssignmentGuard({
+    coachId: "zac",
+    existingCoachIds: [],
+    identityId: "zac",
+    identityRole: "coach",
+  });
+  assert.equal(unassigned.allowed, true);
+  assert.equal(unassigned.alreadyAssigned, false);
+
+  const duplicate = singleCoachAssignmentGuard({
+    coachId: "zac",
+    existingCoachIds: ["zac"],
+    identityId: "zac",
+    identityRole: "coach",
+  });
+  assert.equal(duplicate.allowed, true);
+  assert.equal(duplicate.alreadyAssigned, true);
+
+  const claimed = singleCoachAssignmentGuard({
+    coachId: "other",
+    existingCoachIds: ["zac"],
+    identityId: "other",
+    identityRole: "coach",
+  });
+  assert.equal(claimed.allowed, false);
+  assert.equal(claimed.status, 409);
+  assert.match(claimed.message, /admin to reassign/);
+
+  const conflicting = singleCoachAssignmentGuard({
+    coachId: "zac",
+    existingCoachIds: ["zac", "other"],
+    identityId: "zac",
+    identityRole: "coach",
+  });
+  assert.equal(conflicting.allowed, false);
+  assert.equal(conflicting.status, 409);
+  assert.match(conflicting.message, /conflicting coach assignments/);
+});
+
+test("admin reassignment is allowed as the only path to change a coach", () => {
+  const adminReassign = singleCoachAssignmentGuard({
+    coachId: "coach-b",
+    existingCoachIds: ["coach-a"],
+    identityId: "admin-1",
+    identityRole: "admin",
+  });
+  assert.equal(adminReassign.allowed, true);
+});
+
+test("final active admin cannot be demoted or deactivated", () => {
+  assert.deepEqual(finalActiveAdminChangeGuard({
+    activeAdminCount: 1,
+    existingAccountStatus: "active",
+    existingRole: "admin",
+    nextAccountStatus: "active",
+    nextRole: "coach",
+  }), {
+    message: "You cannot remove or deactivate the final active admin account.",
+    status: 409,
+  });
+  assert.deepEqual(finalActiveAdminChangeGuard({
+    activeAdminCount: 1,
+    existingAccountStatus: "active",
+    existingRole: "admin",
+    nextAccountStatus: "inactive",
+    nextRole: "admin",
+  }), {
+    message: "You cannot remove or deactivate the final active admin account.",
+    status: 409,
+  });
+  assert.equal(finalActiveAdminChangeGuard({
+    activeAdminCount: 2,
+    existingAccountStatus: "active",
+    existingRole: "admin",
+    nextAccountStatus: "inactive",
+    nextRole: "admin",
+  }), null);
+});
+
+test("reconciliation only auto-repairs members with zero existing coaches", () => {
+  const videoRows = [
+    {
+      coach_email: "zac@example.com",
+      coach_first_name: "Zac",
+      coach_id: "zac",
+      coach_last_name: "Malone",
+      member_email: "joe@example.com",
+      member_first_name: "Joe",
+      member_id: "joe",
+      member_last_name: "DeRario",
+      publication_status: "published",
+      upload_status: "ready",
+      video_count: 1,
+      video_title: "Wedge lesson",
+    },
+    {
+      coach_email: "zac@example.com",
+      coach_first_name: "Zac",
+      coach_id: "zac",
+      coach_last_name: "Malone",
+      member_email: "sam@example.com",
+      member_first_name: "Sam",
+      member_id: "sam",
+      member_last_name: "Player",
+      publication_status: "published",
+      upload_status: "ready",
+      video_count: 1,
+      video_title: "Driver lesson",
+    },
+  ];
+  const existingRows = [
+    {
+      coach_email: "other@example.com",
+      coach_first_name: "Other",
+      coach_id: "other",
+      coach_last_name: "Coach",
+      member_id: "sam",
+    },
+  ];
+  const candidates = buildCoachReconciliationCandidates(videoRows, existingRows);
+  const joe = candidates.find((candidate) => candidate.memberId === "joe");
+  const sam = candidates.find((candidate) => candidate.memberId === "sam");
+  assert.equal(joe.repairable, true);
+  assert.equal(joe.ambiguous, false);
+  assert.equal(joe.suggestedCoachName, "Zac Malone");
+  assert.equal(sam.repairable, false);
+  assert.equal(sam.ambiguous, true);
+  assert.deepEqual(sam.existingCoachNames, ["Other Coach"]);
+});
+
+test("coach photo authorization matches admin coach member roles", () => {
+  assert.equal(canManageCoachPhoto({ id: "admin", role: "admin" }, "coach-a"), true);
+  assert.equal(canManageCoachPhoto({ id: "coach-a", role: "coach" }, "coach-a"), true);
+  assert.equal(canManageCoachPhoto({ id: "coach-b", role: "coach" }, "coach-a"), false);
+  assert.equal(canManageCoachPhoto({ id: "member", role: "member" }, "coach-a"), false);
+  assert.equal(canViewCoachPhoto({ id: "member", role: "member" }, "coach-a", true), true);
+  assert.equal(canViewCoachPhoto({ id: "member", role: "member" }, "coach-a", false), false);
+});
+
+test("registration state safely splits onboarding display name", () => {
+  assert.deepEqual(splitDisplayNameForRegistration("  Zac   Malone  ", "zac@example.com"), {
+    firstName: "Zac",
+    lastName: "Malone",
+  });
+  assert.deepEqual(splitDisplayNameForRegistration("Zac", "zac@example.com"), {
+    firstName: "Zac",
+    lastName: "",
+  });
+  assert.deepEqual(splitDisplayNameForRegistration("", "zac@example.com"), {
+    firstName: "",
+    lastName: "",
+  });
 });

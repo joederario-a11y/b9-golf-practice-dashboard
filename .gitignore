@@ -27,6 +27,8 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 free-range-golf-server.log
+*.save
+wrangler.jsonc.save
 
 # env files (can opt-in for committing if needed)
 .env*

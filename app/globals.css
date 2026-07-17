@@ -3874,6 +3874,10 @@ button:disabled {
   padding: 18px;
 }
 
+.video-upload-modal.ai-recap-modal {
+  width: min(1180px, 100%);
+}
+
 .video-upload-modal.auth-modal {
   width: min(760px, 100%);
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4171,6 +4175,88 @@ button:disabled {
   min-height: 80px;
   resize: vertical;
   padding: 10px;
+}
+
+.ai-recap-review-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.85fr) minmax(0, 1.35fr);
+  gap: 16px;
+  min-width: 0;
+}
+
+.ai-recap-video-column,
+.ai-recap-editor-column {
+  display: grid;
+  align-content: start;
+  min-width: 0;
+  gap: 12px;
+}
+
+.ai-recap-editor-column > label {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.ai-recap-editor-column > label textarea {
+  width: 100%;
+  min-height: 150px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  padding: 10px;
+  resize: vertical;
+}
+
+.ai-recap-supporting-data {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ai-recap-supporting-data span,
+.approved-transcript summary {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  padding: 7px 10px;
+}
+
+.approved-transcript {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 12px;
+}
+
+.approved-transcript summary {
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+.approved-transcript p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.practice-focus-callout small {
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
 }
 
 .video-modal-actions {
@@ -4879,6 +4965,10 @@ button:disabled {
   width: 17px;
   height: 17px;
   accent-color: var(--green);
+}
+
+.coach-email-toggle input:disabled {
+  opacity: 0.5;
 }
 
 .coach-review-layout {
@@ -6738,6 +6828,53 @@ input::file-selector-button {
   line-height: 1;
 }
 
+.admin-reconciliation-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.admin-reconciliation-list {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-reconciliation-item {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) repeat(3, minmax(120px, 0.75fr));
+  gap: 12px;
+  align-items: start;
+  border: 1px solid rgba(53, 242, 122, 0.2);
+  border-radius: 8px;
+  padding: 14px;
+  background: rgba(7, 21, 15, 0.7);
+}
+
+.admin-reconciliation-item.warning {
+  border-color: rgba(255, 204, 74, 0.36);
+}
+
+.admin-reconciliation-item div {
+  display: grid;
+  gap: 4px;
+}
+
+.admin-reconciliation-item div span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.admin-reconciliation-item ul {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+}
+
 .admin-ops-grid {
   display: grid;
   grid-template-columns: minmax(620px, 1.35fr) minmax(360px, 0.75fr);
@@ -7099,6 +7236,10 @@ input::file-selector-button {
     grid-template-columns: 1fr;
   }
 
+  .admin-reconciliation-item {
+    grid-template-columns: repeat(2, minmax(180px, 1fr));
+  }
+
   .admin-activity-strip > div:last-child {
     grid-template-columns: repeat(2, minmax(180px, 1fr));
   }
@@ -7114,6 +7255,10 @@ input::file-selector-button {
 
   .admin-hero {
     display: grid;
+  }
+
+  .admin-reconciliation-item {
+    grid-template-columns: 1fr;
   }
 
   .coach-dashboard-overview > .button-row,

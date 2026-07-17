@@ -1,4 +1,6 @@
 import {
+  canManageCoachPhoto,
+  canViewCoachPhoto,
   MAX_COACH_HEADSHOT_BYTES,
   sniffImageMimeType,
   validateCoachHeadshotFile,
@@ -66,13 +68,8 @@ async function memberIsAssignedToCoach(database: D1Database, memberId: string, c
 }
 
 async function canViewCoach(identity: AuthIdentity, database: D1Database, coachId: string) {
-  if (identity.role === "admin") return true;
-  if (identity.role === "coach") return identity.id === coachId;
-  return memberIsAssignedToCoach(database, identity.id, coachId);
-}
-
-function canManageCoach(identity: AuthIdentity, coachId: string) {
-  return identity.role === "admin" || (identity.role === "coach" && identity.id === coachId);
+  const isAssignedMember = identity.role === "member" ? await memberIsAssignedToCoach(database, identity.id, coachId) : false;
+  return canViewCoachPhoto(identity, coachId, isAssignedMember);
 }
 
 async function getCurrentImage(database: D1Database, coachId: string, imageId?: string) {
@@ -141,7 +138,7 @@ export async function POST(request: Request) {
     await ensurePlatformSchema(database);
     const form = await request.formData();
     const coachId = text(form.get("coachId"), 80) || identity.id;
-    if (!canManageCoach(identity, coachId)) {
+    if (!canManageCoachPhoto(identity, coachId)) {
       return Response.json({ error: "You cannot edit that coach image." }, { status: 403 });
     }
     const coach = await getCoach(database, coachId);
@@ -226,7 +223,7 @@ export async function DELETE(request: Request) {
     await ensurePlatformSchema(database);
     const payload = await request.json().catch(() => ({})) as { coachId?: unknown };
     const coachId = text(payload.coachId, 80) || identity.id;
-    if (!canManageCoach(identity, coachId)) {
+    if (!canManageCoachPhoto(identity, coachId)) {
       return Response.json({ error: "You cannot edit that coach image." }, { status: 403 });
     }
     const coach = await getCoach(database, coachId);

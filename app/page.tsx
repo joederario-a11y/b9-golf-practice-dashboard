@@ -1,6 +1,7 @@
 "use client";
 
 import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { splitDisplayNameForRegistration } from "@/lib/admin-user-policy.mjs";
 
 type Tab = "dashboard" | "sessions" | "clubs" | "videos" | "coach" | "admin" | "practice" | "import";
 type AccountMode = "pending" | "user" | "guest";
@@ -452,6 +453,26 @@ type StaffActivityRecord = {
   createdAt: string;
 };
 
+type CoachReconciliationCandidate = {
+  ambiguous: boolean;
+  choices: Array<{
+    coachId: string;
+    coachName: string;
+    videoCount: number;
+    videoEvidence?: Array<{
+      publicationStatus?: string | null;
+      title: string;
+      uploadStatus?: string | null;
+    }>;
+  }>;
+  existingCoachNames: string[];
+  memberEmail: string;
+  memberId: string;
+  memberName: string;
+  repairable: boolean;
+  suggestedCoachName: string;
+};
+
 type StaffContentRecord = {
   id: string;
   memberId: string;
@@ -569,6 +590,7 @@ type VideoLibraryRecord = {
   practiceAssignment?: string;
   recommendedDrill?: string;
   memberFacingNotes?: string;
+  nextSessionGoal?: string;
   coachPrivateNotes?: string;
   notificationLog?: VideoEmailNotificationLog[];
   updatedAt?: string;
@@ -577,6 +599,67 @@ type VideoLibraryRecord = {
 type VideoLibraryItem = VideoLibraryRecord & {
   objectUrl: string;
   thumbnailObjectUrl?: string;
+};
+
+type VideoRecapDraft = {
+  confidence: number;
+  createdAt: string;
+  id: string;
+  improvement: string;
+  keyIssue: string;
+  lessonSummary: string;
+  memberFacingNotes: string;
+  metricsMentioned: Array<{ metric: string; source: string; value: string }>;
+  nextSessionGoal: string;
+  practiceAssignment: string;
+  progressObserved: string[];
+  recommendedDrill: string;
+  reviewedAt?: string | null;
+  reviewedBy?: string | null;
+  status: string;
+  transcriptEvidence: Array<{ excerpt: string; field: string; timestamp: string }>;
+  updatedAt: string;
+  workedOn: string;
+};
+
+type VideoRecapTranscript = {
+  createdAt: string;
+  durationSeconds?: number | null;
+  id: string;
+  language: string;
+  model: string;
+  quality: Record<string, unknown>;
+  segments: unknown[];
+  text: string;
+};
+
+type VideoRecapJob = {
+  completedAt?: string | null;
+  currentStep: string;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  id: string;
+  processingVersion: number;
+  status: string;
+  updatedAt: string;
+  workflowInstanceId?: string | null;
+};
+
+type VideoRecapState = {
+  canReview: boolean;
+  draft: VideoRecapDraft | null;
+  job: VideoRecapJob | null;
+  transcript: VideoRecapTranscript | null;
+  video: {
+    coachId?: string | null;
+    coachName: string;
+    id: string;
+    memberId: string;
+    memberName: string;
+    objectUrl: string;
+    sessionId?: string | null;
+    title: string;
+  };
 };
 
 type OnboardingQuestionId =
@@ -3867,6 +3950,7 @@ function videoPatchPayload(video: VideoLibraryRecord) {
     practiceAssignment: video.practiceAssignment,
     recommendedDrill: video.recommendedDrill,
     memberFacingNotes: video.memberFacingNotes,
+    nextSessionGoal: video.nextSessionGoal,
   };
 }
 
@@ -4040,6 +4124,28 @@ async function finalizeVideoRecord(
     throw new Error(payload.error ?? "The video could not be published.");
   }
   return payload.video as VideoLibraryRecord;
+}
+
+async function readVideoRecap(videoId: string) {
+  const response = await fetch(`/api/video-recaps?videoId=${encodeURIComponent(videoId)}`, { cache: "no-store" });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error ?? "The MAI Caddy recap could not be loaded.");
+  }
+  return payload as VideoRecapState;
+}
+
+async function updateVideoRecap(payload: Record<string, unknown>) {
+  const response = await fetch("/api/video-recaps", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json();
+  if (!response.ok) {
+    throw new Error(result.error ?? "The MAI Caddy recap could not be updated.");
+  }
+  return result as VideoRecapState;
 }
 
 function stripVideoObjectUrl(video: VideoLibraryItem): VideoLibraryRecord {
@@ -6595,6 +6701,7 @@ function AdminView({
   const [statusFilter, setStatusFilter] = useState("all");
   const [showUserModal, setShowUserModal] = useState(false);
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
+  const [reconciliationCandidates, setReconciliationCandidates] = useState<CoachReconciliationCandidate[]>([]);
   const [passwordUser, setPasswordUser] = useState<StaffUserRecord | null>(null);
   const [passwordForm, setPasswordForm] = useState({
     password: "",
@@ -6821,7 +6928,9 @@ function AdminView({
   async function reconcileAssignments(apply: boolean) {
     try {
       const payload = await postStaffAction({ action: "reconcileCoachAssignments", apply });
-      const candidates = Array.isArray(payload.candidates) ? payload.candidates.length : 0;
+      const nextCandidates = Array.isArray(payload.candidates) ? payload.candidates as CoachReconciliationCandidate[] : [];
+      setReconciliationCandidates(nextCandidates);
+      const candidates = nextCandidates.length;
       const repaired = Number(payload.repaired ?? 0);
       setMessage(apply ? `Relationship repair complete: ${repaired} unambiguous assignments stored.` : `${candidates} relationship candidates found.`);
       await refreshWorkspace(selectedMemberId);
@@ -6928,22 +7037,6 @@ function AdminView({
     }
   }
 
-  async function deleteUser(user: StaffUserRecord) {
-    const confirmEmail = window.prompt(`Type ${user.email} to delete this account.`);
-    if (!confirmEmail) return;
-    try {
-      await postStaffAction({ action: "deleteUser", userId: user.id, confirmEmail });
-      if (selectedMemberId === user.id) {
-        setSelectedMemberId("");
-        setDetail(null);
-      }
-      setMessage(`${user.name} was deleted.`);
-      await refreshWorkspace();
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "The user could not be deleted.");
-    }
-  }
-
   if (!isAdmin) {
     return (
       <section className="panel admin-access-panel">
@@ -6984,6 +7077,48 @@ function AdminView({
           <button className="secondary-action" onClick={() => void reconcileAssignments(true)}>Repair clear gaps</button>
         </div>
       </header>
+
+      {reconciliationCandidates.length > 0 && (
+        <section className="panel admin-reconciliation-panel">
+          <PanelHeader
+            kicker="Coach assignment review"
+            title="Video-backed relationship candidates"
+            meta={`${reconciliationCandidates.filter((candidate) => candidate.repairable).length} repairable · ${reconciliationCandidates.filter((candidate) => candidate.ambiguous).length} manual review`}
+          />
+          <div className="admin-reconciliation-list">
+            {reconciliationCandidates.map((candidate) => (
+              <article className={cls("admin-reconciliation-item", candidate.ambiguous && "warning")} key={candidate.memberId}>
+                <div>
+                  <strong>{candidate.memberName}</strong>
+                  <span>{candidate.memberEmail}</span>
+                </div>
+                <div>
+                  <span>Suggested coach</span>
+                  <strong>{candidate.suggestedCoachName || "Manual review"}</strong>
+                </div>
+                <div>
+                  <span>Existing coach</span>
+                  <strong>{candidate.existingCoachNames.length ? candidate.existingCoachNames.join(", ") : "None"}</strong>
+                </div>
+                <div>
+                  <span>Status</span>
+                  <strong>{candidate.repairable ? "Safe to repair" : "Manual review"}</strong>
+                </div>
+                <ul>
+                  {candidate.choices.flatMap((choice) =>
+                    (choice.videoEvidence ?? [{ title: `${choice.videoCount} lesson videos`, uploadStatus: null, publicationStatus: null }]).map((video, index) => (
+                      <li key={`${choice.coachId}-${index}`}>
+                        {choice.coachName}: {video.title}
+                        {video.uploadStatus || video.publicationStatus ? ` (${[video.publicationStatus, video.uploadStatus].filter(Boolean).join(", ")})` : ""}
+                      </li>
+                    )),
+                  )}
+                </ul>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="admin-summary-grid">
         {summaryCards.map(([label, value]) => (
@@ -7633,9 +7768,12 @@ function CoachVideoWorkspace({
   const [practiceAssignment, setPracticeAssignment] = useState("");
   const [recommendedDrill, setRecommendedDrill] = useState("");
   const [memberFacingNotes, setMemberFacingNotes] = useState("");
+  const [nextSessionGoal, setNextSessionGoal] = useState("");
   const [coachPrivateNotes, setCoachPrivateNotes] = useState("");
   const [emailMember, setEmailMember] = useState(true);
+  const [generateAiRecap, setGenerateAiRecap] = useState(true);
   const [editingVideoId, setEditingVideoId] = useState<string | null>(null);
+  const [recapReviewVideo, setRecapReviewVideo] = useState<VideoLibraryItem | null>(null);
   const [selectedMemberDetail, setSelectedMemberDetail] = useState<StaffMemberDetail | null>(null);
   const [coachQuickMode, setCoachQuickMode] = useState<"content" | "session" | null>(null);
   const [saveState, setSaveState] = useState<"idle" | "saving">("idle");
@@ -7750,8 +7888,10 @@ function CoachVideoWorkspace({
     setPracticeAssignment("");
     setRecommendedDrill("");
     setMemberFacingNotes("");
+    setNextSessionGoal("");
     setCoachPrivateNotes("");
     setEmailMember(true);
+    setGenerateAiRecap(true);
     setEditingVideoId(null);
     setUploadProgress(0);
   }
@@ -7981,8 +8121,11 @@ function CoachVideoWorkspace({
         practiceAssignment: practiceAssignment.trim(),
         recommendedDrill: recommendedDrill.trim(),
         memberFacingNotes: memberFacingNotes.trim(),
+        nextSessionGoal: nextSessionGoal.trim(),
         coachPrivateNotes: coachPrivateNotes.trim(),
         coachNotes: memberFacingNotes.trim(),
+        generateAiRecap: Boolean(generateAiRecap && !editingVideo && videoFile),
+        processingLanguage: "en",
       };
 
       if (!pendingVideoId) {
@@ -8008,16 +8151,20 @@ function CoachVideoWorkspace({
       replaceItem(record);
       setUploadProgress(100);
 
+      const aiStatusNote = generateAiRecap && !editingVideo
+        ? " MAI Caddy recap processing is queued for coach review."
+        : "";
+
       if (publicationStatus === "Draft") {
-        setWorkspaceMessage(`Draft saved for ${selectedMember.name}. It is not visible to the member.`);
+        setWorkspaceMessage(`Draft saved for ${selectedMember.name}. It is not visible to the member.${aiStatusNote}`);
       } else if (notifyMember && emailMember) {
         setWorkspaceMessage(
           record.emailStatus === "Sent"
-            ? `Video published to ${selectedMember.name} and the email notification was sent.`
-            : "Video published, but the email notification could not be sent.",
+            ? `Video published to ${selectedMember.name} and the email notification was sent.${aiStatusNote}`
+            : `Video published, but the email notification could not be sent.${aiStatusNote}`,
         );
       } else {
-        setWorkspaceMessage(`Video published to ${selectedMember.name}. No email was sent.`);
+        setWorkspaceMessage(`Video published to ${selectedMember.name}. No email was sent.${aiStatusNote}`);
       }
       const completedMember = selectedMember;
       resetWorkflow();
@@ -8051,8 +8198,10 @@ function CoachVideoWorkspace({
     setPracticeAssignment(video.practiceAssignment ?? "");
     setRecommendedDrill(video.recommendedDrill ?? "");
     setMemberFacingNotes(video.memberFacingNotes ?? "");
+    setNextSessionGoal(video.nextSessionGoal ?? "");
     setCoachPrivateNotes(video.coachPrivateNotes ?? "");
     setEmailMember(video.emailStatus !== "Sent");
+    setGenerateAiRecap(false);
     setStep(2);
     setWorkspaceMessage(`Editing ${video.title}. Choose a replacement file only if the video changed.`);
   }
@@ -8420,6 +8569,7 @@ function CoachVideoWorkspace({
                 <label><span>What improved</span><textarea onChange={(event) => setImprovement(event.target.value)} placeholder="Start line tightened and contact moved toward center." value={improvement} /></label>
                 <label><span>What to practice next</span><textarea onChange={(event) => setPracticeAssignment(event.target.value)} placeholder="3 sets of slow takeaway drills and 20 half-speed 7-iron swings." value={practiceAssignment} /></label>
                 <label><span>Recommended drill</span><textarea onChange={(event) => setRecommendedDrill(event.target.value)} placeholder="Headcover outside the hands takeaway drill." value={recommendedDrill} /></label>
+                <label><span>Next session goal</span><textarea onChange={(event) => setNextSessionGoal(event.target.value)} placeholder="Arrive next session with a neutral takeaway checkpoint and tighter start line." value={nextSessionGoal} /></label>
                 <label><span>Member-facing notes</span><textarea onChange={(event) => setMemberFacingNotes(event.target.value)} placeholder="A short message the member will see." value={memberFacingNotes} /></label>
                 <label><span>Coach private notes</span><textarea onChange={(event) => setCoachPrivateNotes(event.target.value)} placeholder="Only coaches and admins can see this." value={coachPrivateNotes} /></label>
               </div>
@@ -8444,9 +8594,22 @@ function CoachVideoWorkspace({
                   <div><dt>Lesson</dt><dd>{formatFullDate(lessonDate)}<small>{focusArea}</small></dd></div>
                   <div><dt>Session</dt><dd>{selectedSession?.title ?? "No session attached"}<small>{selectedSession?.source ?? "Standalone video"}</small></dd></div>
                   <div><dt>Practice focus</dt><dd>{practiceAssignment || "No assignment added"}<small>{recommendedDrill || "No drill added"}</small></dd></div>
+                  <div><dt>Next session goal</dt><dd>{nextSessionGoal || "No goal added"}<small>Shared after coach approval.</small></dd></div>
                   <div><dt>Coach note</dt><dd>{memberFacingNotes || lessonSummary || "No member-facing note"}<small>Private notes are not shared.</small></dd></div>
                 </dl>
               </div>
+              <label className="coach-email-toggle">
+                <input
+                  checked={generateAiRecap}
+                  disabled={Boolean(editingVideo)}
+                  onChange={(event) => setGenerateAiRecap(event.target.checked)}
+                  type="checkbox"
+                />
+                <span>
+                  <strong>Generate lesson recap from my voiceover</strong>
+                  <small>{editingVideo ? "Available for new coach uploads. Use Review AI Recap to retry an existing video." : "Starts after upload and stays hidden until a coach approves it."}</small>
+                </span>
+              </label>
               <label className="coach-email-toggle">
                 <input checked={emailMember} onChange={(event) => setEmailMember(event.target.checked)} type="checkbox" />
                 <span><strong>Email {selectedMember.name} when published</strong><small>Notification is sent only after the video is saved successfully.</small></span>
@@ -8508,6 +8671,14 @@ function CoachVideoWorkspace({
                 </div>
                 <div className="coach-management-actions">
                   <button aria-label={`Edit ${video.title}`} className="icon-button" onClick={() => editVideo(video)} title="Edit video">✎</button>
+                  <button
+                    aria-label={`Review AI recap for ${video.title}`}
+                    className="icon-button"
+                    onClick={() => setRecapReviewVideo(video)}
+                    title="Review AI recap"
+                  >
+                    AI
+                  </button>
                   <button
                     aria-label={`Open ${video.memberName ?? "member"} video library`}
                     className="icon-button"
@@ -8571,6 +8742,17 @@ function CoachVideoWorkspace({
           </div>
         )}
       </section>
+
+      {recapReviewVideo && (
+        <AiLessonRecapReviewModal
+          onClose={() => setRecapReviewVideo(null)}
+          onPublished={(record) => {
+            replaceItem(record);
+            setRecapReviewVideo(createVideoLibraryItem(record));
+          }}
+          video={recapReviewVideo}
+        />
+      )}
 
       {showAddMember && (
         <div className="video-modal-overlay">
@@ -8944,6 +9126,204 @@ function VideoSessionMetrics({ session, video }: { session?: Session; video: Vid
   );
 }
 
+function AiLessonRecapReviewModal({
+  onClose,
+  onPublished,
+  video,
+}: {
+  onClose: () => void;
+  onPublished: (record: VideoLibraryRecord) => void;
+  video: VideoLibraryItem;
+}) {
+  const [state, setState] = useState<VideoRecapState | null>(null);
+  const [message, setMessage] = useState("Loading MAI Caddy recap state...");
+  const [saving, setSaving] = useState<"idle" | "saving">("idle");
+  const [transcriptText, setTranscriptText] = useState("");
+  const [fields, setFields] = useState({
+    improvement: video.improvement ?? "",
+    keyIssue: video.keyIssue ?? "",
+    lessonSummary: video.lessonSummary ?? "",
+    memberFacingNotes: video.memberFacingNotes ?? "",
+    nextSessionGoal: video.nextSessionGoal ?? "",
+    practiceAssignment: video.practiceAssignment ?? "",
+    recommendedDrill: video.recommendedDrill ?? "",
+    workedOn: video.workedOn ?? "",
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    readVideoRecap(video.id)
+      .then((payload) => {
+        if (cancelled) return;
+        setState(payload);
+        if (payload.transcript?.text) setTranscriptText(payload.transcript.text);
+        if (payload.draft) {
+          setFields({
+            improvement: payload.draft.improvement,
+            keyIssue: payload.draft.keyIssue,
+            lessonSummary: payload.draft.lessonSummary,
+            memberFacingNotes: payload.draft.memberFacingNotes,
+            nextSessionGoal: payload.draft.nextSessionGoal,
+            practiceAssignment: payload.draft.practiceAssignment,
+            recommendedDrill: payload.draft.recommendedDrill,
+            workedOn: payload.draft.workedOn,
+          });
+          setMessage(payload.draft.status === "published" ? "This recap is already published." : "Review the draft before publishing it to the member.");
+        } else if (payload.job) {
+          setMessage(payload.job.errorMessage || `Processing status: ${payload.job.status}.`);
+        } else {
+          setMessage("No AI recap has been generated yet. Retry will queue this video for processing.");
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) setMessage(error instanceof Error ? error.message : "The MAI Caddy recap could not be loaded.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [video.id]);
+
+  function updateField(key: keyof typeof fields, value: string) {
+    setFields((current) => ({ ...current, [key]: value }));
+  }
+
+  async function submit(action: "approveAndPublish" | "editTranscript" | "markIncorrect" | "retry" | "saveDraft") {
+    if (action === "approveAndPublish" && !window.confirm("Publish this coach-approved recap and transcript to the member?")) return;
+    if (action === "markIncorrect" && !window.confirm("Mark this AI recap as incorrect? It will stay hidden from the member.")) return;
+    setSaving("saving");
+    try {
+      const nextState = await updateVideoRecap({
+        ...fields,
+        action,
+        transcriptText,
+        videoId: video.id,
+      });
+      setState(nextState);
+      if (nextState.transcript?.text) setTranscriptText(nextState.transcript.text);
+      if (action === "approveAndPublish") {
+        onPublished({
+          ...stripVideoObjectUrl(video),
+          improvement: fields.improvement,
+          keyIssue: fields.keyIssue,
+          lessonSummary: fields.lessonSummary,
+          memberFacingNotes: fields.memberFacingNotes,
+          nextSessionGoal: fields.nextSessionGoal,
+          practiceAssignment: fields.practiceAssignment,
+          publicationStatus: "Published",
+          recommendedDrill: fields.recommendedDrill,
+          status: "Coach Feedback",
+          updatedAt: new Date().toISOString(),
+          workedOn: fields.workedOn,
+        });
+        setMessage("Recap approved and published to the member.");
+      } else if (action === "retry") {
+        setMessage("MAI Caddy processing was queued again.");
+      } else if (action === "markIncorrect") {
+        setMessage("The generated recap was marked incorrect and remains hidden.");
+      } else if (action === "editTranscript") {
+        setMessage("Transcript saved.");
+      } else {
+        setMessage("Draft saved.");
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The MAI Caddy action could not be completed.");
+    } finally {
+      setSaving("idle");
+    }
+  }
+
+  const jobStatus = state?.job?.status ?? "Not queued";
+  const hasDraft = Boolean(state?.draft);
+  const canPublish = hasDraft;
+
+  return (
+    <div className="video-modal-overlay">
+      <section className="video-upload-modal ai-recap-modal">
+        <div className="video-modal-header">
+          <div>
+            <p className="eyebrow">MAI Caddy voiceover</p>
+            <h2>Review lesson recap</h2>
+          </div>
+          <button aria-label="Close AI recap review" className="icon-button" onClick={onClose} type="button">×</button>
+        </div>
+
+        <div className="ai-recap-review-layout">
+          <div className="ai-recap-video-column">
+            <video className="video-player" controls playsInline preload="metadata" src={video.objectUrl} />
+            <dl className="coach-review-list">
+              <div><dt>Video</dt><dd>{video.title}<small>{video.fileName}</small></dd></div>
+              <div><dt>Member</dt><dd>{video.memberName ?? "Member"}<small>{video.memberEmail ?? "No email"}</small></dd></div>
+              <div><dt>Coach</dt><dd>{video.coachName ?? video.uploadedBy}<small>{video.lessonDate ? formatFullDate(video.lessonDate) : formatVideoUploadDate(video.uploadedAt)}</small></dd></div>
+              <div><dt>Status</dt><dd>{jobStatus}<small>{state?.job?.currentStep ?? "No workflow step yet"}</small></dd></div>
+            </dl>
+            {state?.job?.errorMessage && <p className="coach-inline-warning">{state.job.errorMessage}</p>}
+          </div>
+
+          <div className="ai-recap-editor-column">
+            <label className="video-form-wide"><span>Transcript</span><textarea onChange={(event) => setTranscriptText(event.target.value)} placeholder="Transcript will appear here after processing." value={transcriptText} /></label>
+            <div className="coach-notes-grid">
+              <label><span>Lesson summary</span><textarea onChange={(event) => updateField("lessonSummary", event.target.value)} value={fields.lessonSummary} /></label>
+              <label><span>What we worked on</span><textarea onChange={(event) => updateField("workedOn", event.target.value)} value={fields.workedOn} /></label>
+              <label><span>Key swing issue</span><textarea onChange={(event) => updateField("keyIssue", event.target.value)} value={fields.keyIssue} /></label>
+              <label><span>What improved</span><textarea onChange={(event) => updateField("improvement", event.target.value)} value={fields.improvement} /></label>
+              <label><span>Practice assignment</span><textarea onChange={(event) => updateField("practiceAssignment", event.target.value)} value={fields.practiceAssignment} /></label>
+              <label><span>Recommended drill</span><textarea onChange={(event) => updateField("recommendedDrill", event.target.value)} value={fields.recommendedDrill} /></label>
+              <label><span>Next session goal</span><textarea onChange={(event) => updateField("nextSessionGoal", event.target.value)} value={fields.nextSessionGoal} /></label>
+              <label><span>Member-facing notes</span><textarea onChange={(event) => updateField("memberFacingNotes", event.target.value)} value={fields.memberFacingNotes} /></label>
+            </div>
+            <div className="ai-recap-supporting-data">
+              <span>Confidence {Math.round((state?.draft?.confidence ?? 0) * 100)}%</span>
+              <span>{state?.draft?.metricsMentioned?.length ?? 0} metrics mentioned</span>
+              <span>{state?.draft?.transcriptEvidence?.length ?? 0} transcript references</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="video-modal-actions">
+          <span>{message}</span>
+          <div className="button-row">
+            <button className="secondary-action" disabled={saving === "saving" || !hasDraft} onClick={() => void submit("editTranscript")} type="button">Save Transcript</button>
+            <button className="secondary-action" disabled={saving === "saving" || !hasDraft} onClick={() => void submit("saveDraft")} type="button">Save Draft</button>
+            <button className="secondary-action" disabled={saving === "saving"} onClick={() => void submit("retry")} type="button">Regenerate</button>
+            <button className="text-button danger-text-button" disabled={saving === "saving" || !hasDraft} onClick={() => void submit("markIncorrect")} type="button">Mark Incorrect</button>
+            <button className="secondary-action" onClick={onClose} type="button">Cancel</button>
+            <button className="primary-action" disabled={saving === "saving" || !canPublish} onClick={() => void submit("approveAndPublish")} type="button">
+              {saving === "saving" ? "Saving..." : "Approve & Publish"}
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ApprovedTranscriptDisclosure({ videoId }: { videoId: string }) {
+  const [state, setState] = useState<VideoRecapState | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    readVideoRecap(videoId)
+      .then((payload) => {
+        if (!cancelled) setState(payload);
+      })
+      .catch(() => {
+        if (!cancelled) setState(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [videoId]);
+
+  if (!state?.draft || state.draft.status !== "published" || !state.transcript?.text) return null;
+
+  return (
+    <details className="approved-transcript">
+      <summary>Approved lesson transcript</summary>
+      <p>{state.transcript.text}</p>
+    </details>
+  );
+}
+
 function VideoDetailView({
   onBack,
   onDelete,
@@ -9046,13 +9426,14 @@ function VideoDetailView({
                   Save coach notes
                 </button>
               </>
-            ) : sharedCoachNote || video.lessonSummary || video.workedOn || video.keyIssue || video.improvement || video.recommendedDrill ? (
+            ) : sharedCoachNote || video.lessonSummary || video.workedOn || video.keyIssue || video.improvement || video.recommendedDrill || video.nextSessionGoal ? (
               <div className="structured-video-notes">
                 {video.lessonSummary && <div><span>Lesson summary</span><p>{video.lessonSummary}</p></div>}
                 {video.workedOn && <div><span>What we worked on</span><p>{video.workedOn}</p></div>}
                 {video.keyIssue && <div><span>Key swing issue</span><p>{video.keyIssue}</p></div>}
                 {video.improvement && <div><span>What improved</span><p>{video.improvement}</p></div>}
                 {video.recommendedDrill && <div><span>Recommended drill</span><p>{video.recommendedDrill}</p></div>}
+                {video.nextSessionGoal && <div><span>Next session goal</span><p>{video.nextSessionGoal}</p></div>}
                 {sharedCoachNote && <div><span>Coach message</span><p>{sharedCoachNote}</p></div>}
               </div>
             ) : (
@@ -9064,8 +9445,11 @@ function VideoDetailView({
             <section className="practice-focus-callout">
               <span>Practice Focus Before Your Next Session</span>
               <strong>{video.practiceAssignment}</strong>
+              {video.nextSessionGoal && <small>{video.nextSessionGoal}</small>}
             </section>
           )}
+
+          {viewerRole === "user" && <ApprovedTranscriptDisclosure videoId={video.id} />}
 
           {canEditUserNotes && (
             <section className="panel video-note-panel">
@@ -9263,6 +9647,7 @@ function VideosView({
           video.practiceAssignment,
           video.recommendedDrill,
           video.memberFacingNotes,
+          video.nextSessionGoal,
           video.userNotes,
           video.type,
           video.focusArea,
@@ -10776,7 +11161,7 @@ function OnboardingFlow({
   );
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [coachHeadshotFile, setCoachHeadshotFile] = useState<File | null>(registrationDraft?.headshotFile ?? null);
+  const [coachHeadshotFile, setCoachHeadshotFile] = useState<File | null>(null);
   const [coachHeadshotPreview, setCoachHeadshotPreview] = useState("");
   useEffect(() => {
     const draft = readStoredOnboardingAnswers();
@@ -10846,13 +11231,14 @@ function OnboardingFlow({
       experienceStyle: role === "coach" ? ["Coach-guided sessions"] : ["Data-driven training"],
     };
     const profile = buildUserPracticeProfile(profileAnswers);
+    const registrationName = splitDisplayNameForRegistration(displayName);
     onRegister(profile, {
       accountType: role === "coach" ? "coach" : "player",
       confirmPassword,
       email: email.trim().toLowerCase(),
-      firstName: "",
+      firstName: registrationName.firstName,
       headshotFile: role === "coach" ? coachHeadshotFile : null,
-      lastName: "",
+      lastName: registrationName.lastName,
       password,
     });
   }
@@ -10925,22 +11311,24 @@ function OnboardingFlow({
                 <span>Confirm password</span>
                 <input autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} placeholder="Re-enter password" required type="password" />
               </label>
-              <label>
-                <span>Profile photo</span>
-                <input
-                  accept="image/png,image/jpeg,image/webp"
-                  onChange={(event) => {
-                    const file = event.currentTarget.files?.[0] ?? null;
-                    setCoachHeadshotFile(file);
-                    updateValue("profilePhotoName", file?.name ?? "");
-                  }}
-                  type="file"
-                />
-                {coachHeadshotPreview && role === "coach" && (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img alt="Coach headshot preview" className="coach-headshot-preview" src={coachHeadshotPreview} />
-                )}
-              </label>
+              {role === "coach" && (
+                <label>
+                  <span>Profile photo</span>
+                  <input
+                    accept="image/png,image/jpeg,image/webp"
+                    onChange={(event) => {
+                      const file = event.currentTarget.files?.[0] ?? null;
+                      setCoachHeadshotFile(file);
+                      updateValue("profilePhotoName", file?.name ?? "");
+                    }}
+                    type="file"
+                  />
+                  {coachHeadshotPreview && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img alt="Coach headshot preview" className="coach-headshot-preview" src={coachHeadshotPreview} />
+                  )}
+                </label>
+              )}
 
               {role === "golfer" ? (
                 <>
@@ -11043,7 +11431,7 @@ function LoginRequestModal({
   const [password, setPassword] = useState(registrationDraft?.password ?? "");
   const [confirmPassword, setConfirmPassword] = useState(registrationDraft?.confirmPassword ?? "");
   const [accountType, setAccountType] = useState<RegisterAccountType>(registrationDraft?.accountType ?? "player");
-  const [coachHeadshotFile, setCoachHeadshotFile] = useState<File | null>(null);
+  const [coachHeadshotFile, setCoachHeadshotFile] = useState<File | null>(registrationDraft?.headshotFile ?? null);
   const [coachHeadshotPreview, setCoachHeadshotPreview] = useState("");
   const [state, setState] = useState<"idle" | "sending" | "link" | "reset">("idle");
   const [message, setMessage] = useState(

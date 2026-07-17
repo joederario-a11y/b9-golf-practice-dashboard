@@ -5,3 +5,17 @@ export const env = {
   COACH_EMAILS: "",
   VIDEO_EMAIL_FROM: "",
 };
+
+export class WorkflowEntrypoint<Environment = unknown, Params = unknown> {
+  env: Environment;
+
+  constructor(ctx?: unknown, env?: Environment) {
+    void ctx;
+    this.env = (env ?? {}) as Environment;
+  }
+
+  async run(event: { payload?: Params; params?: Params }, step: unknown): Promise<void> {
+    void event;
+    void step;
+  }
+}

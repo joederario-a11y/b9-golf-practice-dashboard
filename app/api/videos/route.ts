@@ -15,6 +15,10 @@ import {
   responseFromError,
 } from "@/lib/server/platform";
 import { sendVideoNotification } from "@/lib/server/video-email";
+import {
+  createVideoRecapProcessingJob,
+  queueVideoRecapWorkflowAfterUpload,
+} from "@/lib/server/video-ai-recap";
 
 type VideoRow = {
   id: string;
@@ -54,6 +58,7 @@ type VideoRow = {
   practice_assignment: string;
   recommended_drill: string;
   member_facing_notes: string;
+  next_session_goal: string;
   created_at: string;
   updated_at: string;
   member_first_name: string;
@@ -155,6 +160,7 @@ function serializeVideo(row: VideoRow, viewerRole?: string) {
     practiceAssignment: row.practice_assignment,
     recommendedDrill: row.recommended_drill,
     memberFacingNotes: row.member_facing_notes,
+    nextSessionGoal: row.next_session_goal,
     objectUrl: `/api/videos/media?videoId=${encodeURIComponent(row.id)}`,
     thumbnailObjectUrl: row.thumbnail_storage_path
       ? `/api/videos/media?videoId=${encodeURIComponent(row.id)}&asset=thumbnail`
@@ -278,10 +284,10 @@ export async function POST(request: Request) {
           lesson_date, publication_status, upload_status, review_status,
           email_status, is_viewed_by_member, lesson_summary, worked_on,
           key_issue, improvement, practice_assignment, recommended_drill,
-          member_facing_notes, created_at, updated_at
+          member_facing_notes, next_session_goal, created_at, updated_at
         ) VALUES (
           ?, ?, ?, ?, ?, ?, '', ?, '', ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?,
-          ?, ?, 'pending', 'New', 'Not sent', ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+          ?, ?, 'pending', 'New', 'Not sent', ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
         )`,
       )
       .bind(
@@ -313,8 +319,19 @@ export async function POST(request: Request) {
         text(payload.practiceAssignment, 4000),
         text(payload.recommendedDrill, 4000),
         text(payload.memberFacingNotes, 4000),
+        text(payload.nextSessionGoal, 4000),
       )
       .run();
+
+    if (coachId && payload.generateAiRecap !== false) {
+      await createVideoRecapProcessingJob(
+        database,
+        identity,
+        videoId,
+        payload.generateAiRecap,
+        text(payload.processingLanguage, 12) || "en",
+      );
+    }
 
     const row = await getVideo(database, videoId);
     return Response.json({ video: row ? serializeVideo(row, identity.role) : null }, { status: 201 });
@@ -365,6 +382,7 @@ export async function PUT(request: Request) {
       return Response.json({ error: actualValidationError }, { status: 400 });
     }
 
+    let aiProcessing: unknown = null;
     if (asset === "thumbnail") {
       await database
         .prepare("UPDATE lesson_videos SET thumbnail_storage_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
@@ -391,8 +409,13 @@ export async function PUT(request: Request) {
         summary: `${identity.displayName} uploaded ${fileName}.`,
         targetUserId: video.member_id,
       });
+      try {
+        aiProcessing = await queueVideoRecapWorkflowAfterUpload(database, identity, video.id);
+      } catch {
+        aiProcessing = { queued: false };
+      }
     }
-    return Response.json({ ok: true, asset, size: stored.size });
+    return Response.json({ ok: true, aiProcessing, asset, size: stored.size });
   } catch (error) {
     return responseFromError(error);
   }
@@ -466,7 +489,7 @@ export async function PATCH(request: Request) {
             session_data_id = ?, duration = ?, lesson_date = ?, publication_status = ?,
             review_status = ?, lesson_summary = ?, worked_on = ?, key_issue = ?,
             improvement = ?, practice_assignment = ?, recommended_drill = ?,
-            member_facing_notes = ?, updated_at = CURRENT_TIMESTAMP
+            member_facing_notes = ?, next_session_goal = ?, updated_at = CURRENT_TIMESTAMP
           WHERE id = ?`,
         )
         .bind(
@@ -492,6 +515,7 @@ export async function PATCH(request: Request) {
           optionalText(payload.practiceAssignment, 4000) ?? video.practice_assignment,
           optionalText(payload.recommendedDrill, 4000) ?? video.recommended_drill,
           optionalText(payload.memberFacingNotes, 4000) ?? video.member_facing_notes,
+          optionalText(payload.nextSessionGoal, 4000) ?? video.next_session_goal,
           video.id,
         )
         .run();
@@ -562,12 +586,23 @@ export async function DELETE(request: Request) {
       return Response.json({ error: "videoId is required." }, { status: 400 });
     }
     const { database, video } = await requireVideoAccess(videoId, "manage");
+    const aiAssets = await database
+      .prepare("SELECT audio_storage_path FROM video_ai_processing_jobs WHERE video_id = ? AND audio_storage_path IS NOT NULL")
+      .bind(video.id)
+      .all<{ audio_storage_path: string }>();
     const bucket = getRequiredVideoStorage();
-    const keys = [video.storage_path, video.thumbnail_storage_path].filter((key): key is string => Boolean(key));
+    const keys = [
+      video.storage_path,
+      video.thumbnail_storage_path,
+      ...(aiAssets.results ?? []).map((asset) => asset.audio_storage_path),
+    ].filter((key): key is string => Boolean(key));
     if (keys.length) await bucket.delete(keys);
     await database.batch([
       database.prepare("DELETE FROM video_views WHERE video_id = ?").bind(video.id),
       database.prepare("DELETE FROM video_email_notifications WHERE video_id = ?").bind(video.id),
+      database.prepare("DELETE FROM video_lesson_recap_drafts WHERE video_id = ?").bind(video.id),
+      database.prepare("DELETE FROM video_transcripts WHERE video_id = ?").bind(video.id),
+      database.prepare("DELETE FROM video_ai_processing_jobs WHERE video_id = ?").bind(video.id),
       database.prepare("DELETE FROM lesson_videos WHERE id = ?").bind(video.id),
     ]);
     return Response.json({ ok: true });

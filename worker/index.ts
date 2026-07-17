@@ -1,11 +1,30 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
+import { WorkflowEntrypoint } from "cloudflare:workers";
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+
+import {
+  runVideoLessonRecapWorkflow,
+  type VideoLessonRecapWorkflowParams,
+} from "@/lib/server/video-ai-recap";
 
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
   VIDEO_STORAGE: R2Bucket;
+  MEDIA?: {
+    input(stream: ReadableStream): {
+      output(options: Record<string, unknown>): {
+        response(): Promise<Response>;
+      };
+    };
+  };
+  OPENAI_API_KEY?: string;
+  OPENAI_MODEL?: string;
+  OPENAI_TRANSCRIPTION_MODEL?: string;
+  VIDEO_LESSON_RECAP_WORKFLOW?: {
+    create(options?: { id?: string; params?: unknown }): Promise<{ id: string }>;
+  };
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -18,6 +37,21 @@ interface Env {
 interface ExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
   passThroughOnException(): void;
+}
+
+type WorkflowStep = {
+  do<T>(name: string, callback: () => Promise<T>): Promise<T>;
+};
+
+type WorkflowEvent = {
+  payload?: VideoLessonRecapWorkflowParams;
+  params?: VideoLessonRecapWorkflowParams;
+};
+
+export class VideoLessonRecapWorkflow extends WorkflowEntrypoint<Env, VideoLessonRecapWorkflowParams> {
+  async run(event: WorkflowEvent, step: WorkflowStep) {
+    await runVideoLessonRecapWorkflow(this.env, event, step);
+  }
 }
 
 // Image security config. SVG sources with .svg extension auto-skip the

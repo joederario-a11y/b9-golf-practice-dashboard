@@ -1,10 +1,14 @@
 import { requestLoginEmail } from "@/lib/server/auth-email";
 import {
+  adminCreateUserGuard,
+  buildCoachReconciliationCandidates,
   deriveSetupStatus,
+  finalActiveAdminChangeGuard,
   normalizeEmail,
   safeAccountStatus,
   safeInviteStatus,
   safeRole,
+  singleCoachAssignmentGuard,
   validatePasswordConfirmation,
 } from "@/lib/admin-user-policy.mjs";
 import {
@@ -500,12 +504,8 @@ async function memberDetail(database: D1Database, identity: AuthIdentity, member
   };
 }
 
-async function createOrUpdateUser(request: Request, database: D1Database, identity: AuthIdentity, payload: Record<string, unknown>) {
+async function createUser(request: Request, database: D1Database, identity: AuthIdentity, payload: Record<string, unknown>) {
   const role = safeRole(text(payload.role, 20), "member") as UserRole;
-  if (identity.role !== "admin" && role !== "member") {
-    throw new Response("Only admins can create coach or admin accounts.", { status: 403 });
-  }
-
   const firstName = text(payload.firstName, 80);
   const lastName = text(payload.lastName, 80);
   const email = normalizeEmail(payload.email);
@@ -521,37 +521,19 @@ async function createOrUpdateUser(request: Request, database: D1Database, identi
     .prepare("SELECT id, email, role FROM users WHERE LOWER(email) = ?")
     .bind(email)
     .first<{ id: string; email: string; role: UserRole }>();
-  const userId = existing?.id ?? crypto.randomUUID();
+  const guard = adminCreateUserGuard(identity.role, existing);
+  if (guard) throw new Response(guard.message, { status: guard.status });
+  const userId = crypto.randomUUID();
 
-  if (existing) {
-    await database
-      .prepare(
-        `UPDATE users SET
-          role = ?,
-          first_name = ?,
-          last_name = ?,
-          email = ?,
-          phone = ?,
-          skill_level = ?,
-          notes = ?,
-          account_status = ?,
-          invite_status = ?,
-          updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?`,
-      )
-      .bind(role, firstName, lastName, email, phone, skillLevel, notes, accountStatus, inviteStatus, userId)
-      .run();
-  } else {
-    await database
-      .prepare(
-        `INSERT INTO users (
-          id, role, first_name, last_name, email, phone, skill_level, notes,
-          account_status, invite_status, invited_at, created_by, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-      )
-      .bind(userId, role, firstName, lastName, email, phone, skillLevel, notes, accountStatus, inviteStatus, identity.id)
-      .run();
-  }
+  await database
+    .prepare(
+      `INSERT INTO users (
+        id, role, first_name, last_name, email, phone, skill_level, notes,
+        account_status, invite_status, invited_at, created_by, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+    )
+    .bind(userId, role, firstName, lastName, email, phone, skillLevel, notes, accountStatus, inviteStatus, identity.id)
+    .run();
 
   if (role === "member") {
     const coachId = identity.role === "coach" ? identity.id : text(payload.coachId, 80);
@@ -569,8 +551,6 @@ async function createOrUpdateUser(request: Request, database: D1Database, identi
         targetUserId: userId,
       });
     }
-  } else {
-    await database.prepare("DELETE FROM coach_members WHERE member_id = ?").bind(userId).run();
   }
 
   const invite = await requestLoginEmail(request, email, "/?tab=videos", {
@@ -578,13 +558,13 @@ async function createOrUpdateUser(request: Request, database: D1Database, identi
     purpose: "registration",
   });
   await recordActivity({
-    action: existing ? "user_updated" : "user_created",
+    action: "user_created",
     actor: identity,
     database,
     entityId: userId,
     entityType: "user",
     memberId: role === "member" ? userId : null,
-    summary: `${identity.displayName} ${existing ? "updated" : "created"} ${firstName} ${lastName} as ${role}.`,
+    summary: `${identity.displayName} created ${firstName} ${lastName} as ${role}.`,
     targetUserId: userId,
   });
   return { userId, invite };
@@ -609,13 +589,18 @@ async function assignCoach(
     .bind(memberId)
     .all<{ coach_id: string }>();
   const oldCoachIds = oldAssignments.results.map((row) => row.coach_id);
+  const guard = singleCoachAssignmentGuard({
+    coachId,
+    existingCoachIds: oldCoachIds,
+    identityId: identity.id,
+    identityRole: identity.role,
+  });
+  if (!guard.allowed) throw new Response(guard.message, { status: guard.status });
+
   if (identity.role === "admin") {
     const removedCoachIds = oldCoachIds.filter((oldCoachId) => oldCoachId !== coachId);
     if (removedCoachIds.length) {
-      await database
-        .prepare("DELETE FROM coach_members WHERE member_id = ? AND coach_id <> ?")
-        .bind(memberId, coachId)
-        .run();
+      await database.prepare("DELETE FROM coach_members WHERE member_id = ?").bind(memberId).run();
       for (const removedCoachId of removedCoachIds) {
         await recordActivity({
           action: "coach_removed",
@@ -632,14 +617,16 @@ async function assignCoach(
     }
   }
   const assignmentId = crypto.randomUUID();
-  await database
-    .prepare(
-      `INSERT INTO coach_members (id, coach_id, member_id, created_at)
-       VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-       ON CONFLICT(coach_id, member_id) DO NOTHING`,
-    )
-    .bind(assignmentId, coachId, memberId)
-    .run();
+  if (!oldCoachIds.includes(coachId) || (identity.role === "admin" && oldCoachIds.length > 1)) {
+    await database
+      .prepare(
+        `INSERT INTO coach_members (id, coach_id, member_id, created_at)
+         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+         ON CONFLICT(coach_id, member_id) DO NOTHING`,
+      )
+      .bind(assignmentId, coachId, memberId)
+      .run();
+  }
   if (shouldRecord) {
     const alreadyAssigned = oldCoachIds.includes(coachId);
     await recordActivity({
@@ -765,6 +752,17 @@ async function updateUser(database: D1Database, identity: AuthIdentity, payload:
   if (duplicateEmail) {
     throw new Response("That email is already used by another account.", { status: 409 });
   }
+  const activeAdmins = await database
+    .prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND COALESCE(account_status, 'active') <> 'inactive'")
+    .first<{ count: number }>();
+  const finalAdminGuard = finalActiveAdminChangeGuard({
+    activeAdminCount: Number(activeAdmins?.count ?? 0),
+    existingAccountStatus: existing.account_status,
+    existingRole: existing.role,
+    nextAccountStatus: accountStatus,
+    nextRole: safeNextRole,
+  });
+  if (finalAdminGuard) throw new Response(finalAdminGuard.message, { status: finalAdminGuard.status });
 
   await database
     .prepare(
@@ -1031,7 +1029,11 @@ async function reconcileCoachAssignments(database: D1Database, identity: AuthIde
          coach.id AS coach_id,
          coach.first_name AS coach_first_name,
          coach.last_name AS coach_last_name,
-         COUNT(lesson_videos.id) AS video_count
+         coach.email AS coach_email,
+         COUNT(lesson_videos.id) AS video_count,
+         MIN(lesson_videos.title) AS video_title,
+         MIN(lesson_videos.upload_status) AS upload_status,
+         MIN(lesson_videos.publication_status) AS publication_status
        FROM lesson_videos
        JOIN users AS member ON member.id = lesson_videos.member_id
        JOIN users AS coach ON coach.id = lesson_videos.coach_id
@@ -1052,34 +1054,37 @@ async function reconcileCoachAssignments(database: D1Database, identity: AuthIde
       coach_id: string;
       coach_first_name: string;
       coach_last_name: string;
+      coach_email: string;
       video_count: number;
+      video_title: string;
+      upload_status: string;
+      publication_status: string;
     }>();
 
-  const grouped = new Map<string, typeof result.results>();
-  for (const row of result.results) {
-    grouped.set(row.member_id, [...(grouped.get(row.member_id) ?? []), row]);
-  }
-  const candidates = Array.from(grouped.values()).map((rows) => {
-    const first = rows[0];
-    return {
-      memberId: first.member_id,
-      memberName: [first.member_first_name, first.member_last_name].filter(Boolean).join(" "),
-      memberEmail: first.member_email,
-      ambiguous: rows.length !== 1,
-      suggestedCoachId: rows.length === 1 ? rows[0].coach_id : "",
-      suggestedCoachName: rows.length === 1 ? [rows[0].coach_first_name, rows[0].coach_last_name].filter(Boolean).join(" ") : "",
-      choices: rows.map((row) => ({
-        coachId: row.coach_id,
-        coachName: [row.coach_first_name, row.coach_last_name].filter(Boolean).join(" "),
-        videoCount: Number(row.video_count ?? 0),
-      })),
-    };
-  });
+  const existing = await database
+    .prepare(
+      `SELECT
+         coach_members.member_id,
+         coach.id AS coach_id,
+         coach.first_name AS coach_first_name,
+         coach.last_name AS coach_last_name,
+         coach.email AS coach_email
+       FROM coach_members
+       JOIN users AS coach ON coach.id = coach_members.coach_id`,
+    )
+    .all<{
+      member_id: string;
+      coach_id: string;
+      coach_first_name: string;
+      coach_last_name: string;
+      coach_email: string;
+    }>();
+  const candidates = buildCoachReconciliationCandidates(result.results, existing.results);
 
   let repaired = 0;
   if (apply) {
-    for (const candidate of candidates.filter((item) => !item.ambiguous && item.suggestedCoachId)) {
-      await database
+    for (const candidate of candidates.filter((item) => item.repairable && item.suggestedCoachId)) {
+      const insert = await database
         .prepare(
           `INSERT INTO coach_members (id, coach_id, member_id, created_at)
            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
@@ -1087,18 +1092,20 @@ async function reconcileCoachAssignments(database: D1Database, identity: AuthIde
         )
         .bind(crypto.randomUUID(), candidate.suggestedCoachId, candidate.memberId)
         .run();
-      repaired += 1;
-      await recordActivity({
-        action: "relationship_reconciled",
-        actor: identity,
-        database,
-        entityId: `${candidate.suggestedCoachId}:${candidate.memberId}`,
-        entityType: "coach_assignment",
-        memberId: candidate.memberId,
-        metadata: { coachId: candidate.suggestedCoachId, source: "unambiguous_video_history" },
-        summary: `${identity.displayName} reconciled ${candidate.memberName}'s coach assignment.`,
-        targetUserId: candidate.memberId,
-      });
+      if (Number(insert.meta?.changes ?? 0) > 0) {
+        repaired += 1;
+        await recordActivity({
+          action: "relationship_reconciled",
+          actor: identity,
+          database,
+          entityId: `${candidate.suggestedCoachId}:${candidate.memberId}`,
+          entityType: "coach_assignment",
+          memberId: candidate.memberId,
+          metadata: { coachId: candidate.suggestedCoachId, source: "unambiguous_video_history" },
+          summary: `${identity.displayName} reconciled ${candidate.memberName}'s coach assignment.`,
+          targetUserId: candidate.memberId,
+        });
+      }
     }
   }
 
@@ -1107,36 +1114,9 @@ async function reconcileCoachAssignments(database: D1Database, identity: AuthIde
 
 async function deleteUser(database: D1Database, identity: AuthIdentity, payload: Record<string, unknown>) {
   if (identity.role !== "admin") throw new Response("Only admins can delete users.", { status: 403 });
-  const userId = text(payload.userId, 80);
-  const confirmEmail = text(payload.confirmEmail, 254).toLowerCase();
-  const user = await getUser(database, userId);
-  if (!user) throw new Response("User not found.", { status: 404 });
-  if (confirmEmail !== user.email) throw new Response("Type the user's email to confirm deletion.", { status: 400 });
-  if (user.role === "admin") {
-    const admins = await database.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin'").first<{ count: number }>();
-    if (Number(admins?.count ?? 0) <= 1) throw new Response("You cannot delete the only admin.", { status: 409 });
-  }
-  await recordActivity({
-    action: "user_deleted",
-    actor: identity,
-    database,
-    entityId: user.id,
-    entityType: "user",
-    memberId: user.role === "member" ? user.id : null,
-    summary: `${identity.displayName} deleted ${displayName(user)}.`,
-    targetUserId: user.id,
-  });
-  await database.batch([
-    database.prepare("DELETE FROM auth_sessions WHERE user_id = ?").bind(user.id),
-    database.prepare("DELETE FROM user_passwords WHERE user_id = ?").bind(user.id),
-    database.prepare("DELETE FROM auth_login_tokens WHERE user_id = ? OR email = ?").bind(user.id, user.email),
-    database.prepare("DELETE FROM member_invitations WHERE member_id = ? OR email_to = ?").bind(user.id, user.email),
-    database.prepare("DELETE FROM coach_members WHERE coach_id = ? OR member_id = ?").bind(user.id, user.id),
-    database.prepare("DELETE FROM member_content_items WHERE member_id = ? OR created_by = ?").bind(user.id, user.id),
-    database.prepare("DELETE FROM golf_session_snapshots WHERE user_id = ?").bind(user.id),
-    database.prepare("DELETE FROM golf_practice_profiles WHERE user_id = ?").bind(user.id),
-    database.prepare("DELETE FROM users WHERE id = ?").bind(user.id),
-  ]);
+  void database;
+  void payload;
+  throw new Response("Hard user deletion is disabled for Monday. Set the account status to inactive instead.", { status: 409 });
 }
 
 export async function GET(request: Request) {
@@ -1174,7 +1154,7 @@ export async function POST(request: Request) {
     const action = text(payload.action, 40);
 
     if (action === "createUser") {
-      const result = await createOrUpdateUser(request, database, identity, payload);
+      const result = await createUser(request, database, identity, payload);
       return Response.json({ ok: true, ...result, ...(await dashboard(database, identity)) }, { status: 201 });
     }
     if (action === "updateUser") {

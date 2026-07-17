@@ -8,7 +8,7 @@ import {
   requireIdentity,
   responseFromError,
 } from "@/lib/server/platform";
-import { normalizeEmail } from "@/lib/admin-user-policy.mjs";
+import { normalizeEmail, singleCoachAssignmentGuard } from "@/lib/admin-user-policy.mjs";
 
 type MemberPayload = {
   coachId?: unknown;
@@ -180,9 +180,23 @@ export async function POST(request: Request) {
     const database = getRequiredDatabase();
     await ensurePlatformSchema(database);
     const existing = await database
-      .prepare("SELECT id, role FROM users WHERE LOWER(email) = ?")
+      .prepare(
+        `SELECT id, role, first_name, last_name, email, phone, skill_level, notes, invite_status, created_at
+         FROM users WHERE LOWER(email) = ?`,
+      )
       .bind(email)
-      .first<{ id: string; role: string }>();
+      .first<{
+        id: string;
+        role: string;
+        first_name: string;
+        last_name: string;
+        email: string;
+        phone: string | null;
+        skill_level: string | null;
+        notes: string | null;
+        invite_status: string;
+        created_at: string;
+      }>();
     if (existing && existing.role !== "member") {
       return Response.json({ error: "That email belongs to a coach or administrator." }, { status: 409 });
     }
@@ -190,40 +204,63 @@ export async function POST(request: Request) {
     const coachId = identity.role === "coach" ? identity.id : requestedCoachId || null;
     if (coachId) {
       const coach = await database
-        .prepare("SELECT id FROM users WHERE id = ? AND role IN ('coach', 'admin')")
+        .prepare("SELECT id FROM users WHERE id = ? AND role = 'coach'")
         .bind(coachId)
         .first<{ id: string }>();
       if (!coach) {
         return Response.json({ error: "Choose a valid coach for this member." }, { status: 400 });
       }
+      const assigned = await database
+        .prepare("SELECT coach_id FROM coach_members WHERE member_id = ?")
+        .bind(memberId)
+        .all<{ coach_id: string }>();
+      const assignedCoachIds = assigned.results.map((row) => row.coach_id);
+      if (assignedCoachIds.length > 0 && (assignedCoachIds.length > 1 || !assignedCoachIds.includes(coachId))) {
+        return Response.json({ error: "This member already has a coach. Use the admin user detail panel to reassign them." }, { status: 409 });
+      }
+      const guard = singleCoachAssignmentGuard({
+        coachId,
+        existingCoachIds: assignedCoachIds,
+        identityId: identity.id,
+        identityRole: identity.role,
+      });
+      if (!guard.allowed) {
+        return Response.json({ error: guard.message }, { status: guard.status });
+      }
     }
 
-    await database.batch([
-      database
-        .prepare(
-          `INSERT INTO users (
-            id, role, first_name, last_name, email, phone, skill_level, notes,
-            invite_status, invited_at, created_by, created_at, updated_at
-          ) VALUES (?, 'member', ?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-          ON CONFLICT(email) DO UPDATE SET
-            first_name = excluded.first_name,
-            last_name = excluded.last_name,
-            phone = excluded.phone,
-            skill_level = excluded.skill_level,
-            notes = excluded.notes,
-            updated_at = CURRENT_TIMESTAMP`,
-        )
-        .bind(memberId, firstName, lastName, email, phone || null, skillLevel || null, notes || null, identity.id),
-      coachId
-        ? database
-            .prepare(
-              `INSERT INTO coach_members (id, coach_id, member_id, created_at)
-               VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-               ON CONFLICT(coach_id, member_id) DO NOTHING`,
-            )
-            .bind(crypto.randomUUID(), coachId, memberId)
-        : database.prepare("SELECT 1"),
-    ]);
+    if (existing) {
+      if (coachId) {
+        await database
+          .prepare(
+            `INSERT INTO coach_members (id, coach_id, member_id, created_at)
+             VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+             ON CONFLICT(coach_id, member_id) DO NOTHING`,
+          )
+          .bind(crypto.randomUUID(), coachId, memberId)
+          .run();
+      }
+    } else {
+      await database.batch([
+        database
+          .prepare(
+            `INSERT INTO users (
+              id, role, first_name, last_name, email, phone, skill_level, notes,
+              invite_status, invited_at, created_by, created_at, updated_at
+            ) VALUES (?, 'member', ?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+          )
+          .bind(memberId, firstName, lastName, email, phone || null, skillLevel || null, notes || null, identity.id),
+        coachId
+          ? database
+              .prepare(
+                `INSERT INTO coach_members (id, coach_id, member_id, created_at)
+                 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                 ON CONFLICT(coach_id, member_id) DO NOTHING`,
+              )
+              .bind(crypto.randomUUID(), coachId, memberId)
+          : database.prepare("SELECT 1"),
+      ]);
+    }
     if (coachId) {
       await recordActivity({
         action: identity.role === "coach" ? "coach_added_student" : "coach_assigned",
@@ -233,46 +270,55 @@ export async function POST(request: Request) {
         entityType: "coach_assignment",
         memberId,
         metadata: { coachId, existingMember: Boolean(existing) },
-        summary: `${identity.displayName} added ${firstName} ${lastName} to ${identity.role === "coach" ? "their roster" : "a coach roster"}.`,
+        summary: `${identity.displayName} added ${existing ? `${existing.first_name} ${existing.last_name}` : `${firstName} ${lastName}`} to ${identity.role === "coach" ? "their roster" : "a coach roster"}.`,
         targetUserId: memberId,
       });
     }
 
-    const inviteToken = crypto.randomUUID();
-    const inviteUrl = createInviteUrl(request, inviteToken);
-    const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30).toISOString();
-    const invite = await sendMemberInvite(request, { email, firstName }, identity.displayName, inviteUrl);
-    await database.batch([
-      database
-        .prepare(
-          `INSERT INTO member_invitations (
-            id, member_id, coach_id, email_to, invite_token, invite_url,
-            status, provider_id, failure_reason, expires_at, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-        )
-        .bind(
-          crypto.randomUUID(),
-          memberId,
-          coachId,
-          email,
-          inviteToken,
-          inviteUrl,
-          invite.status,
-          "providerId" in invite ? invite.providerId : null,
-          "reason" in invite ? invite.reason : null,
-          expiresAt,
-        ),
-      database
-        .prepare("UPDATE users SET invite_status = ?, invited_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-        .bind(invite.status, memberId),
-    ]);
+    const invite = existing
+      ? { reason: "Existing member connected without changing account setup or invite status.", status: "not_sent" }
+      : await (async () => {
+        const inviteToken = crypto.randomUUID();
+        const inviteUrl = createInviteUrl(request, inviteToken);
+        const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30).toISOString();
+        const sentInvite = await sendMemberInvite(request, { email, firstName }, identity.displayName, inviteUrl);
+        await database.batch([
+          database
+            .prepare(
+              `INSERT INTO member_invitations (
+                id, member_id, coach_id, email_to, invite_token, invite_url,
+                status, provider_id, failure_reason, expires_at, created_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+            )
+            .bind(
+              crypto.randomUUID(),
+              memberId,
+              coachId,
+              email,
+              inviteToken,
+              inviteUrl,
+              sentInvite.status,
+              "providerId" in sentInvite ? sentInvite.providerId : null,
+              "reason" in sentInvite ? sentInvite.reason : null,
+              expiresAt,
+            ),
+          database
+            .prepare("UPDATE users SET invite_status = ?, invited_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+            .bind(sentInvite.status, memberId),
+        ]);
+        return sentInvite;
+      })();
     const row = await database
       .prepare(
         `SELECT
           users.id, users.first_name, users.last_name, users.email, users.phone,
           users.skill_level, users.notes, users.invite_status, users.created_at,
-          0 AS video_count, NULL AS last_video_at
-        FROM users WHERE users.id = ?`,
+          COUNT(lesson_videos.id) AS video_count,
+          MAX(lesson_videos.created_at) AS last_video_at
+        FROM users
+        LEFT JOIN lesson_videos ON lesson_videos.member_id = users.id
+        WHERE users.id = ?
+        GROUP BY users.id`,
       )
       .bind(memberId)
       .first<MemberRow>();

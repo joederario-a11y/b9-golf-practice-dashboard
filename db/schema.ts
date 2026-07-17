@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const golfSessionSnapshots = sqliteTable("golf_session_snapshots", {
   userEmail: text("user_email").primaryKey(),
@@ -178,6 +178,7 @@ export const lessonVideos = sqliteTable(
     practiceAssignment: text("practice_assignment").notNull().default(""),
     recommendedDrill: text("recommended_drill").notNull().default(""),
     memberFacingNotes: text("member_facing_notes").notNull().default(""),
+    nextSessionGoal: text("next_session_goal").notNull().default(""),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
@@ -185,6 +186,106 @@ export const lessonVideos = sqliteTable(
     index("lesson_videos_member_idx").on(table.memberId, table.createdAt),
     index("lesson_videos_coach_idx").on(table.coachId, table.createdAt),
     index("lesson_videos_status_idx").on(table.publicationStatus, table.uploadStatus),
+  ],
+);
+
+export const videoAiProcessingJobs = sqliteTable(
+  "video_ai_processing_jobs",
+  {
+    id: text("id").primaryKey(),
+    videoId: text("video_id").notNull().references(() => lessonVideos.id, { onDelete: "cascade" }),
+    memberId: text("member_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    coachId: text("coach_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    processingType: text("processing_type").notNull().default("lesson_recap_voiceover"),
+    processingVersion: integer("processing_version").notNull().default(1),
+    requestedLanguage: text("requested_language").notNull().default("en"),
+    status: text("status").notNull().default("queued"),
+    currentStep: text("current_step").notNull().default("queued_for_transcription"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    workflowInstanceId: text("workflow_instance_id"),
+    audioStoragePath: text("audio_storage_path"),
+    errorCode: text("error_code"),
+    errorMessage: text("error_message"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    startedAt: text("started_at"),
+    completedAt: text("completed_at"),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("video_ai_processing_jobs_version_unique").on(table.videoId, table.processingType, table.processingVersion),
+    index("video_ai_processing_jobs_video_idx").on(table.videoId, table.createdAt),
+    index("video_ai_processing_jobs_member_idx").on(table.memberId, table.createdAt),
+    index("video_ai_processing_jobs_status_idx").on(table.status, table.updatedAt),
+  ],
+);
+
+export const videoTranscripts = sqliteTable(
+  "video_transcripts",
+  {
+    id: text("id").primaryKey(),
+    videoId: text("video_id").notNull().references(() => lessonVideos.id, { onDelete: "cascade" }),
+    memberId: text("member_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    coachId: text("coach_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    transcriptText: text("transcript_text").notNull().default(""),
+    segmentsJson: text("segments_json").notNull().default("[]"),
+    language: text("language").notNull().default("en"),
+    model: text("model").notNull(),
+    durationSeconds: real("duration_seconds"),
+    processingJobId: text("processing_job_id").notNull().references(() => videoAiProcessingJobs.id, { onDelete: "cascade" }),
+    processingVersion: integer("processing_version").notNull().default(1),
+    qualityJson: text("quality_json").notNull().default("{}"),
+    isCurrent: integer("is_current", { mode: "boolean" }).notNull().default(true),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("video_transcripts_video_idx").on(table.videoId, table.createdAt),
+    index("video_transcripts_job_idx").on(table.processingJobId),
+    uniqueIndex("video_transcripts_current_unique")
+      .on(table.videoId, table.processingVersion)
+      .where(sql`${table.isCurrent} = 1`),
+  ],
+);
+
+export const videoLessonRecapDrafts = sqliteTable(
+  "video_lesson_recap_drafts",
+  {
+    id: text("id").primaryKey(),
+    videoId: text("video_id").notNull().references(() => lessonVideos.id, { onDelete: "cascade" }),
+    transcriptId: text("transcript_id").notNull().references(() => videoTranscripts.id, { onDelete: "cascade" }),
+    memberId: text("member_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    coachId: text("coach_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    processingJobId: text("processing_job_id").notNull().references(() => videoAiProcessingJobs.id, { onDelete: "cascade" }),
+    processingVersion: integer("processing_version").notNull().default(1),
+    lessonSummary: text("lesson_summary").notNull().default(""),
+    workedOn: text("worked_on").notNull().default(""),
+    keyIssue: text("key_issue").notNull().default(""),
+    improvement: text("improvement").notNull().default(""),
+    practiceAssignment: text("practice_assignment").notNull().default(""),
+    recommendedDrill: text("recommended_drill").notNull().default(""),
+    memberFacingNotes: text("member_facing_notes").notNull().default(""),
+    nextSessionGoal: text("next_session_goal").notNull().default(""),
+    progressObservedJson: text("progress_observed_json").notNull().default("[]"),
+    metricsMentionedJson: text("metrics_mentioned_json").notNull().default("[]"),
+    transcriptEvidenceJson: text("transcript_evidence_json").notNull().default("[]"),
+    confidence: real("confidence").notNull().default(0),
+    model: text("model"),
+    promptVersion: text("prompt_version").notNull().default("mai-video-recap-v1"),
+    status: text("status").notNull().default("generating"),
+    isCurrent: integer("is_current", { mode: "boolean" }).notNull().default(true),
+    reviewedBy: text("reviewed_by"),
+    reviewedAt: text("reviewed_at"),
+    publishedAt: text("published_at"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("video_lesson_recap_drafts_video_idx").on(table.videoId, table.createdAt),
+    index("video_lesson_recap_drafts_status_idx").on(table.status, table.updatedAt),
+    index("video_lesson_recap_drafts_job_idx").on(table.processingJobId),
+    uniqueIndex("video_lesson_recap_drafts_current_unique")
+      .on(table.videoId, table.processingVersion)
+      .where(sql`${table.isCurrent} = 1`),
   ],
 );
 
