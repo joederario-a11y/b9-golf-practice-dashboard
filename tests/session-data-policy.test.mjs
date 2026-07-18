@@ -53,6 +53,26 @@ test("empty and metric-free shot rows are not treated as golf evidence", () => {
   assert.deepEqual(sessions, []);
 });
 
+test("null shot metrics are not sanitized into zeroes", () => {
+  const sessions = sanitizeSessionList([
+    {
+      id: "null-metric-import",
+      title: "Null metric import",
+      date: "2026-07-18",
+      source: "CSV Upload",
+      focus: "Import",
+      shots: [
+        { id: "one", club: "7-Iron", carry: null, total: "", ballSpeed: 112, detectedMetrics: ["ballSpeed"] },
+      ],
+    },
+  ]);
+
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].shots[0].carry, undefined);
+  assert.equal(sessions[0].shots[0].total, undefined);
+  assert.equal(sessions[0].shots[0].ballSpeed, 112);
+});
+
 test("shot data quality marks small samples as low confidence", () => {
   const quality = summarizeShotDataQuality([
     {

@@ -30,6 +30,7 @@ type AnalysisStatus = "processing" | "completed" | "failed" | "insufficient_data
 type StoredShot = ShotRecord & {
   club?: unknown;
   detectedMetrics?: unknown;
+  metricSources?: unknown;
 };
 
 type StoredSession = {
@@ -372,6 +373,60 @@ function dominantClub(shots: ShotRecord[]) {
   return Object.entries(counts).sort((left, right) => right[1] - left[1])[0]?.[0] ?? "Unknown club";
 }
 
+const metricSourceKeys: Record<keyof typeof metricFields, string> = {
+  carry: "carry",
+  totalDistance: "total",
+  clubSpeed: "clubSpeed",
+  ballSpeed: "ballSpeed",
+  smashFactor: "smash",
+  launchAngle: "launch",
+  spinRate: "spin",
+  clubPath: "clubPath",
+  faceAngle: "faceAngle",
+  faceToPath: "faceToPath",
+  offlineDistance: "offline",
+};
+
+function metricSourceFor(shot: ShotRecord, metricKey: keyof typeof metricFields) {
+  const sources = shot.metricSources;
+  if (!isRecord(sources)) return null;
+  const source = sources[metricSourceKeys[metricKey]];
+  if (!isRecord(source)) return null;
+  const kind = text(source.kind, "");
+  if (!["measured", "manual", "derived", "estimated"].includes(kind)) return null;
+  return {
+    kind,
+    confidence: numberFromValue(source.confidence),
+    method: text(source.method, ""),
+  };
+}
+
+function evidenceQuality(shots: ShotRecord[]) {
+  const counts = {
+    measured: 0,
+    manual: 0,
+    derived: 0,
+    estimated: 0,
+  };
+  const estimatedMetrics = new Set<string>();
+  for (const shot of shots) {
+    if (!isRecord(shot.metricSources)) continue;
+    Object.entries(shot.metricSources).forEach(([metric, source]) => {
+      if (!isRecord(source)) return;
+      const kind = text(source.kind, "");
+      if (kind === "measured" || kind === "manual" || kind === "derived" || kind === "estimated") {
+        counts[kind] += 1;
+        if (kind === "estimated") estimatedMetrics.add(metric);
+      }
+    });
+  }
+  return {
+    counts,
+    estimatedMetrics: Array.from(estimatedMetrics),
+    hasEstimatedValues: counts.estimated > 0,
+  };
+}
+
 function previousComparableShots(session: StoredSession, sessions: StoredSession[]) {
   const validShots = session.shots.filter(isUsableShot);
   const primaryClub = dominantClub(validShots.length ? validShots : session.shots);
@@ -394,12 +449,18 @@ function compactShot(shot: ShotRecord, index: number) {
     }
     return accumulator;
   }, {});
+  const metricSources = Object.keys(metrics).reduce<Record<string, ReturnType<typeof metricSourceFor>>>((accumulator, key) => {
+    const source = metricSourceFor(shot, key as keyof typeof metricFields);
+    if (source) accumulator[key] = source;
+    return accumulator;
+  }, {});
 
   return {
     shotNumber: text(shot.sourceShotNumber, String(index + 1)),
     club: clubName(shot),
     shape: text(shot.shape, "Not recorded"),
     metrics,
+    metricSources,
   };
 }
 
@@ -509,6 +570,10 @@ function dataQualityLimitations(values: {
   if (!values.metrics.previousSessionComparison.available) {
     limitations.add(values.metrics.previousSessionComparison.summary);
   }
+  const evidence = evidenceQuality(values.session.shots);
+  if (evidence.hasEstimatedValues) {
+    limitations.add(`Some uploaded values are estimated (${evidence.estimatedMetrics.join(", ")}), so MAI Coach should prefer measured evidence for stronger conclusions.`);
+  }
   return Array.from(limitations);
 }
 
@@ -520,6 +585,7 @@ function buildAnalysisContext(values: {
   playerContext: Awaited<ReturnType<typeof loadProfileContext>>;
 }) {
   const validShots = values.session.shots.filter(isUsableShot);
+  const evidence = evidenceQuality(validShots.length ? validShots : values.session.shots);
   const profileMissing = !values.playerContext.profile.profile;
   const limitations = dataQualityLimitations({
     session: values.session,
@@ -552,6 +618,7 @@ function buildAnalysisContext(values: {
     representativeShots: validShots.slice(0, 30).map(compactShot),
     previousComparableSession: values.metrics.previousSessionComparison,
     dataQuality: {
+      evidence,
       limitations,
       usableShotCount: values.metrics.validShotCount,
     },
@@ -958,7 +1025,9 @@ async function callOpenAI(context: ReturnType<typeof buildAnalysisContext>, mode
     "Analyze this stored golf simulator session using only the supplied application data.",
     "Do not calculate arithmetic already provided in calculatedMetrics.",
     "Do not name individual professional golfers. Tour Twin and professional-player matching are disabled.",
-    "Separate measured facts from likely explanations. If profile data is missing, state that limitation.",
+    "Separate measured facts from likely explanations. Prefer measured or manually confirmed evidence over derived values, and use estimated values only with caution.",
+    "If the dataQuality evidence says estimated values are material, mention that limitation discreetly.",
+    "If profile data is missing, state that limitation.",
     "",
     JSON.stringify(context),
   ].join("\n");

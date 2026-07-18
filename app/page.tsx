@@ -13,9 +13,17 @@ import {
 import {
   generateNormalizedPhotoImportCsv,
   normalizedCsvDataRowCount,
-  parseNormalizedPhotoImportCsv,
   PHOTO_IMPORT_CSV_SCHEMA_VERSION,
 } from "@/lib/photo-import-policy.mjs";
+import {
+  COLUMN_MAPPING_TARGETS,
+  LAUNCH_MONITOR_MAPPING_PROFILE_VERSION,
+  chooseClubForImportedSession,
+  generateCanonicalLaunchMonitorCsv,
+  getLaunchMonitorClubDisplayName,
+  normalizeLaunchMonitorClubName,
+  parseLaunchMonitorCsv,
+} from "@/lib/launch-monitor-import-policy.mjs";
 import { sanitizeSessionList } from "@/lib/session-data-policy.mjs";
 
 type Tab = "dashboard" | "sessions" | "clubs" | "videos" | "coach" | "admin" | "practice" | "import";
@@ -41,34 +49,52 @@ type RegistrationDraft = {
   password?: string;
 };
 
+type MetricSource = {
+  kind: "measured" | "derived" | "estimated" | "manual";
+  confidence: number;
+  method?: string;
+  inputMetrics?: string[];
+  originalColumn?: string;
+};
+
 type Shot = {
   id: string;
+  sessionId?: string | null;
+  shotNumber?: number | null;
+  timestamp?: string | null;
   club: string;
-  carry: number;
-  total: number;
-  ballSpeed: number;
-  clubSpeed: number;
-  smash: number;
-  launch: number;
-  spin: number;
-  offline: number;
+  carry?: number | null;
+  total?: number | null;
+  ballSpeed?: number | null;
+  clubSpeed?: number | null;
+  smash?: number | null;
+  launch?: number | null;
+  spin?: number | null;
+  offline?: number | null;
   shape: string;
-  proximity?: number;
-  apex?: number;
-  spinAxis?: number;
-  descent?: number;
-  horizontalAngle?: number;
-  faceAngle?: number;
-  clubPath?: number;
-  faceToPath?: number;
-  sideCarry?: number;
-  sideTotal?: number;
-  curve?: number;
+  proximity?: number | null;
+  apex?: number | null;
+  spinAxis?: number | null;
+  descent?: number | null;
+  horizontalAngle?: number | null;
+  attackAngle?: number | null;
+  faceAngle?: number | null;
+  clubPath?: number | null;
+  faceToPath?: number | null;
+  sideCarry?: number | null;
+  sideTotal?: number | null;
+  curve?: number | null;
+  swingPlane?: number | null;
   detectedMetrics?: NumericShotMetric[];
   extractionConfidence?: number;
+  mappingProfileVersion?: string;
+  metricSources?: Record<string, MetricSource>;
+  rawSourceData?: Record<string, unknown>;
   reviewStatus?: string;
+  sourceFileName?: string;
   sourceImages?: string[];
   sourceShotNumber?: string;
+  unmappedFields?: Record<string, unknown>;
 };
 
 type Session = {
@@ -78,6 +104,7 @@ type Session = {
   source: string;
   focus: string;
   location?: string;
+  importMetadata?: PhotoImportMetadata;
   importNotes?: string;
   missingMetrics?: NumericShotMetric[];
   shots: Shot[];
@@ -332,8 +359,26 @@ type PhotoImportMetadata = {
   fileNames?: string[];
   averageValidation?: Record<string, number>;
   blockingIssues?: string[];
+  clubCount?: number;
+  clubs?: string[];
+  columnOverrides?: Record<string, string>;
   csvSchemaVersion?: string;
+  delimiter?: string;
+  derivedMetrics?: NumericShotMetric[];
   duplicateShotNumbers?: number[];
+  estimatedMetrics?: NumericShotMetric[];
+  importedAt?: string;
+  mappedColumns?: Array<{
+    sourceColumn: string;
+    mapsTo: string;
+    targetLabel?: string;
+    kind?: string;
+    sourceUnit?: string;
+    targetUnit?: string;
+  }>;
+  mappingProfileVersion?: string;
+  measuredMetrics?: NumericShotMetric[];
+  missingMetrics?: NumericShotMetric[];
   normalizedCsv?: string;
   pageCounts?: {
     distance: number;
@@ -352,7 +397,23 @@ type PhotoImportMetadata = {
     overlappingShotsDeduplicated: number[];
     avgRowsExcluded: boolean;
   };
+  rowsDetected?: number;
+  sessionId?: string | null;
+  sessionIds?: string[];
+  simulator?: string;
   sourcePaths?: string[];
+  sourceFileName?: string;
+  sourceHeaders?: string[];
+  sourceRowCount?: number;
+  sourceCounts?: Record<"measured" | "derived" | "estimated" | "manual", number>;
+  unitConversions?: Array<{
+    sourceColumn: string;
+    metric: string;
+    sourceUnit?: string;
+    targetUnit?: string;
+  }>;
+  unmappedColumns?: string[];
+  warnings?: string[];
 };
 
 type ImportReview = {
@@ -387,12 +448,14 @@ type NumericShotMetric =
   | "spinAxis"
   | "descent"
   | "horizontalAngle"
+  | "attackAngle"
   | "faceAngle"
   | "clubPath"
   | "faceToPath"
   | "sideCarry"
   | "sideTotal"
-  | "curve";
+  | "curve"
+  | "swingPlane";
 
 type PhotoScanResult =
   | {
@@ -987,6 +1050,7 @@ const CLUB_TARGETS: Record<
   PW: { carry: 110, total: 116, ballSpeed: 87, clubSpeed: 65, smash: 1.34, launch: 25, spin: 8500, apex: 44, descent: 50, proximity: 26, spinAxis: 4, faceToPath: 2, sideCarry: 6 },
   GW: { carry: 96, total: 101, ballSpeed: 80, clubSpeed: 60, smash: 1.33, launch: 27, spin: 9100, apex: 39, descent: 52, proximity: 22, spinAxis: 4, faceToPath: 2, sideCarry: 5 },
   SW: { carry: 82, total: 86, ballSpeed: 72, clubSpeed: 56, smash: 1.29, launch: 31, spin: 9800, apex: 33, descent: 54, proximity: 18, spinAxis: 4, faceToPath: 2, sideCarry: 5 },
+  "56° Wedge": { carry: 82, total: 86, ballSpeed: 72, clubSpeed: 56, smash: 1.29, launch: 31, spin: 9800, apex: 33, descent: 54, proximity: 18, spinAxis: 4, faceToPath: 2, sideCarry: 5 },
   LW: { carry: 61, total: 64, ballSpeed: 62, clubSpeed: 50, smash: 1.24, launch: 35, spin: 10300, apex: 27, descent: 56, proximity: 14, spinAxis: 4, faceToPath: 2, sideCarry: 4 },
 };
 
@@ -1035,6 +1099,10 @@ const PRO_REFERENCE_STATS: Record<string, { pga: ProTourStats; lpga: ProTourStat
     pga: { carry: 115, total: 119, ballSpeed: 90, clubSpeed: 76, smash: 1.18, launch: 29, spin: 10300, apex: 63, descent: 56 },
     lpga: { carry: 82, total: 86, ballSpeed: 68, clubSpeed: 62, smash: 1.1, launch: 31, spin: 9400, apex: 45, descent: 54 },
   },
+  "56° Wedge": {
+    pga: { carry: 115, total: 119, ballSpeed: 90, clubSpeed: 76, smash: 1.18, launch: 29, spin: 10300, apex: 63, descent: 56 },
+    lpga: { carry: 82, total: 86, ballSpeed: 68, clubSpeed: 62, smash: 1.1, launch: 31, spin: 9400, apex: 45, descent: 54 },
+  },
   LW: {
     pga: { carry: 95, total: 98, ballSpeed: 78, clubSpeed: 67, smash: 1.16, launch: 32, spin: 10500, apex: 52, descent: 58 },
     lpga: { carry: 65, total: 68, ballSpeed: 58, clubSpeed: 55, smash: 1.05, launch: 34, spin: 9800, apex: 38, descent: 56 },
@@ -1053,6 +1121,7 @@ const CLUB_ORDER = [
   "PW",
   "GW",
   "SW",
+  "56° Wedge",
   "LW",
 ];
 
@@ -2060,10 +2129,14 @@ function makeLastImportFromSession(session?: Session): LastImport {
     location: session.location ?? LOCATION_UNAVAILABLE,
     missingMetrics: session.missingMetrics,
     notes: session.importNotes,
-    simulator: session.source,
+    simulator: session.importMetadata?.simulator ?? session.source,
     submissionType: getSessionSubmissionType(session),
     shots: session.shots,
   };
+}
+
+function getLastImportSession(sessions: Session[]) {
+  return sessions.find((session) => session.importMetadata || session.id.startsWith("import-")) ?? sessions[0];
 }
 
 function getClubMetricConfig(metricKey: ClubMetricKey) {
@@ -2851,46 +2924,11 @@ function normalizeDataLabel(value: string) {
 }
 
 function normalizeClubName(value: string) {
-  const normalized = normalizeDataLabel(value);
-  const aliases: Record<string, string> = {
-    driver: "Driver",
-    "1wood": "Driver",
-    "1w": "Driver",
-    "3wood": "3-Wood",
-    "3w": "3-Wood",
-    "5wood": "5-Wood",
-    "5w": "5-Wood",
-    "5iron": "5-Iron",
-    "5i": "5-Iron",
-    "6iron": "6-Iron",
-    "6i": "6-Iron",
-    "7iron": "7-Iron",
-    "7i": "7-Iron",
-    "8iron": "8-Iron",
-    "8i": "8-Iron",
-    "9iron": "9-Iron",
-    "9i": "9-Iron",
-    pitchingwedge: "PW",
-    pw: "PW",
-    gapwedge: "GW",
-    approachwedge: "GW",
-    gw: "GW",
-    aw: "GW",
-    sandwedge: "SW",
-    sw: "SW",
-    lobwedge: "LW",
-    lw: "LW",
-  };
-  return aliases[normalized] ?? (value.trim() || "Unknown Club");
+  return normalizeLaunchMonitorClubName(value);
 }
 
 function getClubDisplayName(club: string) {
-  return {
-    PW: "Pitching Wedge",
-    GW: "Gap Wedge",
-    SW: "Sand Wedge",
-    LW: "Lob Wedge",
-  }[club] ?? club;
+  return getLaunchMonitorClubDisplayName(club);
 }
 
 const REVIEW_IMPORT_METRICS: NumericShotMetric[] = [
@@ -2904,9 +2942,15 @@ const REVIEW_IMPORT_METRICS: NumericShotMetric[] = [
   "offline",
   "apex",
   "descent",
+  "attackAngle",
+  "spinAxis",
   "faceAngle",
   "clubPath",
   "faceToPath",
+  "sideCarry",
+  "sideTotal",
+  "curve",
+  "swingPlane",
 ];
 
 function inferClubFromImportNotes(notes: string) {
@@ -2974,7 +3018,17 @@ function buildImportReview(
   const detectedMetrics = getDetectedImportMetrics(normalized.shots);
   const missingMetrics = getMissingImportMetrics(normalized.shots);
   const clubNames = Array.from(new Set(normalized.shots.map((shot) => getClubDisplayName(shot.club))));
+  const reviewId = `review-${Date.now()}`;
+  const date = metadata.capturedAt ?? getTodayDateString();
+  const normalizedCsv = metadata.normalizedCsv ?? generateCanonicalLaunchMonitorCsv({
+    sessionId: metadata.sessionId ?? reviewId,
+    sessionDate: date,
+    simulator: metadata.simulator ?? simulator,
+    shots: normalized.shots,
+    notes,
+  });
   const warnings = [
+    ...(metadata.warnings ?? []),
     ...(missingMetrics.length ? [`${missingMetrics.length} metrics were not found and will show as NA.`] : []),
     ...(clubNames.some((club) => normalizeDataLabel(club) === "unknownclub") && !normalized.inferredClub
       ? ["Club was not detected. Add it in the notes or choose it before saving."]
@@ -2985,13 +3039,20 @@ function buildImportReview(
 
   return {
     blockingIssues,
-    csvText: metadata.normalizedCsv,
-    id: `review-${Date.now()}`,
-    date: metadata.capturedAt ?? getTodayDateString(),
+    csvText: normalizedCsv,
+    id: reviewId,
+    date,
     detectedMetrics,
     inferredClub: normalized.inferredClub,
     location: metadata.location ?? LOCATION_UNAVAILABLE,
-    metadata,
+    metadata: {
+      ...metadata,
+      sourceCounts: metadata.sourceCounts ?? metricSourceCounts(normalized.shots),
+      measuredMetrics: metadata.measuredMetrics ?? metricSourcesForKind(normalized.shots, "measured"),
+      derivedMetrics: metadata.derivedMetrics ?? metricSourcesForKind(normalized.shots, "derived"),
+      estimatedMetrics: metadata.estimatedMetrics ?? metricSourcesForKind(normalized.shots, "estimated"),
+      normalizedCsv,
+    },
     missingMetrics,
     notes: notes.trim(),
     shots: normalized.shots,
@@ -3022,82 +3083,15 @@ function parseCurveFeet(value: string) {
   return /L/i.test(value) ? -distance : /R/i.test(value) ? distance : distance;
 }
 
-function parseCsv(text: string): Shot[] {
-  const normalizedRows = parseNormalizedPhotoImportCsv(text) as Shot[];
-  if (normalizedRows.length) return normalizedRows;
-
-  const rows = parseCsvRows(text);
-  if (rows.length < 2) return [];
-  const headers = rows[0].map(normalizeDataLabel);
-  const findIndex = (names: string[]) =>
-    names.map(normalizeDataLabel).map((name) => headers.indexOf(name)).find((match) => match >= 0) ?? -1;
-  const readCell = (cells: string[], names: string[]) => {
-    const index = findIndex(names);
-    return index >= 0 ? cells[index]?.trim() ?? "" : "";
+function parseCsvForImport(text: string, sourceFileName?: string, columnOverrides?: Record<string, string>) {
+  return parseLaunchMonitorCsv(text, { sourceFileName, columnOverrides }) as {
+    shots: Shot[];
+    metadata: PhotoImportMetadata;
   };
-  const readNumber = (cells: string[], names: string[]) => parseDirectionalNumber(readCell(cells, names));
+}
 
-  return rows.slice(1).flatMap((cells, index) => {
-    const clubValue = readCell(cells, ["club", "club name"]);
-    const club = normalizeClubName(clubValue || "Unknown Club");
-    const values: Partial<Record<NumericShotMetric, number>> = {
-      carry: readNumber(cells, ["carry", "carry yards", "carry yds", "carry distance"]),
-      total: readNumber(cells, ["total", "total yards", "total yds", "total distance"]),
-      ballSpeed: readNumber(cells, ["ball speed", "ball speed mph", "ball velocity"]),
-      clubSpeed: readNumber(cells, ["club speed", "club speed mph", "clubhead speed", "club head speed"]),
-      smash: readNumber(cells, ["smash", "smash factor"]),
-      launch: readNumber(cells, ["launch", "launch angle", "launch angle deg"]),
-      spin: readNumber(cells, ["spin", "spin rate", "spin rate rpm"]),
-      offline: readNumber(cells, ["offline", "offline yards", "distance offline"]),
-      proximity: readNumber(cells, ["proximity", "proximity feet", "distance to pin"]),
-      apex: readNumber(cells, ["apex", "apex feet", "height", "height ft", "max height"]),
-      spinAxis: readNumber(cells, ["spin axis", "spin axis deg"]),
-      descent: readNumber(cells, ["descent", "descent angle", "descent angle deg", "landing angle"]),
-      horizontalAngle: readNumber(cells, ["horizontal angle", "horizontal angle deg", "launch direction"]),
-      faceAngle: readNumber(cells, ["face angle", "face angle deg"]),
-      clubPath: readNumber(cells, ["club path", "club path deg"]),
-      faceToPath: readNumber(cells, ["face to path", "face-to-path", "face to path deg"]),
-      sideCarry: readNumber(cells, ["side carry", "side carry yards", "side carry yds"]),
-      sideTotal: readNumber(cells, ["side total", "side total yards", "side total yds"]),
-    };
-    const curveCell = readCell(cells, ["curve", "curve feet", "curve ft"]);
-    const curve = curveCell ? parseCurveFeet(curveCell) : undefined;
-    if (curve !== undefined) values.curve = curve;
-
-    const detectedMetrics = Object.entries(values)
-      .filter((entry): entry is [NumericShotMetric, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]))
-      .map(([key]) => key);
-    if (!detectedMetrics.length) return [];
-
-    const shot: Shot = {
-      id: `csv-${Date.now()}-${index}`,
-      club,
-      carry: Number.NaN,
-      total: Number.NaN,
-      ballSpeed: Number.NaN,
-      clubSpeed: Number.NaN,
-      smash: Number.NaN,
-      launch: Number.NaN,
-      spin: Number.NaN,
-      offline: Number.NaN,
-      shape: "Not recorded",
-      sourceShotNumber: readCell(cells, ["shot_number", "shot number", "shot"]) || String(index + 1),
-      detectedMetrics,
-    };
-    detectedMetrics.forEach((metric) => {
-      const value = values[metric];
-      if (typeof value === "number" && Number.isFinite(value)) {
-        (shot[metric] as number) = metric === "spin" ? Math.round(value) : value;
-      }
-    });
-    if (hasShotMetric(shot, "sideTotal")) shot.offline = shot.sideTotal as number;
-    else if (hasShotMetric(shot, "sideCarry")) shot.offline = shot.sideCarry as number;
-    else if (!hasShotMetric(shot, "offline")) delete (shot as Partial<Shot>).offline;
-    if (hasShotMetric(shot, "offline")) {
-      shot.shape = shot.offline < -8 ? "Draw" : shot.offline > 8 ? "Fade" : "Straight";
-    }
-    return [shot];
-  });
+function parseCsv(text: string): Shot[] {
+  return parseCsvForImport(text).shots;
 }
 
 const PHOTO_METRIC_SPECS: Array<{
@@ -3122,11 +3116,13 @@ const PHOTO_METRIC_SPECS: Array<{
   { key: "clubPath", label: "Club path", aliases: ["club path"], min: -45, max: 45 },
   { key: "faceToPath", label: "Face to path", aliases: ["face to path", "face-to-path"], min: -45, max: 45 },
   { key: "horizontalAngle", label: "Launch direction", aliases: ["launch direction", "horizontal angle", "horiz angle"], min: -45, max: 45 },
+  { key: "attackAngle", label: "Attack angle", aliases: ["attack angle", "angle of attack", "aoa"], min: -20, max: 20 },
   { key: "sideCarry", label: "Side carry", aliases: ["side carry"], min: -200, max: 200 },
   { key: "sideTotal", label: "Side total", aliases: ["side total"], min: -200, max: 200 },
   { key: "offline", label: "Offline", aliases: ["offline", "from pin"], min: -200, max: 200 },
   { key: "proximity", label: "Proximity", aliases: ["proximity", "distance to pin"], min: 0, max: 1000 },
   { key: "curve", label: "Curve", aliases: ["curve"], min: -300, max: 300 },
+  { key: "swingPlane", label: "Swing plane", aliases: ["swing plane", "plane angle"], min: 20, max: 80 },
 ];
 
 const PHOTO_METRIC_LABELS = Object.fromEntries(
@@ -3647,14 +3643,14 @@ function detectPhotoSimulator(text: string, fileName: string) {
   return "Simulator photo";
 }
 
-function formatPhotoMetric(metric: NumericShotMetric, value: number | undefined) {
-  if (value === undefined) return "Not found";
+function formatPhotoMetric(metric: NumericShotMetric, value: number | null | undefined) {
+  if (value === undefined || value === null || !Number.isFinite(value)) return "Not found";
   if (metric === "ballSpeed" || metric === "clubSpeed") return `${value} mph`;
   if (["carry", "total", "offline", "sideCarry", "sideTotal"].includes(metric)) return `${value} yd`;
   if (metric === "proximity") return `${value} ft`;
   if (metric === "curve") return `${value} ft`;
   if (metric === "spin") return `${Math.round(value)} rpm`;
-  if (["launch", "spinAxis", "descent", "horizontalAngle", "faceAngle", "clubPath", "faceToPath"].includes(metric)) {
+  if (["launch", "spinAxis", "descent", "horizontalAngle", "attackAngle", "faceAngle", "clubPath", "faceToPath", "swingPlane"].includes(metric)) {
     return `${value} deg`;
   }
   return `${value}`;
@@ -3871,6 +3867,8 @@ function buildImportedSession(
         : submissionType === "Manual entry"
           ? "Manual entry"
         : "CSV Upload";
+  const { normalizedCsv, ...persistedMetadata } = metadata;
+  void normalizedCsv;
 
   return {
     id: `import-${Date.now()}`,
@@ -3879,6 +3877,17 @@ function buildImportedSession(
     source,
     focus: "New data",
     location: metadata.location ?? LOCATION_UNAVAILABLE,
+    importMetadata: {
+      ...persistedMetadata,
+      importedAt: metadata.importedAt ?? new Date().toISOString(),
+      mappingProfileVersion: metadata.mappingProfileVersion ?? LAUNCH_MONITOR_MAPPING_PROFILE_VERSION,
+      simulator: metadata.simulator ?? simulator,
+      sourceCounts: metadata.sourceCounts ?? metricSourceCounts(shots),
+      measuredMetrics: metadata.measuredMetrics ?? metricSourcesForKind(shots, "measured"),
+      derivedMetrics: metadata.derivedMetrics ?? metricSourcesForKind(shots, "derived"),
+      estimatedMetrics: metadata.estimatedMetrics ?? metricSourcesForKind(shots, "estimated"),
+      missingMetrics: metadata.missingMetrics ?? missingMetrics,
+    },
     importNotes: notes.trim() || undefined,
     missingMetrics,
     shots,
@@ -4868,9 +4877,7 @@ export default function Home() {
       sanitizedSessions.find((session) => session.id === selectedSessionId) ??
       sanitizedSessions[0] ??
       null;
-    const nextLastImport = makeLastImportFromSession(
-      sanitizedSessions.find((session) => session.id.startsWith("import-")) ?? sanitizedSessions[0],
-    );
+    const nextLastImport = makeLastImportFromSession(getLastImportSession(sanitizedSessions));
     const nextClub =
       nextSelectedSession?.shots.some((shot) => shot.club === selectedClub)
         ? selectedClub
@@ -5176,6 +5183,7 @@ export default function Home() {
         setSessions(savedSessions);
         setSelectedSessionId(savedSessions[0]?.id ?? "");
         setSelectedClub(savedSessions[0]?.shots?.[0]?.club ?? "6-Iron");
+        setLastImport(makeLastImportFromSession(getLastImportSession(savedSessions)));
         setActiveTab(sessionsTab);
         setSyncStatus(
           requiresPasswordReset
@@ -5354,13 +5362,24 @@ export default function Home() {
           shots: updated.shots,
           notes: updated.notes,
         })
-        : updated.csvText;
+        : generateCanonicalLaunchMonitorCsv({
+          sessionId: updated.metadata.sessionId ?? updated.id,
+          sessionDate: updated.date,
+          simulator: updated.simulator,
+          shots: updated.shots,
+          notes: updated.notes,
+        });
       return {
         ...updated,
         csvText: normalizedCsv,
         detectedMetrics: getDetectedImportMetrics(updated.shots),
         metadata: {
           ...updated.metadata,
+          sourceCounts: metricSourceCounts(updated.shots),
+          measuredMetrics: metricSourcesForKind(updated.shots, "measured"),
+          derivedMetrics: metricSourcesForKind(updated.shots, "derived"),
+          estimatedMetrics: metricSourcesForKind(updated.shots, "estimated"),
+          missingMetrics: getMissingImportMetrics(updated.shots),
           normalizedCsv,
         },
         missingMetrics: getMissingImportMetrics(updated.shots),
@@ -5400,9 +5419,10 @@ export default function Home() {
       review.notes,
       review.missingMetrics,
     );
+    const nextSelectedClub = chooseClubForImportedSession(nextSession.shots, selectedClub, CLUB_ORDER);
     setSessions(nextSessions);
     setSelectedSessionId(nextSession.id);
-    setSelectedClub(review.shots[0]?.club ?? selectedClub);
+    setSelectedClub(nextSelectedClub);
     setActiveTab("dashboard");
     setLastImport(nextLastImport);
     setPendingImportReview(null);
@@ -5420,13 +5440,14 @@ export default function Home() {
     void saveUserSessions(nextSessions);
   }
 
-  function importCsv(submissionType: LastImport["submissionType"] = "CSV / Excel", notes = "") {
+  function importCsv(submissionType: LastImport["submissionType"] = "CSV / Excel", notes = "", sourceFileName = "Uploaded CSV") {
     if (accountMode === "user" && csvText.trim() === DEMO_CSV.trim()) {
       setImportMessage("Sample CSV rows are demo data. Upload or paste your own simulator rows before saving to your account.");
       setImportConfirmation(null);
       return;
     }
-    importShots(parseCsv(csvText), submissionType, "CSV", {}, notes);
+    const parsed = parseCsvForImport(csvText, sourceFileName);
+    importShots(parsed.shots, submissionType, parsed.metadata.simulator ?? "CSV", parsed.metadata, notes);
   }
 
   function navigateToTab(tab: Tab) {
@@ -6153,8 +6174,10 @@ function DashboardHeroVisual({ shots }: { shots: Shot[] }) {
   function pointForShot(shot: Shot) {
     const carry = getShotMetric(shot, "carry");
     const offline = getShotMetric(shot, "offline");
-    const x = 230 + clamp((offline ?? 0) / maxOffline, -1, 1) * 165;
-    const y = 220 - clamp(((carry ?? minCarry) - minCarry) / carryRange, 0, 1) * 150;
+    const offlineForPosition = typeof offline === "number" ? offline : 0;
+    const carryForPosition = typeof carry === "number" ? carry : minCarry;
+    const x = 230 + clamp(offlineForPosition / maxOffline, -1, 1) * 165;
+    const y = 220 - clamp((carryForPosition - minCarry) / carryRange, 0, 1) * 150;
     return { x, y };
   }
 
@@ -11049,11 +11072,13 @@ const PHOTO_REVIEW_DELIVERY_FIELDS: Array<{ key: NumericShotMetric; label: strin
   { key: "launch", label: "Launch" },
   { key: "descent", label: "Descent" },
   { key: "horizontalAngle", label: "Horiz." },
+  { key: "attackAngle", label: "Attack" },
   { key: "faceAngle", label: "Face" },
   { key: "clubPath", label: "Path" },
   { key: "faceToPath", label: "Face-path" },
   { key: "sideCarry", label: "Side carry" },
   { key: "sideTotal", label: "Side total" },
+  { key: "swingPlane", label: "Plane" },
 ];
 
 const PHOTO_UPLOAD_REQUEST_BUDGET_BYTES = 900 * 1024;
@@ -11153,6 +11178,55 @@ function previewUrlForFileName(previewUrls: Map<string, string>, fileName: strin
   return Array.from(previewUrls.entries()).find(([originalName]) => fileStemForPreview(originalName) === targetStem)?.[1];
 }
 
+function metricSourceBadge(shot: Shot, metric: NumericShotMetric) {
+  const source = shot.metricSources?.[metric];
+  if (!source || source.kind === "measured") return null;
+  const labels = {
+    derived: "Calc",
+    estimated: "Est.",
+    manual: "Edited",
+  } as const;
+  const label = labels[source.kind as keyof typeof labels];
+  if (!label) return null;
+  const confidence = Number.isFinite(source.confidence) ? ` Confidence: ${Math.round(source.confidence * 100)}%.` : "";
+  return {
+    className: `metric-source-badge ${source.kind}`,
+    label,
+    title: `${source.method ?? "Metric source recorded."}${confidence}`,
+  };
+}
+
+function metricLabelList(metrics: NumericShotMetric[] | undefined) {
+  return metrics?.length ? metrics.map((metric) => PHOTO_METRIC_LABELS[metric] ?? metric).join(", ") : "None";
+}
+
+function metricSourcesForKind(shots: Shot[], kind: MetricSource["kind"]) {
+  const metrics = new Set<NumericShotMetric>();
+  shots.forEach((shot) => {
+    Object.entries(shot.metricSources ?? {}).forEach(([metric, source]) => {
+      if (source.kind === kind) metrics.add(metric as NumericShotMetric);
+    });
+  });
+  return REVIEW_IMPORT_METRICS.filter((metric) => metrics.has(metric));
+}
+
+function metricSourceCounts(shots: Shot[]) {
+  return shots.reduce<Record<MetricSource["kind"], number>>(
+    (counts, shot) => {
+      Object.values(shot.metricSources ?? {}).forEach((source) => {
+        counts[source.kind] += 1;
+      });
+      return counts;
+    },
+    { measured: 0, derived: 0, estimated: 0, manual: 0 },
+  );
+}
+
+function sourceCountLabel(counts: PhotoImportMetadata["sourceCounts"], kind: keyof NonNullable<PhotoImportMetadata["sourceCounts"]>) {
+  const count = counts?.[kind] ?? 0;
+  return count.toLocaleString();
+}
+
 function ImportView({
   cancelImportReview,
   confirmImportReview,
@@ -11169,7 +11243,7 @@ function ImportView({
   cancelImportReview: () => void;
   confirmImportReview: () => void;
   csvText: string;
-  importCsv: (submissionType?: LastImport["submissionType"], notes?: string) => void;
+  importCsv: (submissionType?: LastImport["submissionType"], notes?: string, sourceFileName?: string) => void;
   importManualShot: (shot: Shot, metadata: PhotoImportMetadata, notes: string) => void;
   importPhotoShots: (shots: Shot[], simulator: string, metadata: PhotoImportMetadata, notes: string) => void;
   importMessage: string;
@@ -11276,24 +11350,52 @@ function ImportView({
       shots: review.shots.map((shot) => {
         if (shot.id !== shotId) return shot;
         const next = { ...shot };
+        const metricSources = { ...(next.metricSources ?? {}) };
         const detected = new Set(next.detectedMetrics ?? []);
         const trimmed = value.trim();
         if (!trimmed) {
           delete (next as Partial<Shot>)[metric];
+          delete metricSources[metric];
           detected.delete(metric);
         } else {
           const parsed = parseDirectionalNumber(trimmed);
           if (parsed !== undefined) {
             (next[metric] as number) = metric === "spin" ? Math.round(parsed) : parsed;
+            metricSources[metric] = {
+              kind: "manual",
+              confidence: 1,
+              method: "Edited during import review.",
+            };
             detected.add(metric);
           }
         }
         if (metric === "sideTotal" || metric === "sideCarry") {
-          if (hasShotMetric(next, "sideTotal")) next.offline = next.sideTotal as number;
-          else if (hasShotMetric(next, "sideCarry")) next.offline = next.sideCarry as number;
-          else delete (next as Partial<Shot>).offline;
+          if (hasShotMetric(next, "sideTotal")) {
+            next.offline = next.sideTotal as number;
+            metricSources.offline = {
+              kind: "derived",
+              confidence: 0.96,
+              method: "Copied from Side Total for dashboard dispersion.",
+              inputMetrics: ["sideTotal"],
+            };
+            detected.add("offline");
+          } else if (hasShotMetric(next, "sideCarry")) {
+            next.offline = next.sideCarry as number;
+            metricSources.offline = {
+              kind: "derived",
+              confidence: 0.92,
+              method: "Copied from Side Carry for dashboard dispersion.",
+              inputMetrics: ["sideCarry"],
+            };
+            detected.add("offline");
+          } else {
+            delete (next as Partial<Shot>).offline;
+            delete metricSources.offline;
+            detected.delete("offline");
+          }
         }
         next.detectedMetrics = Array.from(detected) as NumericShotMetric[];
+        next.metricSources = metricSources;
         return next;
       }),
     }));
@@ -11536,6 +11638,7 @@ function ImportView({
     : [];
   const reviewClubValue = reviewClubNames.length === 1 ? reviewClubNames[0] : reviewClubNames.join(", ");
   const reviewCsvText = pendingImportReview?.csvText ?? pendingImportReview?.metadata.normalizedCsv ?? "";
+  const reviewMetadata = pendingImportReview?.metadata;
 
   return (
     <section className="import-grid">
@@ -11574,6 +11677,116 @@ function ImportView({
                 <div><span>Overlap merged</span><strong>{pendingImportReview.summary.overlappingShotsDeduplicated.join(", ") || "None"}</strong></div>
                 <div><span>CSV</span><strong>{normalizedCsvDataRowCount(reviewCsvText)} rows ready</strong></div>
               </div>
+            )}
+
+            {reviewMetadata && (
+              <div className="photo-import-summary-grid import-evidence-summary">
+                <div><span>Detected session</span><strong>{reviewMetadata.sessionId ?? pendingImportReview.id}</strong></div>
+                <div><span>Rows</span><strong>{reviewMetadata.rowsDetected ?? pendingImportReview.shots.length}</strong></div>
+                <div><span>Clubs</span><strong>{reviewMetadata.clubCount ?? reviewClubNames.length}</strong></div>
+                <div><span>Source file</span><strong>{reviewMetadata.sourceFileName ?? "NA"}</strong></div>
+                <div><span>Measured</span><strong>{sourceCountLabel(reviewMetadata.sourceCounts, "measured")}</strong></div>
+                <div><span>Calculated</span><strong>{sourceCountLabel(reviewMetadata.sourceCounts, "derived")}</strong></div>
+                <div><span>Estimated</span><strong>{sourceCountLabel(reviewMetadata.sourceCounts, "estimated")}</strong></div>
+                <div><span>Manual</span><strong>{sourceCountLabel(reviewMetadata.sourceCounts, "manual")}</strong></div>
+              </div>
+            )}
+
+            {reviewMetadata && (
+              <details className="mapping-review-panel" open>
+                <summary>Column mapping review</summary>
+                <div className="mapping-review-summary">
+                  <div>
+                    <strong>Clubs detected</strong>
+                    <span>{(reviewMetadata.clubs ?? reviewClubNames).map(getClubDisplayName).join(", ") || "NA"}</span>
+                  </div>
+                  <div>
+                    <strong>Measured fields</strong>
+                    <span>{metricLabelList(reviewMetadata.measuredMetrics)}</span>
+                  </div>
+                  <div>
+                    <strong>Calculated fields</strong>
+                    <span>{metricLabelList(reviewMetadata.derivedMetrics)}</span>
+                  </div>
+                  <div>
+                    <strong>Estimated fields</strong>
+                    <span>{metricLabelList(reviewMetadata.estimatedMetrics)}</span>
+                  </div>
+                  <div>
+                    <strong>Missing fields</strong>
+                    <span>{metricLabelList(reviewMetadata.missingMetrics ?? pendingImportReview.missingMetrics)}</span>
+                  </div>
+                  <div>
+                    <strong>Unit conversions</strong>
+                    <span>
+                      {reviewMetadata.unitConversions?.length
+                        ? reviewMetadata.unitConversions.map((conversion) => `${conversion.sourceColumn}: ${conversion.sourceUnit} → ${conversion.targetUnit}`).join(", ")
+                        : "None"}
+                    </span>
+                  </div>
+                </div>
+                <div className="mapping-review-table" role="table" aria-label="Column mapping review">
+                  <div className="mapping-review-row header" role="row">
+                    <span>Source column</span>
+                    <span>Maps to</span>
+                    <span>Unit</span>
+                  </div>
+                  {(reviewMetadata.mappedColumns ?? []).map((mapping) => (
+                    <div className="mapping-review-row" key={`${mapping.sourceColumn}-${mapping.mapsTo}`} role="row">
+                      <code>{mapping.sourceColumn}</code>
+                      <select
+                        aria-label={`Mapping for ${mapping.sourceColumn}`}
+                        value={mapping.mapsTo}
+                        onChange={(event) => {
+                          const nextOverrides = {
+                            ...(reviewMetadata.columnOverrides ?? {}),
+                            [mapping.sourceColumn]: event.target.value,
+                          };
+                          const parsed = parseCsvForImport(csvText, reviewMetadata.sourceFileName ?? csvFileName, nextOverrides);
+                          updateImportReview((review) => ({
+                            ...review,
+                            metadata: parsed.metadata,
+                            shots: parsed.shots,
+                            simulator: parsed.metadata.simulator ?? review.simulator,
+                          }));
+                        }}
+                      >
+                        {COLUMN_MAPPING_TARGETS.map((target) => (
+                          <option key={target.value} value={target.value}>{target.label}</option>
+                        ))}
+                      </select>
+                      <span>{mapping.sourceUnit && mapping.targetUnit ? `${mapping.sourceUnit} → ${mapping.targetUnit}` : "NA"}</span>
+                    </div>
+                  ))}
+                  {(reviewMetadata.unmappedColumns ?? []).map((sourceColumn) => (
+                    <div className="mapping-review-row unmapped" key={sourceColumn} role="row">
+                      <code>{sourceColumn}</code>
+                      <select
+                        aria-label={`Mapping for ${sourceColumn}`}
+                        value={reviewMetadata.columnOverrides?.[sourceColumn] ?? "ignore"}
+                        onChange={(event) => {
+                          const nextOverrides = {
+                            ...(reviewMetadata.columnOverrides ?? {}),
+                            [sourceColumn]: event.target.value,
+                          };
+                          const parsed = parseCsvForImport(csvText, reviewMetadata.sourceFileName ?? csvFileName, nextOverrides);
+                          updateImportReview((review) => ({
+                            ...review,
+                            metadata: parsed.metadata,
+                            shots: parsed.shots,
+                            simulator: parsed.metadata.simulator ?? review.simulator,
+                          }));
+                        }}
+                      >
+                        {COLUMN_MAPPING_TARGETS.map((target) => (
+                          <option key={target.value} value={target.value}>{target.label}</option>
+                        ))}
+                      </select>
+                      <span>Unmapped</span>
+                    </div>
+                  ))}
+                </div>
+              </details>
             )}
 
             <div className="import-review-grid">
@@ -11646,7 +11859,13 @@ function ImportView({
                   <div className="photo-review-metric-group">
                     {PHOTO_REVIEW_DISTANCE_FIELDS.map((field) => (
                       <label key={field.key}>
-                        <span>{field.label}</span>
+                        <span>
+                          {field.label}
+                          {(() => {
+                            const badge = metricSourceBadge(shot, field.key);
+                            return badge ? <em className={badge.className} title={badge.title}>{badge.label}</em> : null;
+                          })()}
+                        </span>
                         <input
                           inputMode="decimal"
                           onChange={(event) => updateReviewShotMetric(shot.id, field.key, event.target.value)}
@@ -11659,7 +11878,13 @@ function ImportView({
                   <div className="photo-review-metric-group">
                     {PHOTO_REVIEW_DELIVERY_FIELDS.map((field) => (
                       <label key={field.key}>
-                        <span>{field.label}</span>
+                        <span>
+                          {field.label}
+                          {(() => {
+                            const badge = metricSourceBadge(shot, field.key);
+                            return badge ? <em className={badge.className} title={badge.title}>{badge.label}</em> : null;
+                          })()}
+                        </span>
                         <input
                           inputMode="decimal"
                           onChange={(event) => updateReviewShotMetric(shot.id, field.key, event.target.value)}
@@ -11699,43 +11924,51 @@ function ImportView({
           </div>
         )}
 
-        <div className="import-mode-grid">
-          {[
-            { id: "api", label: "Simulator feed", body: "Connect a supported launch monitor or simulator when a live integration is available." },
-            { id: "file", label: "CSV file", body: "Paste exported rows or upload a CSV from your simulator." },
-            { id: "photo", label: "Session photos", body: "Upload clear launch monitor screenshots, result photos, or page exports." },
-            { id: "manual", label: "Manual entry", body: "Type the club and any metrics you captured from a launch monitor." },
-          ].map((mode) => (
-            <button
-              className={cls("import-mode", importMode === mode.id && "active")}
-              key={mode.id}
-              onClick={() => setImportMode(mode.id as "api" | "file" | "photo" | "manual")}
-            >
-              <strong>{mode.label}</strong>
-              <span>{mode.body}</span>
-            </button>
-          ))}
+        <div className="import-mode-grid import-primary-paths">
+          <button
+            className={cls("import-mode", importMode === "api" && "active")}
+            onClick={() => setImportMode("api")}
+            type="button"
+          >
+            <strong>Connect your launch monitor</strong>
+            <span>Automatically sync sessions from a supported launch monitor or data provider.</span>
+            <em>Connect API</em>
+          </button>
+          <button
+            className={cls("import-mode", importMode !== "api" && "active")}
+            onClick={() => setImportMode("file")}
+            type="button"
+          >
+            <strong>Let’s see your shots</strong>
+            <span>Upload a CSV or photos of your launch-monitor data. MAI Coach will map the numbers, organize the session, and let you review everything before saving.</span>
+            <em>Upload CSV or Photos</em>
+          </button>
         </div>
 
         {importMode === "api" && (
           <div className="import-panel">
-            <div className="connection-grid">
+            <div className="connection-grid coming-soon-grid">
               {SIMULATOR_SOURCES.map((source) => (
-                <button className={cls("source-tile", source.tone === "dark" && "dark-logo")} key={source.label}>
+                <button className={cls("source-tile", source.tone === "dark" && "dark-logo")} disabled key={source.label} type="button">
                   <span className="source-logo">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img alt={`${source.label} logo`} src={source.logo} />
                   </span>
                   <strong>{source.label}</strong>
+                  <small>Coming soon</small>
                 </button>
               ))}
             </div>
-            <p className="muted-copy">API feed is staged as a connection path; imported sessions will save automatically after sign-in.</p>
+            <p className="muted-copy">API connections are not active yet. Use Upload CSV or Photos for today’s imports.</p>
           </div>
         )}
 
-        {importMode === "file" && (
+        {(importMode === "file" || importMode === "photo") && (
           <div className="import-panel">
+            <div className="manual-entry-guide">
+              <strong>Upload CSV</strong>
+              <span>CSV files can come from Full Swing, TrackMan, Foresight, FlightScope, SkyTrak, Uneekor, Garmin, Rapsodo, or similar launch monitors.</span>
+            </div>
             <input
               className="file-input"
               type="file"
@@ -11761,17 +11994,7 @@ function ImportView({
               spellCheck={false}
             />
             <div className="button-row">
-              <button
-                className="secondary-action"
-                onClick={() => {
-                  setCsvText(DEMO_CSV);
-                  setCsvFileName("Sample rows");
-                  setCsvFileStatus(`${parseCsv(DEMO_CSV).length} sample shot rows are ready to analyze.`);
-                }}
-              >
-                Load sample CSV rows
-              </button>
-              <button className="primary-action" onClick={() => importCsv("CSV / Excel", importNotes)}>
+              <button className="primary-action" onClick={() => importCsv("CSV / Excel", importNotes, csvFileName)}>
                 <span>⇧</span>
                 Analyze rows
               </button>
@@ -11780,13 +12003,12 @@ function ImportView({
               Accepted format: CSV under 5 MB. Include at least club plus one shot metric such as carry, total,
               ball speed, launch, spin, offline, club path, or face angle. PNG/JPG/PDF result exports can be added in Session photos.
             </p>
-          </div>
-        )}
-
-        {importMode === "photo" && (
-          <div className="import-panel">
-	            <input
-	              className="file-input"
+            <div className="manual-entry-guide import-subsection-guide">
+              <strong>Upload photos</strong>
+              <span>Use clear launch-monitor screenshots or result photos. Multiple pages are merged into one review when shot numbers overlap.</span>
+            </div>
+		            <input
+		              className="file-input"
 	              type="file"
 	              accept="image/*"
 	              capture="environment"
@@ -11984,6 +12206,12 @@ function ImportView({
 
 function LastImportPanel({ lastImport }: { lastImport: LastImport }) {
   const importedClubs = Array.from(new Set(lastImport.shots.map((shot) => getClubDisplayName(shot.club))));
+  const headerTitle =
+    lastImport.location && lastImport.location !== LOCATION_UNAVAILABLE
+      ? lastImport.location
+      : lastImport.shots.length
+        ? `${lastImport.simulator} import`
+        : LOCATION_UNAVAILABLE;
   const detailRows = [
     ["Date", formatFullDate(lastImport.date)],
     ["Location", lastImport.location],
@@ -12015,7 +12243,7 @@ function LastImportPanel({ lastImport }: { lastImport: LastImport }) {
 
   return (
     <div className="panel import-summary-panel">
-      <PanelHeader kicker="Last import" title={lastImport.location} meta={`${lastImport.simulator} · ${lastImport.shots.length} shots`} />
+      <PanelHeader kicker="Last import" title={headerTitle} meta={`${lastImport.simulator} · ${lastImport.shots.length} shots`} />
       <dl className="import-detail-list">
         {detailRows.map(([label, value]) => (
           <div key={label}>
@@ -13310,9 +13538,12 @@ function getRecordedShotFinish(shot: Shot) {
 }
 
 function getShotFlightProfile(shot: Shot) {
-  const carry = getShotMetric(shot, "carry") ?? 0;
-  const total = getShotMetric(shot, "total") ?? carry;
-  const launchDirection = getShotMetric(shot, "horizontalAngle") ?? getShotMetric(shot, "faceAngle") ?? 0;
+  const measuredCarry = getShotMetric(shot, "carry");
+  const carry = typeof measuredCarry === "number" ? measuredCarry : 0;
+  const measuredTotal = getShotMetric(shot, "total");
+  const total = typeof measuredTotal === "number" ? measuredTotal : carry;
+  const measuredLaunchDirection = getShotMetric(shot, "horizontalAngle") ?? getShotMetric(shot, "faceAngle");
+  const launchDirection = typeof measuredLaunchDirection === "number" ? measuredLaunchDirection : 0;
   const startLineYards = Math.tan((launchDirection * Math.PI) / 180) * carry;
   const recordedCurve = getShotMetric(shot, "curve");
   const faceToPath = getShotMetric(shot, "faceToPath");
