@@ -301,6 +301,7 @@ type SessionAnalysisResponse = {
   analysis?: MaiCaddyAnalysis | null;
   calculatedMetrics?: Record<string, unknown> | null;
   model?: string | null;
+  analysisSource?: "openai" | "measured_fallback" | null;
   promptVersion?: string;
   startedAt?: string | null;
   completedAt?: string | null;
@@ -6814,6 +6815,22 @@ function SessionsView({
                     </span>
                   </div>
                 )}
+                {selectedAnalysis.result?.analysisSource === "measured_fallback" && (
+                  <div className="mai-analysis-source-note" role="status">
+                    <div>
+                      <strong>Data-based fallback</strong>
+                      <span>MAI generated a data-based fallback because enhanced analysis is temporarily unavailable.</span>
+                    </div>
+                    <button
+                      className="text-button"
+                      disabled={!canRequestAnalysis}
+                      onClick={() => void analyzeSelectedSession()}
+                      type="button"
+                    >
+                      Retry enhanced analysis
+                    </button>
+                  </div>
+                )}
                 {structuredAnalysis ? (
                   <div className="mai-analysis-body structured">
                     <div className="mai-analysis-hero">
@@ -11037,17 +11054,10 @@ const PHOTO_REVIEW_DELIVERY_FIELDS: Array<{ key: NumericShotMetric; label: strin
   { key: "sideTotal", label: "Side total" },
 ];
 
-const PHOTO_UPLOAD_MAX_DIMENSION = 900;
-const PHOTO_UPLOAD_JPEG_QUALITY = 0.68;
-const PHOTO_UPLOAD_RESIZE_THRESHOLD = 180 * 1024;
-
-async function sha256FileHex(file: File) {
-  const bytes = await file.arrayBuffer();
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
+const PHOTO_UPLOAD_REQUEST_BUDGET_BYTES = 900 * 1024;
+const PHOTO_UPLOAD_MAX_DIMENSION = 1800;
+const PHOTO_UPLOAD_MIN_DIMENSION = 900;
+const PHOTO_UPLOAD_JPEG_QUALITY_STEPS = [0.82, 0.74, 0.66];
 
 async function imageBitmapFromFile(file: File): Promise<ImageBitmap | HTMLImageElement> {
   if ("createImageBitmap" in window) {
@@ -11072,36 +11082,62 @@ function canvasBlob(canvas: HTMLCanvasElement, type: string, quality: number) {
   return new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, type, quality));
 }
 
-async function preparePhotoForPrivateImport(file: File) {
-  const originalHash = await sha256FileHex(file);
-  if (file.size <= PHOTO_UPLOAD_RESIZE_THRESHOLD) {
-    return { file, originalHash, wasResized: false };
+async function preparePhotoForPrivateImport(file: File, targetBytes: number) {
+  if (file.size <= targetBytes) {
+    return { file, originalSize: file.size, uploadSize: file.size, wasResized: false };
   }
-
   const source = await imageBitmapFromFile(file);
   const width = source.width;
   const height = source.height;
-  const scale = Math.min(1, PHOTO_UPLOAD_MAX_DIMENSION / Math.max(width, height));
-  if (scale >= 1) return { file, originalHash, wasResized: false };
+  const originalMaxDimension = Math.max(width, height);
+  const candidateDimensions = Array.from(new Set([
+    Math.min(PHOTO_UPLOAD_MAX_DIMENSION, originalMaxDimension),
+    1600,
+    1400,
+    1200,
+    1050,
+    PHOTO_UPLOAD_MIN_DIMENSION,
+  ]))
+    .filter((dimension) => dimension > 0 && dimension <= originalMaxDimension)
+    .sort((left, right) => right - left);
+  let bestBlob: Blob | null = null;
 
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(width * scale));
-  canvas.height = Math.max(1, Math.round(height * scale));
-  const context = canvas.getContext("2d", { alpha: false });
-  if (!context) return { file, originalHash, wasResized: false };
-  context.imageSmoothingEnabled = true;
-  context.imageSmoothingQuality = "high";
-  context.drawImage(source, 0, 0, canvas.width, canvas.height);
+  for (const maxDimension of candidateDimensions) {
+    const scale = Math.min(1, maxDimension / originalMaxDimension);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(width * scale));
+    canvas.height = Math.max(1, Math.round(height * scale));
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) continue;
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
+    context.drawImage(source, 0, 0, canvas.width, canvas.height);
+
+    for (const quality of PHOTO_UPLOAD_JPEG_QUALITY_STEPS) {
+      const blob = await canvasBlob(canvas, "image/jpeg", quality);
+      if (!blob || blob.size >= file.size) continue;
+      bestBlob = !bestBlob || blob.size < bestBlob.size ? blob : bestBlob;
+      if (blob.size <= targetBytes) {
+        if ("close" in source && typeof source.close === "function") source.close();
+        const uploadName = file.name.replace(/\.[^.]+$/, "") || "session-photo";
+        const uploadFile = new File([blob], `${uploadName}.jpg`, {
+          lastModified: file.lastModified,
+          type: "image/jpeg",
+        });
+        return { file: uploadFile, originalSize: file.size, uploadSize: uploadFile.size, wasResized: true };
+      }
+    }
+  }
   if ("close" in source && typeof source.close === "function") source.close();
 
-  const blob = await canvasBlob(canvas, "image/jpeg", PHOTO_UPLOAD_JPEG_QUALITY);
-  if (!blob || blob.size >= file.size) return { file, originalHash, wasResized: false };
+  const blob = bestBlob;
+  if (!blob || blob.size >= file.size) return { file, originalSize: file.size, uploadSize: file.size, wasResized: false };
   const uploadName = file.name.replace(/\.[^.]+$/, "") || "session-photo";
   const uploadFile = new File([blob], `${uploadName}.jpg`, {
     lastModified: file.lastModified,
     type: "image/jpeg",
   });
-  return { file: uploadFile, originalHash, wasResized: true };
+  return { file: uploadFile, originalSize: file.size, uploadSize: uploadFile.size, wasResized: true };
 }
 
 function ImportView({
@@ -11323,19 +11359,31 @@ function ImportView({
         {},
       );
       setPhotoProgress(12);
-      const preparedFiles = await Promise.all(supportedFiles.map(preparePhotoForPrivateImport));
+      const perPhotoTargetBytes = Math.max(
+        120 * 1024,
+        Math.floor((PHOTO_UPLOAD_REQUEST_BUDGET_BYTES - 16 * 1024) / supportedFiles.length),
+      );
+      const preparedFiles = await Promise.all(
+        supportedFiles.map((file) => preparePhotoForPrivateImport(file, perPhotoTargetBytes)),
+      );
       const resizedCount = preparedFiles.filter((photo) => photo.wasResized).length;
+      const uploadBytes = preparedFiles.reduce((sum, photo) => sum + photo.uploadSize, 0);
+      if (uploadBytes > PHOTO_UPLOAD_REQUEST_BUDGET_BYTES) {
+        setPhotoScanState("error");
+        setPhotoStatus("These photos are still too large after optimization. Try uploading fewer pages at once or crop closer to the table.");
+        setPhotoScans(rejectedFiles);
+        return;
+      }
       const formData = new FormData();
       preparedFiles.forEach((photo) => {
         formData.append("images", photo.file, photo.file.name);
-        formData.append("originalHashes", photo.originalHash);
       });
       formData.append("notes", importNotes);
       formData.append("sessionDate", combinedMetadata.capturedAt ?? getTodayDateString());
       setPhotoProgress(30);
       setPhotoStatus(
         resizedCount
-          ? `Uploading optimized photos (${resizedCount} resized) and classifying Full Swing pages...`
+          ? `Uploading optimized photos (${resizedCount} resized, ${Math.round(uploadBytes / 1024)} KB) and classifying Full Swing pages...`
           : "Uploading photos and classifying Full Swing pages...",
       );
       const response = await fetch("/api/import/photos", {

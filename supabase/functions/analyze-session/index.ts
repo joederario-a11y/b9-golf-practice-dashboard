@@ -78,7 +78,7 @@ type TableConfig = {
 };
 
 const promptVersion = "mai-caddy-v1";
-const fallbackModel = "gpt-5.6-terra";
+const fallbackModel = "gpt-4.1-mini";
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const tableNamePattern = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 

@@ -165,6 +165,7 @@ type RecapEnv = {
     };
   };
   OPENAI_API_KEY?: string;
+  OPENAI_ANALYSIS_MODEL?: string;
   OPENAI_MODEL?: string;
   OPENAI_TRANSCRIPTION_MODEL?: string;
 	  VIDEO_LESSON_RECAP_WORKFLOW?: {
@@ -804,7 +805,7 @@ async function generateRecapDraft(env: RecapEnv, database: D1Database, job: Proc
   await assertWorkflowCanContinue(database, job.id, video);
   await markJob(database, job.id, { status: "generating_recap", step: "creating_mai_caddy_recap" });
   await recordProcessingEvent(database, "recap_generation_started", job, "MAI Coach started generating a coach-review lesson recap.");
-  const model = env.OPENAI_MODEL || DEFAULT_VIDEO_RECAP_MODEL;
+  const model = env.OPENAI_ANALYSIS_MODEL || env.OPENAI_MODEL || DEFAULT_VIDEO_RECAP_MODEL;
   const normalizedDraft = transcriptLooksUsable(transcript.text)
     ? await (async () => {
       if (!env.OPENAI_API_KEY) {

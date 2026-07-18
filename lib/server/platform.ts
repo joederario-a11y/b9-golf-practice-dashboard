@@ -24,6 +24,8 @@ export type PlatformEnvironment = {
   COACH_EMAILS?: string;
   DB?: D1Database;
   DEV_AUTH_ENABLED?: string;
+  DEV_OPENAI_DIAGNOSTICS_ENABLED?: string;
+  OPENAI_ANALYSIS_MODEL?: string;
   OPENAI_API_KEY?: string;
   OPENAI_MODEL?: string;
   OPENAI_TRANSCRIPTION_MODEL?: string;
@@ -82,6 +84,74 @@ const PASSWORD_HASH_ITERATIONS = 100000;
 
 export function getPlatformEnvironment() {
   return env as unknown as PlatformEnvironment;
+}
+
+export type SafeOpenAIDiagnostic = {
+  category: string;
+  publicMessage: string;
+  httpStatus: number | null;
+  errorType: string | null;
+  errorCode: string | null;
+  requestId: string | null;
+  model: string | null;
+  endpoint: string;
+  operation: string;
+};
+
+function stringField(value: unknown, maxLength = 140) {
+  return typeof value === "string" && value.trim() ? value.trim().slice(0, maxLength) : null;
+}
+
+function numberField(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export function sanitizeOpenAIError(
+  error: unknown,
+  context: {
+    endpoint: string;
+    model?: string | null;
+    operation?: string;
+  },
+): SafeOpenAIDiagnostic {
+  const record = error && typeof error === "object" ? error as Record<string, unknown> : {};
+  const nestedError = record.error && typeof record.error === "object" ? record.error as Record<string, unknown> : {};
+  const status = numberField(record.status) ?? numberField(record.statusCode) ?? numberField(nestedError.status);
+  const errorType = stringField(record.type) ?? stringField(nestedError.type);
+  const errorCode = stringField(record.code) ?? stringField(nestedError.code);
+  const requestId = stringField(record.request_id)
+    ?? stringField(record.requestId)
+    ?? stringField(record["x-request-id"])
+    ?? stringField(nestedError.request_id);
+  const message = [
+    error instanceof Error ? error.message : stringField(record.message, 500) ?? "",
+    stringField(nestedError.message, 500) ?? "",
+  ].join(" ");
+  let category = "openai_request_failed";
+
+  if (/api.?key|unauthorized|authentication/i.test(message) || status === 401) category = "invalid_api_key";
+  else if (/quota|billing|insufficient_quota/i.test(message) || errorCode === "insufficient_quota") category = "insufficient_quota";
+  else if (/model.*not.*found|does not exist|unknown model/i.test(message) || errorCode === "model_not_found") category = "model_not_found";
+  else if (/access.*model|not have access|permission/i.test(message) || status === 403) category = "model_access_denied";
+  else if (/structured|schema|json_schema|validation/i.test(message)) category = "schema_validation_failed";
+  else if (/image|input_image|unsupported.*input/i.test(message)) category = "unsupported_image_input";
+  else if (/payload|too large|maximum context|context length|tokens/i.test(message) || status === 413) category = "payload_too_large";
+  else if (/timeout|timed out|abort/i.test(message) || status === 408 || status === 504) category = "timeout";
+  else if (/rate.?limit/i.test(message) || status === 429) category = "rate_limit";
+  else if (/invalid request|bad request/i.test(message) || status === 400) category = "invalid_request";
+  else if (/empty.*response/i.test(message)) category = "empty_response";
+
+  return {
+    category,
+    publicMessage: "MAI Coach could not complete the OpenAI request. The dev diagnostic contains the sanitized reason.",
+    httpStatus: status,
+    errorType,
+    errorCode,
+    requestId,
+    model: stringField(context.model) ?? null,
+    endpoint: context.endpoint,
+    operation: context.operation ?? "openai_request",
+  };
 }
 
 export function getEmailFromAddress() {
@@ -145,6 +215,23 @@ async function hashToken(token: string) {
   return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
+}
+
+function parseCookieHeader(value: string | null) {
+  const parsed = new Map<string, string>();
+  if (!value) return parsed;
+  for (const part of value.split(";")) {
+    const [rawName, ...rawValueParts] = part.split("=");
+    const name = rawName?.trim();
+    if (!name) continue;
+    const rawValue = rawValueParts.join("=").trim();
+    try {
+      parsed.set(name, decodeURIComponent(rawValue));
+    } catch {
+      parsed.set(name, rawValue);
+    }
+  }
+  return parsed;
 }
 
 function bytesToBase64(bytes: Uint8Array) {
@@ -271,6 +358,7 @@ export async function ensureMaiCaddyAnalysisSchema(database = getRequiredDatabas
           CHECK (status IN ('processing', 'completed', 'failed', 'insufficient_data')),
         analysis_json TEXT NOT NULL DEFAULT '{}',
         calculated_metrics_json TEXT NOT NULL DEFAULT '{}',
+        analysis_source TEXT NOT NULL DEFAULT 'openai',
         model TEXT,
         prompt_version TEXT NOT NULL DEFAULT 'mai-caddy-v1',
         error_code TEXT,
@@ -293,6 +381,7 @@ export async function ensureMaiCaddyAnalysisSchema(database = getRequiredDatabas
        WHERE is_current = 1`,
     ),
   ]);
+  await ensureColumn(database, "mai_caddy_session_analyses", "analysis_source", "TEXT NOT NULL DEFAULT 'openai'");
 }
 
 export async function ensurePracticeActivitySchema(database = getRequiredDatabase()) {
@@ -1147,8 +1236,117 @@ export async function getIdentity(): Promise<AuthIdentity | null> {
   };
 }
 
+export async function getIdentityFromRequest(request: Request): Promise<AuthIdentity | null> {
+  const runtime = getPlatformEnvironment();
+  const requestHeaders = request.headers;
+  const requestCookies = parseCookieHeader(requestHeaders.get("cookie"));
+  let email = requestHeaders.get("oai-authenticated-user-email")?.trim().toLowerCase() ?? "";
+  let displayName = "";
+
+  const encodedName = requestHeaders.get("oai-authenticated-user-full-name");
+  if (encodedName) {
+    displayName =
+      requestHeaders.get("oai-authenticated-user-full-name-encoding") === "percent-encoded-utf-8"
+        ? decodeURIComponent(encodedName)
+        : encodedName;
+  }
+
+  if (!email && runtime.DEV_AUTH_ENABLED === "true") {
+    email = requestCookies.get("frg-dev-user")?.trim().toLowerCase() ?? "";
+  }
+  if (!email) {
+    const sessionToken = requestCookies.get(AUTH_SESSION_COOKIE) ?? "";
+    if (sessionToken) {
+      const database = getRequiredDatabase();
+      await ensurePlatformSchema(database);
+      const tokenHash = await hashToken(sessionToken);
+      const sessionUser = await database
+        .prepare(
+          `SELECT
+            users.id, users.role, users.first_name, users.last_name, users.email,
+            COALESCE(users.account_status, 'active') AS account_status,
+            COALESCE(users.password_reset_required, 0) AS password_reset_required,
+            auth_sessions.expires_at
+          FROM auth_sessions
+          JOIN users ON users.id = auth_sessions.user_id
+          WHERE auth_sessions.token_hash = ?`,
+        )
+        .bind(tokenHash)
+        .first<SessionUserRow>();
+      if (sessionUser && sessionUser.account_status !== "inactive" && new Date(sessionUser.expires_at).getTime() > Date.now()) {
+        await database.batch([
+          database.prepare("UPDATE auth_sessions SET last_seen_at = CURRENT_TIMESTAMP WHERE token_hash = ?").bind(tokenHash),
+          database.prepare("UPDATE users SET last_login_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(sessionUser.id),
+        ]);
+        return identityFromUser(sessionUser);
+      }
+    }
+  }
+  if (!email) return null;
+
+  const database = getRequiredDatabase();
+  await ensurePlatformSchema(database);
+  const existing = await database
+    .prepare("SELECT id, role, first_name, last_name, email, COALESCE(account_status, 'active') AS account_status, COALESCE(password_reset_required, 0) AS password_reset_required FROM users WHERE email = ?")
+    .bind(email)
+    .first<UserRow>();
+  const headerRole = requestHeaders.get("oai-authenticated-user-role")?.toLowerCase();
+  if (existing?.account_status === "inactive") return null;
+
+  const role: UserRole = headerRole === "admin" || headerRole === "coach"
+    ? headerRole
+    : roleForEmail(email, existing?.role);
+  const name = splitName(displayName || [existing?.first_name, existing?.last_name].filter(Boolean).join(" "), email);
+  const id = existing?.id ?? crypto.randomUUID();
+
+  await database
+    .prepare(
+      `INSERT INTO users (
+        id, role, first_name, last_name, email, invite_status, last_login_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'accepted', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT(email) DO UPDATE SET
+        role = excluded.role,
+        first_name = CASE WHEN excluded.first_name = 'Member' THEN users.first_name ELSE excluded.first_name END,
+        last_name = CASE WHEN excluded.last_name = '' THEN users.last_name ELSE excluded.last_name END,
+        invite_status = 'accepted',
+        last_login_at = CURRENT_TIMESTAMP,
+        updated_at = CURRENT_TIMESTAMP`,
+    )
+    .bind(id, role, name.firstName, name.lastName, email)
+    .run();
+
+  if (existing?.id) {
+    await database
+      .prepare(
+        `UPDATE member_invitations
+         SET status = 'accepted', accepted_at = COALESCE(accepted_at, CURRENT_TIMESTAMP)
+         WHERE member_id = ? AND status IN ('pending', 'sent')`,
+      )
+      .bind(existing.id)
+      .run();
+  }
+
+  return {
+    id,
+    email,
+    role,
+    firstName: name.firstName,
+    lastName: name.lastName,
+    displayName: [name.firstName, name.lastName].filter(Boolean).join(" "),
+    passwordResetRequired: existing?.password_reset_required === 1 || existing?.password_reset_required === true,
+  };
+}
+
 export async function requireIdentity() {
   const identity = await getIdentity();
+  if (!identity) {
+    throw new Response("Authentication required.", { status: 401 });
+  }
+  return identity;
+}
+
+export async function requireIdentityFromRequest(request: Request) {
+  const identity = await getIdentityFromRequest(request);
   if (!identity) {
     throw new Response("Authentication required.", { status: 401 });
   }

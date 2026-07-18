@@ -2699,6 +2699,37 @@ dd {
   justify-content: flex-start;
 }
 
+.mai-analysis-source-note {
+  align-items: center;
+  border: 1px solid rgba(250, 204, 21, 0.34);
+  border-radius: 8px;
+  background: rgba(250, 204, 21, 0.08);
+  color: var(--ink);
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 12px;
+}
+
+.mai-analysis-source-note div {
+  display: grid;
+  gap: 3px;
+}
+
+.mai-analysis-source-note strong {
+  color: #ffd166;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mai-analysis-source-note span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .mai-analysis-body,
 .mai-analysis-status {
   color: var(--ink);

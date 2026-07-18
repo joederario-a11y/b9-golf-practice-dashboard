@@ -3,9 +3,10 @@ import {
   PHOTO_IMPORT_MERGE_VERSION,
   PHOTO_IMPORT_PREPROCESSING_VERSION,
   PHOTO_IMPORT_PROMPT_VERSION,
+  mergeVisionPhotoImportResult,
 } from "@/lib/photo-import-policy.mjs";
 import { getPlatformEnvironment, getRequiredDatabase, type AuthIdentity } from "@/lib/server/platform";
-import { buildKnownFullSwingFixtureImport } from "@/lib/server/photo-import-ocr";
+import { extractPhotoImportWithOcr } from "@/lib/server/photo-import-ocr";
 import { extractPhotoImportWithVision } from "@/lib/server/photo-import-vision";
 
 type UploadedPhoto = {
@@ -14,6 +15,7 @@ type UploadedPhoto = {
   contentType: string;
   fileName: string;
   hash: string;
+  originalHash: string;
   id: string;
   uploadedHash: string;
   size: number;
@@ -111,6 +113,7 @@ async function storePrivatePhotos(identity: AuthIdentity, jobId: string, photos:
         originalFileName: photo.fileName,
         sha256: photo.hash,
         uploadedSha256: photo.uploadedHash,
+        originalSha256: photo.originalHash,
       },
     });
     paths.push(path);
@@ -207,32 +210,6 @@ function failedResult(jobId: string, message: string, status: PhotoImportStatus 
   };
 }
 
-function visionNotYetMergedResult(jobId: string, message: string) {
-  return {
-    status: "partial" as const,
-    jobId,
-    simulator: "Unknown",
-    club: null,
-    shots: [],
-    csvText: "",
-    pages: [],
-    warnings: [message],
-    blockingIssues: ["Review required: the vision extraction response needs a supported merge adapter for this simulator/page format."],
-    summary: {
-      simulator: "Unknown",
-      club: "Unknown",
-      canonicalClub: null,
-      imageCount: 0,
-      distancePageCount: 0,
-      deliveryPageCount: 0,
-      uniqueShotCount: 0,
-      shotNumbers: [],
-      overlappingShotsDeduplicated: [],
-      avgRowsExcluded: false,
-    },
-  };
-}
-
 function normalizedHash(value: string | undefined) {
   const hash = text(value, "", 80).toLowerCase();
   return /^[a-f0-9]{64}$/.test(hash) ? hash : "";
@@ -254,7 +231,8 @@ export async function readUploadedPhotos(files: File[], originalHashes: string[]
       bytes,
       contentType: file.type || "image/jpeg",
       fileName: file.name || `photo-${index + 1}.jpg`,
-      hash: originalHash || uploadedHash,
+      hash: uploadedHash,
+      originalHash,
       id: `image-${index + 1}`,
       uploadedHash,
       size: file.size,
@@ -279,33 +257,56 @@ export async function processPhotoImportBatch(values: {
   }
 
   const sourcePaths = await storePrivatePhotos(values.identity, jobId, photos);
-  const knownFixtureResult = buildKnownFullSwingFixtureImport(photos, {
-    sessionId: jobId,
-    sessionDate: values.sessionDate,
-    notes: values.notes,
-  });
-
-  if (knownFixtureResult) {
-    const result = {
-      ...knownFixtureResult,
-      jobId,
-      sessionId: jobId,
-      sourcePaths,
-      confidence: 0.98,
-    };
-    await storeJob({ identity: values.identity, jobId, result, photos, sourcePaths });
-    return result;
-  }
-
   const visionResult = await extractPhotoImportWithVision(photos.map((photo) => ({
     base64: photo.base64,
     contentType: photo.contentType,
     fileName: photo.fileName,
   })));
 
-  const result = visionResult.ok
-    ? visionNotYetMergedResult(jobId, "Vision extraction completed, but this simulator/page format is not merged into session rows yet.")
-    : failedResult(jobId, visionResult.message, visionResult.reason === "missing_openai_configuration" ? "partial" : "failed");
+  let result: Record<string, unknown>;
+  if (visionResult.ok) {
+    result = {
+      ...mergeVisionPhotoImportResult(visionResult.extraction, {
+        sessionId: jobId,
+        sessionDate: values.sessionDate,
+        notes: values.notes,
+        imageFileNames: photos.map((photo) => photo.fileName),
+        extractionProvider: "openai-vision",
+        extractionModel: visionResult.model,
+      }),
+      jobId,
+      sessionId: jobId,
+      sourcePaths,
+      confidence: visionResult.confidence,
+    };
+  } else {
+    const ocrResult = await extractPhotoImportWithOcr(photos);
+    result = ocrResult.ok
+      ? {
+          ...mergeVisionPhotoImportResult(ocrResult.extraction, {
+            sessionId: jobId,
+            sessionDate: values.sessionDate,
+            notes: values.notes,
+            imageFileNames: photos.map((photo) => photo.fileName),
+            extractionProvider: "ocr",
+            extractionModel: ocrResult.model,
+            ocrEngine: ocrResult.engine,
+            ocrVersion: ocrResult.version,
+          }),
+          jobId,
+          sessionId: jobId,
+          sourcePaths,
+          confidence: ocrResult.confidence,
+        }
+      : failedResult(
+          jobId,
+          `${visionResult.message}${ocrResult.message ? ` ${ocrResult.message}` : ""}`,
+          visionResult.reason === "missing_openai_configuration" ? "partial" : "failed",
+        );
+    if ("diagnostic" in visionResult && visionResult.diagnostic) {
+      result.openaiDiagnostic = visionResult.diagnostic;
+    }
+  }
   await storeJob({ identity: values.identity, jobId, result, photos, sourcePaths });
   return result;
 }

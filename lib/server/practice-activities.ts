@@ -603,7 +603,7 @@ export async function generatePracticeActivity(
   const context = await loadPracticeContext(database, targetUserId, focusArea);
   const previousScore = await loadLatestResultScore(database, targetUserId, focusArea, activityType);
   const runtime = getPlatformEnvironment();
-  const model = runtime.OPENAI_MODEL || "gpt-5.6-terra";
+  const model = runtime.OPENAI_ANALYSIS_MODEL || runtime.OPENAI_MODEL || "gpt-4.1-mini";
   const profileSeed =
     context.profile && typeof context.profile === "object" && "completedAt" in context.profile
       ? text((context.profile as { completedAt?: unknown }).completedAt, 80)

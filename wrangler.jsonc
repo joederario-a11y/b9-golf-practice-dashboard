@@ -47,7 +47,9 @@
     "DEV_AUTH_ENABLED": "false",
     "COACH_EMAILS": "",
     "ADMIN_EMAILS": "",
-    "OPENAI_MODEL": "gpt-5.6-terra",
+    "OPENAI_ANALYSIS_MODEL": "gpt-4.1-mini",
+    "OPENAI_VISION_MODEL": "gpt-4.1-mini",
+    "OPENAI_MODEL": "gpt-4.1-mini",
     "OPENAI_TRANSCRIPTION_MODEL": "gpt-4o-transcribe",
     "RESEND_FROM": "notifications@n3xconsulting.com",
     "VIDEO_EMAIL_FROM": "notifications@n3xconsulting.com"
@@ -60,7 +62,10 @@
         "DEV_AUTH_ENABLED": "false",
         "COACH_EMAILS": "",
         "ADMIN_EMAILS": "",
-        "OPENAI_MODEL": "gpt-5.6-terra",
+        "DEV_OPENAI_DIAGNOSTICS_ENABLED": "true",
+        "OPENAI_ANALYSIS_MODEL": "gpt-4.1-mini",
+        "OPENAI_VISION_MODEL": "gpt-4.1-mini",
+        "OPENAI_MODEL": "gpt-4.1-mini",
         "OPENAI_TRANSCRIPTION_MODEL": "gpt-4o-transcribe",
         "RESEND_FROM": "notifications@n3xconsulting.com",
         "VIDEO_EMAIL_FROM": "notifications@n3xconsulting.com"

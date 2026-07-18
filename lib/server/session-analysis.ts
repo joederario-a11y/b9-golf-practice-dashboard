@@ -17,11 +17,12 @@ import {
   ensureUserDataOwnershipSchema,
   getPlatformEnvironment,
   getRequiredDatabase,
+  sanitizeOpenAIError,
   type AuthIdentity,
 } from "@/lib/server/platform";
 
 const PROMPT_VERSION = "mai-caddy-v1";
-const DEFAULT_MODEL = "gpt-5.6-terra";
+const DEFAULT_MODEL = "gpt-4.1-mini";
 const MIN_USABLE_SHOTS = 3;
 
 type AnalysisStatus = "processing" | "completed" | "failed" | "insufficient_data";
@@ -60,6 +61,7 @@ type AnalysisRow = {
   status: AnalysisStatus;
   analysis_json: string;
   calculated_metrics_json: string;
+  analysis_source: "openai" | "measured_fallback" | null;
   model: string | null;
   prompt_version: string;
   error_code: string | null;
@@ -1015,10 +1017,10 @@ async function startProcessingAnalysis(database: D1Database, identity: AuthIdent
     database
       .prepare(
         `INSERT INTO mai_caddy_session_analyses (
-          id, user_id, session_id, status, analysis_json, calculated_metrics_json, model,
+          id, user_id, session_id, status, analysis_json, calculated_metrics_json, analysis_source, model,
           prompt_version, is_current, started_at, created_at, updated_at
         )
-        VALUES (?, ?, ?, 'processing', '{}', '{}', ?, ?, 1, ?, ?, ?)`,
+        VALUES (?, ?, ?, 'processing', '{}', '{}', 'openai', ?, ?, 1, ?, ?, ?)`,
       )
       .bind(id, identity.id, sessionId, model, PROMPT_VERSION, now, now, now),
   ]);
@@ -1031,6 +1033,7 @@ async function updateAnalysisRecord(values: {
   analysisId: string;
   identity: AuthIdentity;
   status: AnalysisStatus;
+  analysisSource: "openai" | "measured_fallback";
   analysis: MaiCaddyAnalysisOutput | null;
   metrics: SessionMetrics | null;
   model: string;
@@ -1044,6 +1047,7 @@ async function updateAnalysisRecord(values: {
        SET status = ?,
            analysis_json = ?,
            calculated_metrics_json = ?,
+           analysis_source = ?,
            model = ?,
            prompt_version = ?,
            error_code = ?,
@@ -1056,6 +1060,7 @@ async function updateAnalysisRecord(values: {
       values.status,
       JSON.stringify(values.analysis ?? {}),
       JSON.stringify(values.metrics ?? {}),
+      values.analysisSource,
       values.model,
       PROMPT_VERSION,
       values.errorCode ?? null,
@@ -1070,14 +1075,19 @@ async function updateAnalysisRecord(values: {
 
 function analysisError(error: unknown) {
   if (error instanceof AnalysisError) return error;
+  const diagnostic = sanitizeOpenAIError(error, {
+    endpoint: "responses.create",
+    model: getPlatformEnvironment().OPENAI_ANALYSIS_MODEL || getPlatformEnvironment().OPENAI_MODEL || DEFAULT_MODEL,
+    operation: "session_analysis",
+  });
   const message = error instanceof Error ? error.message : "MAI Coach could not analyze this session.";
   if (/rate.?limit/i.test(message)) {
-    return new AnalysisError(429, "openai_rate_limited", "MAI Coach is busy right now. Please retry in a minute.");
+    return new AnalysisError(429, diagnostic.category || "openai_rate_limited", "MAI Coach is busy right now. Please retry in a minute.");
   }
   if (/timeout|timed out|abort/i.test(message)) {
-    return new AnalysisError(504, "openai_timeout", "MAI Coach took too long to respond. Please retry.");
+    return new AnalysisError(504, diagnostic.category || "openai_timeout", "MAI Coach took too long to respond. Please retry.");
   }
-  return new AnalysisError(502, "openai_request_failed", "MAI Coach could not complete this analysis. Please retry.");
+  return new AnalysisError(502, diagnostic.category || "openai_request_failed", "MAI Coach could not complete this analysis. Please retry.");
 }
 
 function serializeAnalysis(row: AnalysisRow, session: StoredSession | null = null) {
@@ -1097,6 +1107,7 @@ function serializeAnalysis(row: AnalysisRow, session: StoredSession | null = nul
     analysis: validatedAnalysis,
     calculatedMetrics,
     model: row.model,
+    analysisSource: row.analysis_source ?? (row.model?.startsWith("fallback:") ? "measured_fallback" : "openai"),
     promptVersion: row.prompt_version,
     startedAt: row.started_at,
     completedAt: row.completed_at,
@@ -1156,7 +1167,7 @@ export async function analyzeStoredSession(identity: AuthIdentity, sessionId: st
   await prepareDatabase(database);
 
   let analysisId: string | null = null;
-  const model = getPlatformEnvironment().OPENAI_MODEL || DEFAULT_MODEL;
+  const model = getPlatformEnvironment().OPENAI_ANALYSIS_MODEL || getPlatformEnvironment().OPENAI_MODEL || DEFAULT_MODEL;
 
   try {
     const { session, sessions } = await loadOwnedSession(identity, sessionId, database);
@@ -1178,6 +1189,7 @@ export async function analyzeStoredSession(identity: AuthIdentity, sessionId: st
 
     let analysis: MaiCaddyAnalysisOutput;
     let status: AnalysisStatus;
+    let analysisSource: "openai" | "measured_fallback" = "openai";
     let savedModel = model;
     let errorCode: string | null = null;
     let errorMessage: string | null = null;
@@ -1185,6 +1197,7 @@ export async function analyzeStoredSession(identity: AuthIdentity, sessionId: st
     if (metrics.validShotCount < MIN_USABLE_SHOTS) {
       analysis = insufficientDataAnalysis(context);
       status = "insufficient_data";
+      analysisSource = "measured_fallback";
     } else {
       try {
         analysis = await callOpenAI(context, model);
@@ -1192,10 +1205,18 @@ export async function analyzeStoredSession(identity: AuthIdentity, sessionId: st
       } catch (error) {
         const safe = analysisError(error);
         const canUseMeasuredFallback = [
+          "invalid_api_key",
+          "insufficient_quota",
+          "model_not_found",
+          "model_access_denied",
           "openai_request_failed",
           "openai_rate_limited",
+          "rate_limit",
           "openai_timeout",
+          "timeout",
           "empty_openai_response",
+          "empty_response",
+          "payload_too_large",
         ].includes(safe.code);
 
         if (!canUseMeasuredFallback) {
@@ -1204,6 +1225,7 @@ export async function analyzeStoredSession(identity: AuthIdentity, sessionId: st
 
         analysis = deterministicSessionAnalysis(context);
         status = "completed";
+        analysisSource = "measured_fallback";
         savedModel = `fallback:${model}`;
         errorCode = safe.code;
         errorMessage = safe.message;
@@ -1215,6 +1237,7 @@ export async function analyzeStoredSession(identity: AuthIdentity, sessionId: st
       analysisId,
       identity,
       status,
+      analysisSource,
       analysis,
       metrics,
       model: savedModel,
@@ -1241,6 +1264,7 @@ export async function analyzeStoredSession(identity: AuthIdentity, sessionId: st
           analysisId,
           identity,
           status: "failed",
+          analysisSource: "openai",
           analysis: null,
           metrics: null,
           model,

@@ -13,6 +13,7 @@ type CoachPayload = {
 
 type RuntimeEnv = {
   OPENAI_API_KEY?: string;
+  OPENAI_ANALYSIS_MODEL?: string;
   OPENAI_MODEL?: string;
 };
 
@@ -161,7 +162,7 @@ export async function POST(request: Request) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: runtimeEnv.OPENAI_MODEL || "gpt-5.5",
+        model: runtimeEnv.OPENAI_ANALYSIS_MODEL || runtimeEnv.OPENAI_MODEL || "gpt-4.1-mini",
         instructions: MAI_COACH_INSTRUCTIONS,
         input,
         store: false,

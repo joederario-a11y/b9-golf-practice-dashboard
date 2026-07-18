@@ -3,6 +3,8 @@ import { WorkflowEntrypoint } from "cloudflare:workers";
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 
+import { handlePhotoImportRequest } from "@/lib/server/photo-import-request";
+import { requireIdentityFromRequest, responseFromError } from "@/lib/server/platform";
 import {
   runVideoLessonRecapWorkflow,
   type VideoLessonRecapWorkflowParams,
@@ -20,8 +22,10 @@ interface Env {
     };
   };
   OPENAI_API_KEY?: string;
+  OPENAI_ANALYSIS_MODEL?: string;
   OPENAI_MODEL?: string;
   OPENAI_TRANSCRIPTION_MODEL?: string;
+  OPENAI_VISION_MODEL?: string;
   VIDEO_LESSON_RECAP_WORKFLOW?: {
     create(options?: { id?: string; params?: unknown }): Promise<{ id: string }>;
     get(id: string): Promise<{ id: string; terminate(): Promise<void> }>;
@@ -64,6 +68,15 @@ export class VideoLessonRecapWorkflow extends WorkflowEntrypoint<Env, VideoLesso
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    if (url.pathname === "/api/import/photos" && request.method === "POST") {
+      try {
+        const identity = await requireIdentityFromRequest(request);
+        return handlePhotoImportRequest(request, identity);
+      } catch (error) {
+        return responseFromError(error);
+      }
+    }
 
     if (url.pathname === "/_vinext/image") {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
