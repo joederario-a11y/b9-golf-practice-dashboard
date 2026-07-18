@@ -538,6 +538,30 @@ async function loadProfileContext(identity: AuthIdentity, database: D1Database) 
   };
 }
 
+function defaultProfileContext(identity: AuthIdentity): Awaited<ReturnType<typeof loadProfileContext>> {
+  return {
+    profile: {
+      profile: null,
+      malformed: false,
+      updatedAt: null,
+    },
+    player: {
+      role: identity.role,
+      skillLevel: "Not supplied",
+      handicap: "Not supplied",
+      dominantHand: "Not supplied",
+      simulatorGoals: [],
+      improvementGoals: [],
+      frustrations: [],
+      practiceStyle: [],
+      availablePracticeTime: "Not supplied",
+      frequency: "Not supplied",
+      coachNotes: "",
+      profileUpdatedAt: null,
+    },
+  };
+}
+
 function contextSummary(session: StoredSession, metrics: SessionMetrics) {
   return {
     shotCount: session.shots.length,
@@ -1237,9 +1261,15 @@ export async function analyzeStoredSession(identity: AuthIdentity, sessionId: st
 
   let analysisId: string | null = null;
   const model = getPlatformEnvironment().OPENAI_ANALYSIS_MODEL || getPlatformEnvironment().OPENAI_MODEL || DEFAULT_MODEL;
+  let fallbackContext: ReturnType<typeof buildAnalysisContext> | null = null;
+  let fallbackMetrics: SessionMetrics | null = null;
+  let fallbackSession: StoredSession | null = null;
+  let fallbackSessions: StoredSession[] | null = null;
 
   try {
     const { session, sessions } = await loadOwnedSession(identity, sessionId, database);
+    fallbackSession = session;
+    fallbackSessions = sessions;
     if (!session.shots.length) {
       throw new AnalysisError(400, "empty_session", "This session does not contain shot data to analyze.");
     }
@@ -1255,6 +1285,8 @@ export async function analyzeStoredSession(identity: AuthIdentity, sessionId: st
       metrics,
       playerContext,
     });
+    fallbackContext = context;
+    fallbackMetrics = metrics;
 
     let analysis: MaiCaddyAnalysisOutput;
     let status: AnalysisStatus;
@@ -1327,6 +1359,65 @@ export async function analyzeStoredSession(identity: AuthIdentity, sessionId: st
   } catch (error) {
     const safe = analysisError(error);
     if (analysisId) {
+      if (safe.status >= 500) {
+        try {
+          const loaded =
+            fallbackSession && fallbackSessions
+              ? { session: fallbackSession, sessions: fallbackSessions }
+              : await loadOwnedSession(identity, sessionId, database);
+          const sessionForFallback = loaded.session;
+          const sessionsForFallback = loaded.sessions;
+          const metricsForFallback =
+            fallbackMetrics ??
+            calculateSessionMetrics(
+              sessionForFallback.shots,
+              previousComparableShots(sessionForFallback, sessionsForFallback),
+            );
+          const playerContext = await loadProfileContext(identity, database).catch(() => defaultProfileContext(identity));
+          const context =
+            fallbackContext ??
+            buildAnalysisContext({
+              identity,
+              session: sessionForFallback,
+              sessions: sessionsForFallback,
+              metrics: metricsForFallback,
+              playerContext,
+            });
+          const analysis = deterministicSessionAnalysis(context);
+          await updateAnalysisRecord({
+            database,
+            analysisId,
+            identity,
+            status: "completed",
+            analysisSource: "measured_fallback",
+            analysis,
+            metrics: metricsForFallback,
+            model: `fallback:${model}`,
+            errorCode: safe.code,
+            errorMessage: safe.message,
+          });
+          return Response.json({
+            analysisId,
+            sessionId: sessionForFallback.id,
+            status: "completed",
+            analysis,
+            calculatedMetrics: metricsForFallback,
+            model: `fallback:${model}`,
+            analysisSource: "measured_fallback",
+            promptVersion: PROMPT_VERSION,
+            startedAt: null,
+            completedAt: new Date().toISOString(),
+            generatedAt: new Date().toISOString(),
+            error: {
+              code: safe.code,
+              message: safe.message,
+            },
+            contextSummary: contextSummary(sessionForFallback, metricsForFallback),
+          });
+        } catch {
+          // Fall through to the controlled failure path if even the measured fallback cannot be saved.
+        }
+      }
       try {
         await updateAnalysisRecord({
           database,
