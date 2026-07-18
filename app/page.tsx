@@ -4844,7 +4844,7 @@ export default function Home() {
     setSessionViewSelection(resolved);
     if (resolved.club !== ALL_SESSION_CLUBS) setSelectedClub(resolved.club);
     if (activeTab === "sessions" && session.id !== EMPTY_SESSION.id) {
-      writeSessionUrl(session.id, resolved);
+      writeSessionUrl(session.id, resolved, "push");
     }
   }
 
@@ -4894,6 +4894,32 @@ export default function Home() {
     if (tabFromPathname(window.location.pathname) === "sessions") {
       writeSessionUrl(session.id, resolved);
     }
+  }, [sessions]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    function syncFromBrowserHistory() {
+      const url = new URL(window.location.href);
+      const requestedTab = tabFromValue(url.searchParams.get("tab")) ?? tabFromPathname(url.pathname) ?? "dashboard";
+      setActiveTab(requestedTab);
+      setRequestedVideoId(requestedTab === "videos" ? url.searchParams.get("video") : null);
+
+      if (requestedTab !== "sessions" || !sessions.length) return;
+
+      const sessionParam = url.searchParams.get("session");
+      const session = sessions.find((item) => item.id === sessionParam) ?? sessions[0];
+      const resolved = resolveSessionViewSelection(session, {
+        club: url.searchParams.get("club") ?? undefined,
+        shotId: url.searchParams.get("shot") ?? undefined,
+      }, { clubOrder: CLUB_ORDER }) as SessionViewSelection;
+      setSelectedSessionId(session.id);
+      setSessionViewSelection(resolved);
+      if (resolved.club !== ALL_SESSION_CLUBS) setSelectedClub(resolved.club);
+    }
+
+    window.addEventListener("popstate", syncFromBrowserHistory);
+    return () => window.removeEventListener("popstate", syncFromBrowserHistory);
   }, [sessions]);
 
   useEffect(() => {
