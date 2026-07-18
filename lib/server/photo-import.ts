@@ -184,7 +184,7 @@ async function storeJob(values: {
     .run();
 }
 
-function failedResult(jobId: string, message: string, status: PhotoImportStatus = "failed") {
+function failedResult(jobId: string, message: string, status: PhotoImportStatus = "failed", imageCount = 0) {
   return {
     status,
     jobId,
@@ -199,7 +199,7 @@ function failedResult(jobId: string, message: string, status: PhotoImportStatus 
       simulator: "Unknown",
       club: "Unknown",
       canonicalClub: null,
-      imageCount: 0,
+      imageCount,
       distancePageCount: 0,
       deliveryPageCount: 0,
       uniqueShotCount: 0,
@@ -302,6 +302,7 @@ export async function processPhotoImportBatch(values: {
           jobId,
           `${visionResult.message}${ocrResult.message ? ` ${ocrResult.message}` : ""}`,
           visionResult.reason === "missing_openai_configuration" ? "partial" : "failed",
+          photos.length,
         );
     if ("diagnostic" in visionResult && visionResult.diagnostic) {
       result.openaiDiagnostic = visionResult.diagnostic;

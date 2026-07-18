@@ -76,6 +76,34 @@ const fullSwingDeliveryRows = [
   [12, 21.8, 48.2, "4.0 R", "3.0 R", "7.7 R", "4.7 L", "7.0 R", "2.6 R"],
 ];
 
+test("normalized photo CSV uses the user-facing column order", () => {
+  assert.deepEqual(PHOTO_IMPORT_CSV_COLUMNS, [
+    "session_id",
+    "session_date",
+    "simulator",
+    "club",
+    "shot_number",
+    "proximity_ft",
+    "carry_yd",
+    "total_yd",
+    "ball_speed_mph",
+    "club_speed_mph",
+    "smash_factor",
+    "launch_angle_deg",
+    "descent_angle_deg",
+    "horizontal_angle_deg",
+    "face_angle_deg",
+    "club_path_deg",
+    "face_to_path_deg",
+    "side_carry_yd",
+    "side_total_yd",
+    "apex_ft",
+    "spin_rate_rpm",
+    "spin_axis_deg",
+    "notes",
+  ]);
+});
+
 function fullSwingDistanceRow(row) {
   const [shotNumber, proximity, carry, total, ballSpeed, clubSpeed, smash, apex, spin, spinAxis] = row;
   return { shotNumber, metrics: { proximity, carry, total, ballSpeed, clubSpeed, smash, apex, spin, spinAxis } };

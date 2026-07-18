@@ -282,12 +282,14 @@ export function summarizeValues(values: number[], digits = 1): MetricSummary {
 
   const min = Math.min(...values);
   const max = Math.max(...values);
+  const mean = average(values);
+  const middle = median(values);
   const sd = standardDeviation(values);
 
   return {
     count: values.length,
-    average: roundMetric(average(values) ?? 0, digits),
-    median: roundMetric(median(values) ?? 0, digits),
+    average: mean === null ? null : roundMetric(mean, digits),
+    median: middle === null ? null : roundMetric(middle, digits),
     minimum: roundMetric(min, digits),
     maximum: roundMetric(max, digits),
     range: roundMetric(max - min, digits),
@@ -408,4 +410,3 @@ export function calculateSessionMetrics(shots: ShotRecord[], previousComparableS
     previousSessionComparison: compareWithPreviousSession(validShots, previousComparableShots),
   };
 }
-

@@ -398,6 +398,7 @@ type PhotoScanResult =
   | {
       id: string;
       fileName: string;
+      previewUrl?: string;
       status: "ready";
       simulator: string;
       shot: Shot;
@@ -411,6 +412,7 @@ type PhotoScanResult =
   | {
       id: string;
       fileName: string;
+      previewUrl?: string;
       status: "error";
       message: string;
     };
@@ -11140,6 +11142,17 @@ async function preparePhotoForPrivateImport(file: File, targetBytes: number) {
   return { file: uploadFile, originalSize: file.size, uploadSize: uploadFile.size, wasResized: true };
 }
 
+function fileStemForPreview(fileName: string) {
+  return fileName.toLowerCase().replace(/\.[^.]+$/, "");
+}
+
+function previewUrlForFileName(previewUrls: Map<string, string>, fileName: string) {
+  const directMatch = previewUrls.get(fileName);
+  if (directMatch) return directMatch;
+  const targetStem = fileStemForPreview(fileName);
+  return Array.from(previewUrls.entries()).find(([originalName]) => fileStemForPreview(originalName) === targetStem)?.[1];
+}
+
 function ImportView({
   cancelImportReview,
   confirmImportReview,
@@ -11193,6 +11206,12 @@ function ImportView({
     clubPath: "",
     faceToPath: "",
   });
+
+  useEffect(() => () => {
+    photoScans.forEach((result) => {
+      if (result.previewUrl) URL.revokeObjectURL(result.previewUrl);
+    });
+  }, [photoScans]);
 
   function updateManualField(key: string, value: string) {
     setManualForm((current) => ({ ...current, [key]: value }));
@@ -11322,6 +11341,7 @@ function ImportView({
     const selectedFiles = files.slice(0, 8);
     if (!selectedFiles.length) return;
 
+    const previewUrls = new Map(selectedFiles.map((file) => [file.name, URL.createObjectURL(file)]));
     const supportedFiles = selectedFiles.filter((file) =>
       file.type.startsWith("image/") && file.size <= 18 * 1024 * 1024,
     );
@@ -11330,18 +11350,27 @@ function ImportView({
       .map((file, index) => ({
         id: `rejected-${Date.now()}-${index}`,
         fileName: file.name,
+        previewUrl: previewUrlForFileName(previewUrls, file.name),
         status: "error",
         message: "Use PNG, JPG, JPEG, WebP, PDF, or CSV files under the listed size limit.",
       }));
+    const fallbackResults = (message: string): PhotoScanResult[] => supportedFiles.map((file, index) => ({
+      id: `photo-fallback-${Date.now()}-${index}`,
+      fileName: file.name,
+      previewUrl: previewUrlForFileName(previewUrls, file.name),
+      status: "error",
+      message,
+    }));
 
-    setPhotoScans(rejectedFiles);
     if (!supportedFiles.length) {
+      setPhotoScans(rejectedFiles);
 	    setPhotoScanState("error");
 	    setPhotoStatus("No supported images were selected.");
 	    return;
 	  }
 
     setPhotoBatchImport(null);
+    setPhotoScans([]);
     setPhotoScanState("scanning");
     setPhotoProgress(0);
     setPhotoStatus(`Preparing ${supportedFiles.length} ${supportedFiles.length === 1 ? "image" : "images"} for the private session reader...`);
@@ -11370,8 +11399,11 @@ function ImportView({
       const uploadBytes = preparedFiles.reduce((sum, photo) => sum + photo.uploadSize, 0);
       if (uploadBytes > PHOTO_UPLOAD_REQUEST_BUDGET_BYTES) {
         setPhotoScanState("error");
-        setPhotoStatus("These photos are still too large after optimization. Try uploading fewer pages at once or crop closer to the table.");
-        setPhotoScans(rejectedFiles);
+        const message = "These photos are still too large after optimization. Try fewer pages, crop closer to the table, or use the CSV/manual fallback.";
+        setPhotoStatus(message);
+        setPhotoScans([...rejectedFiles, ...fallbackResults(message)]);
+        setCsvFileName("Photo fallback CSV");
+        setCsvFileStatus("Photo upload did not reach extraction. Paste corrected CSV rows or switch to manual entry.");
         return;
       }
       const formData = new FormData();
@@ -11398,9 +11430,19 @@ function ImportView({
       } catch {
         throw new Error(responseText || "The private photo reader could not read the upload response.");
       }
-      if (!response.ok && payload.status !== "partial") {
-        throw new Error(payload.error || payload.warnings?.[0] || "No readable shot data was found.");
-      }
+      const readableShotCount = Array.isArray(payload.shots) ? payload.shots.length : 0;
+      const normalizedCsv = payload.csvText || generateNormalizedPhotoImportCsv({
+        sessionId: payload.jobId || `photo-import-${Date.now()}`,
+        sessionDate: combinedMetadata.capturedAt ?? getTodayDateString(),
+        simulator: payload.simulator || "Simulator photos",
+        club: payload.clubDisplay ?? payload.club ?? "Unknown Club",
+        shots: [],
+        notes: importNotes,
+      });
+      const fallbackMessage =
+        payload.error ||
+        payload.warnings?.[0] ||
+        (response.ok ? "No readable shot data was found." : "The private photo reader could not complete this batch.");
 
       const importedMetadata: PhotoImportMetadata = {
         ...combinedMetadata,
@@ -11408,24 +11450,25 @@ function ImportView({
         blockingIssues: payload.blockingIssues,
         csvSchemaVersion: payload.csvSchemaVersion ?? PHOTO_IMPORT_CSV_SCHEMA_VERSION,
         duplicateShotNumbers: payload.duplicateShotNumbers,
-        normalizedCsv: payload.csvText,
+        normalizedCsv,
         pageCounts: payload.pageCounts,
         photoImportJobId: payload.jobId,
         photoImportSummary: payload.summary,
         sourcePaths: payload.sourcePaths,
       };
-      const pageResults: PhotoScanResult[] = payload.pages.length
+      const pageResults: PhotoScanResult[] = readableShotCount && payload.pages.length
         ? payload.pages.map((page, index) => {
           const pageShotNumbers = new Set(page.visibleShotNumbers.map(String));
           const pageShots = payload.shots.filter((shot) => shot.sourceShotNumber && pageShotNumbers.has(shot.sourceShotNumber));
           return {
             id: `scan-${payload.jobId}-${index}`,
             fileName: page.fileName,
+            previewUrl: previewUrlForFileName(previewUrls, page.fileName),
             status: "ready",
             simulator: payload.simulator,
             shot: pageShots[0] ?? payload.shots[0],
             shots: pageShots.length ? pageShots : payload.shots,
-            csvText: payload.csvText,
+            csvText: normalizedCsv,
             confidence: Math.round((page.confidence ?? 0.8) * 100),
             metadata: importedMetadata,
             pageType: page.pageType,
@@ -11434,26 +11477,38 @@ function ImportView({
         })
         : [];
 
-      const results: PhotoScanResult[] = [...rejectedFiles, ...pageResults];
+      const results: PhotoScanResult[] = [
+        ...rejectedFiles,
+        ...pageResults,
+        ...(readableShotCount ? [] : fallbackResults(fallbackMessage)),
+      ];
       setPhotoBatchImport({
         ...payload,
+        csvText: normalizedCsv,
         csvSchemaVersion: payload.csvSchemaVersion ?? PHOTO_IMPORT_CSV_SCHEMA_VERSION,
       });
-      setCsvText(payload.csvText);
+      setCsvText(normalizedCsv);
       setCsvFileName("Normalized photo CSV");
-      setCsvFileStatus(`${normalizedCsvDataRowCount(payload.csvText)} photo rows are ready in normalized CSV format.`);
+      setCsvFileStatus(
+        readableShotCount
+          ? `${normalizedCsvDataRowCount(normalizedCsv)} photo rows are ready in normalized CSV format.`
+          : "Photo reader produced no rows. Paste corrected CSV rows here or use manual entry; missing values stay blank.",
+      );
       setPhotoScans(results);
       setPhotoProgress(100);
-      setPhotoScanState(payload.shots.length ? "ready" : "error");
+      setPhotoScanState(readableShotCount ? "ready" : "error");
       setPhotoStatus(
-        payload.shots.length
+        readableShotCount
           ? `${payload.summary?.simulator ?? payload.simulator} ${payload.summary?.club ?? payload.clubDisplay ?? "session"}: ${payload.shots.length} unique shots ready for review. CSV ready.`
-          : payload.warnings?.[0] ?? "No readable shot data was found. Try a sharper, tighter crop.",
+          : "We could not confidently read this screen. You can paste or upload a CSV instead, or enter the session manually.",
       );
     } catch (error) {
+      const message = error instanceof Error ? error.message : "The private photo reader could not complete this batch.";
       setPhotoScanState("error");
-      setPhotoStatus(error instanceof Error ? error.message : "The private photo reader could not complete this batch.");
-      setPhotoScans(rejectedFiles);
+      setPhotoStatus(`${message} You can continue with CSV or manual entry.`);
+      setPhotoScans([...rejectedFiles, ...fallbackResults(message)]);
+      setCsvFileName("Photo fallback CSV");
+      setCsvFileStatus("Photo reader could not produce rows. Paste corrected CSV rows or use manual entry.");
       return;
     }
   }
@@ -11763,6 +11818,14 @@ function ImportView({
                       <span className={cls("scan-status", result.status)}>{result.status === "ready" ? "Converted" : "Unreadable"}</span>
                     </div>
 
+                    {result.previewUrl && (
+                      <img
+                        alt={`Preview of ${result.fileName}`}
+                        className="photo-scan-preview"
+                        src={result.previewUrl}
+                      />
+                    )}
+
                     {result.status === "ready" ? (
                       <>
                         <div className="photo-metric-list">
@@ -11787,6 +11850,41 @@ function ImportView({
                     )}
                   </article>
                 ))}
+              </div>
+            )}
+
+            {photoScanState === "error" && readyPhotoScans.length === 0 && (
+              <div className="photo-fallback-panel" role="status">
+                <div>
+                  <strong>Keep going with CSV or manual entry</strong>
+                  <span>
+                    The uploaded images were saved or checked, but MAI Coach could not recover enough shot rows.
+                    Paste simulator CSV rows, upload a corrected CSV, or enter the session manually.
+                  </span>
+                </div>
+                <div className="button-row">
+                  <button
+                    className="secondary-action"
+                    onClick={() => {
+                      setImportMode("file");
+                      setCsvFileName("Photo fallback CSV");
+                      setCsvFileStatus("Paste or upload corrected simulator rows, then analyze them before saving.");
+                    }}
+                    type="button"
+                  >
+                    Use CSV fallback
+                  </button>
+                  <button
+                    className="secondary-action"
+                    onClick={() => {
+                      setImportMode("manual");
+                      setManualStatus("Enter the visible metrics from your photos. Blank values will stay NA.");
+                    }}
+                    type="button"
+                  >
+                    Enter manually
+                  </button>
+                </div>
               </div>
             )}
 

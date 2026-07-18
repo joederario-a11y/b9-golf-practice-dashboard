@@ -24,6 +24,7 @@ import {
   getPlatformEnvironment,
   getRequiredDatabase,
   recordActivity,
+  sanitizeOpenAIError,
   type AuthIdentity,
 } from "@/lib/server/platform";
 
@@ -628,8 +629,29 @@ export async function generatePracticeActivity(
       csvExtraction: true,
     },
   };
-  const generated = await callOpenAIForPracticeActivity(promptContext, activityType, model)
-    ?? buildDefaultPracticeActivity({ activityType, focusArea, context: promptContext });
+  let openAIFailureCategory = "";
+  const generated = await callOpenAIForPracticeActivity(promptContext, activityType, model).catch((error) => {
+    const diagnostic = sanitizeOpenAIError(error, {
+      endpoint: "responses.create",
+      model,
+      operation: "practice_activity_generation",
+    });
+    openAIFailureCategory = diagnostic.category;
+    console.warn("MAI Coach practice generation used fallback.", {
+      category: diagnostic.category,
+      httpStatus: diagnostic.httpStatus,
+      errorType: diagnostic.errorType,
+      errorCode: diagnostic.errorCode,
+      requestId: diagnostic.requestId,
+      model: diagnostic.model,
+    });
+    return null;
+  }) ?? buildDefaultPracticeActivity({ activityType, focusArea, context: promptContext });
+  const generatedModel = runtime.OPENAI_API_KEY && !openAIFailureCategory
+    ? model
+    : runtime.OPENAI_API_KEY
+      ? `fallback:${model}`
+      : "fallback:no-openai";
   const id = crypto.randomUUID();
   await database
     .prepare(
@@ -658,7 +680,7 @@ export async function generatePracticeActivity(
       context.coachFeedback?.coachId ?? null,
       context.coachFeedback?.feedbackId ?? context.coachFeedback?.videoId ?? null,
       context.sessionSummary.id || null,
-      runtime.OPENAI_API_KEY ? model : "fallback:no-openai",
+      generatedModel,
       PRACTICE_PROMPT_VERSION,
     )
     .run();
@@ -672,9 +694,10 @@ export async function generatePracticeActivity(
     metadata: {
       activityType,
       focusArea,
-      model: runtime.OPENAI_API_KEY ? model : "fallback:no-openai",
+      model: generatedModel,
       promptVersion: PRACTICE_PROMPT_VERSION,
       coachId: context.coachFeedback?.coachId ?? null,
+      aiFallbackReason: openAIFailureCategory || null,
     },
     summary: `Generated ${generated.title}.`,
     targetUserId,
