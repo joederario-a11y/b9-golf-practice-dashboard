@@ -2,6 +2,7 @@
 
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MaiCoachLogoFull, MaiCoachLogoMark } from "@/components/brand/mai-coach-logo";
+import { APP_BUILD_INFO } from "@/lib/build-info";
 import { accountPayloadConfirmsUser } from "@/lib/auth-session-policy.mjs";
 import { splitDisplayNameForRegistration } from "@/lib/admin-user-policy.mjs";
 import {
@@ -25,6 +26,13 @@ import {
   parseLaunchMonitorCsv,
 } from "@/lib/launch-monitor-import-policy.mjs";
 import { sanitizeSessionList } from "@/lib/session-data-policy.mjs";
+import {
+  ALL_SESSION_CLUBS,
+  getSessionClubOptions,
+  getSessionViewShots,
+  makeSessionAnalysisKey,
+  resolveSessionViewSelection,
+} from "@/lib/session-view-selection-policy.mjs";
 
 type Tab = "dashboard" | "sessions" | "clubs" | "videos" | "coach" | "admin" | "practice" | "import";
 type AccountMode = "pending" | "user" | "guest";
@@ -37,6 +45,12 @@ type PerformanceTimeframe = {
   preset: PerformanceTimeframePreset;
   startDate: string;
   endDate: string;
+};
+
+type SessionViewSelection = {
+  club: string | "all";
+  shotId?: string | null;
+  metric?: string | null;
 };
 
 type RegistrationDraft = {
@@ -4696,6 +4710,11 @@ export default function Home() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [selectedClub, setSelectedClub] = useState("6-Iron");
+  const [sessionViewSelection, setSessionViewSelection] = useState<SessionViewSelection>({
+    club: ALL_SESSION_CLUBS,
+    shotId: null,
+    metric: null,
+  });
   const [csvText, setCsvText] = useState("");
   const [importMessage, setImportMessage] = useState("Upload a CSV, photo, or manual entry to start.");
   const [importConfirmation, setImportConfirmation] = useState<string | null>(null);
@@ -4711,6 +4730,7 @@ export default function Home() {
   const [userName, setUserName] = useState<string | null>(null);
   const [accountUser, setAccountUser] = useState<AccountUser | null>(null);
   const [devAuthEnabled, setDevAuthEnabled] = useState(false);
+  const [showDevBuildInfo, setShowDevBuildInfo] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [showPasswordResetModal, setShowPasswordResetModal] = useState(false);
   const [forcePasswordReset, setForcePasswordReset] = useState(false);
@@ -4720,6 +4740,7 @@ export default function Home() {
   const [syncStatus, setSyncStatus] = useState("Choose how you want to use MAI Coach.");
   const [performanceTimeframe, setPerformanceTimeframe] = useState<PerformanceTimeframe>(DEFAULT_PERFORMANCE_TIMEFRAME);
   const accountConnectRequestRef = useRef(0);
+  const sessionUrlHydratedRef = useRef(false);
 
   const clubs = useMemo(() => summarizeClubs(sessions), [sessions]);
   const insights = useMemo(() => computeInsights(clubs, sessions), [clubs, sessions]);
@@ -4784,6 +4805,60 @@ export default function Home() {
   const activeNavItem = visibleNavItems.find((item) => item.id === activeTab) ?? NAV_ITEMS.find((item) => item.id === activeTab);
 
   useEffect(() => {
+    setShowDevBuildInfo(window.location.hostname.includes("mai-coach-dev"));
+  }, []);
+
+  function writeSessionUrl(
+    sessionId: string,
+    selection: SessionViewSelection,
+    mode: "push" | "replace" = "replace",
+  ) {
+    if (typeof window === "undefined" || !sessionId) return;
+    const url = new URL(window.location.href);
+    url.pathname = pathForTab("sessions");
+    url.searchParams.delete("tab");
+    url.searchParams.delete("video");
+    url.searchParams.set("session", sessionId);
+    if (selection.club && selection.club !== ALL_SESSION_CLUBS) {
+      url.searchParams.set("club", selection.club);
+    } else {
+      url.searchParams.delete("club");
+    }
+    if (selection.shotId) {
+      url.searchParams.set("shot", selection.shotId);
+    } else {
+      url.searchParams.delete("shot");
+    }
+    window.history[mode === "push" ? "pushState" : "replaceState"](null, "", `${url.pathname}${url.search}${url.hash}`);
+  }
+
+  function resolveSelectionForSession(session: Session, requested: Partial<SessionViewSelection>) {
+    return resolveSessionViewSelection(session, requested, {
+      clubOrder: CLUB_ORDER,
+      currentClub: selectedClub,
+    }) as SessionViewSelection;
+  }
+
+  function applySessionViewSelection(requested: Partial<SessionViewSelection>, session = selectedSession) {
+    const resolved = resolveSelectionForSession(session, requested);
+    setSessionViewSelection(resolved);
+    if (resolved.club !== ALL_SESSION_CLUBS) setSelectedClub(resolved.club);
+    if (activeTab === "sessions" && session.id !== EMPTY_SESSION.id) {
+      writeSessionUrl(session.id, resolved);
+    }
+  }
+
+  function openSessionView(sessionId: string, requested: Partial<SessionViewSelection> = {}) {
+    const session = sessions.find((item) => item.id === sessionId) ?? selectedSession;
+    const resolved = resolveSelectionForSession(session, requested);
+    setSelectedSessionId(session.id);
+    setSessionViewSelection(resolved);
+    if (resolved.club !== ALL_SESSION_CLUBS) setSelectedClub(resolved.club);
+    setActiveTab("sessions");
+    writeSessionUrl(session.id, resolved, "push");
+  }
+
+  useEffect(() => {
     const query = new URLSearchParams(window.location.search);
     const requestedTab = tabFromValue(query.get("tab")) ?? tabFromPathname(window.location.pathname);
     if (requestedTab) {
@@ -4793,6 +4868,52 @@ export default function Home() {
       });
     }
   }, []);
+
+  useEffect(() => {
+    if (sessionUrlHydratedRef.current || !sessions.length || typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    const sessionParam = url.searchParams.get("session");
+    const clubParam = url.searchParams.get("club");
+    const shotParam = url.searchParams.get("shot");
+
+    if (!sessionParam && !clubParam && !shotParam) {
+      sessionUrlHydratedRef.current = true;
+      return;
+    }
+
+    const session = sessions.find((item) => item.id === sessionParam) ?? sessions[0];
+    const resolved = resolveSessionViewSelection(session, {
+      club: clubParam ?? undefined,
+      shotId: shotParam ?? undefined,
+    }, { clubOrder: CLUB_ORDER }) as SessionViewSelection;
+
+    sessionUrlHydratedRef.current = true;
+    setSelectedSessionId(session.id);
+    setSessionViewSelection(resolved);
+    if (resolved.club !== ALL_SESSION_CLUBS) setSelectedClub(resolved.club);
+    if (tabFromPathname(window.location.pathname) === "sessions") {
+      writeSessionUrl(session.id, resolved);
+    }
+  }, [sessions]);
+
+  useEffect(() => {
+    if (selectedSession.id === EMPTY_SESSION.id) {
+      if (sessionViewSelection.club !== ALL_SESSION_CLUBS || sessionViewSelection.shotId || sessionViewSelection.metric) {
+        setSessionViewSelection({ club: ALL_SESSION_CLUBS, shotId: null, metric: null });
+      }
+      return;
+    }
+
+    const resolved = resolveSelectionForSession(selectedSession, sessionViewSelection);
+    if (
+      resolved.club !== sessionViewSelection.club ||
+      (resolved.shotId ?? null) !== (sessionViewSelection.shotId ?? null) ||
+      (resolved.metric ?? null) !== (sessionViewSelection.metric ?? null)
+    ) {
+      setSessionViewSelection(resolved);
+      if (activeTab === "sessions") writeSessionUrl(selectedSession.id, resolved);
+    }
+  }, [selectedSession, sessionViewSelection.club, sessionViewSelection.shotId, sessionViewSelection.metric, activeTab]);
 
   useEffect(() => {
     void connectAccount();
@@ -4832,9 +4953,11 @@ export default function Home() {
 
   useEffect(() => {
     const applyStoredSessions = (storedSessions: Session[]) => {
+      const firstSession = storedSessions[0] ?? EMPTY_SESSION;
       setSessions(storedSessions);
-      setSelectedSessionId(storedSessions[0]?.id ?? "");
+      setSelectedSessionId(firstSession.id === EMPTY_SESSION.id ? "" : firstSession.id);
       setSelectedClub(storedSessions[0]?.shots[0]?.club ?? "6-Iron");
+      setSessionViewSelection(resolveSessionViewSelection(firstSession, {}, { clubOrder: CLUB_ORDER }) as SessionViewSelection);
     };
     if (accountMode !== "guest") return;
     const storedSessions = readStoredSessions();
@@ -4900,6 +5023,14 @@ export default function Home() {
     setSessions(sanitizedSessions);
     setSelectedSessionId(nextSelectedSession?.id ?? "");
     setSelectedClub(nextClub);
+    setSessionViewSelection(
+      nextSelectedSession
+        ? (resolveSessionViewSelection(nextSelectedSession, sessionViewSelection, {
+            clubOrder: CLUB_ORDER,
+            currentClub: nextClub,
+          }) as SessionViewSelection)
+        : { club: ALL_SESSION_CLUBS, shotId: null, metric: null },
+    );
     setLastImport(nextLastImport);
     setImportMessage(successMessage);
     setImportConfirmation(successMessage);
@@ -5131,6 +5262,7 @@ export default function Home() {
         setSessions([]);
         setSelectedSessionId("");
         setSelectedClub("6-Iron");
+        setSessionViewSelection({ club: ALL_SESSION_CLUBS, shotId: null, metric: null });
         setPracticeProfile(null);
         setForcePasswordReset(false);
         setSyncStatus("Sign in or create an account to open your private workspace.");
@@ -5158,6 +5290,7 @@ export default function Home() {
       setSessions([]);
       setSelectedSessionId("");
       setSelectedClub("6-Iron");
+      setSessionViewSelection({ club: ALL_SESSION_CLUBS, shotId: null, metric: null });
       setLastImport(EMPTY_LAST_IMPORT);
       setImportConfirmation(null);
       setPendingImportReview(null);
@@ -5197,6 +5330,11 @@ export default function Home() {
         setSessions(savedSessions);
         setSelectedSessionId(savedSessions[0]?.id ?? "");
         setSelectedClub(savedSessions[0]?.shots?.[0]?.club ?? "6-Iron");
+        setSessionViewSelection(
+          savedSessions[0]
+            ? (resolveSessionViewSelection(savedSessions[0], {}, { clubOrder: CLUB_ORDER }) as SessionViewSelection)
+            : { club: ALL_SESSION_CLUBS, shotId: null, metric: null },
+        );
         setLastImport(makeLastImportFromSession(getLastImportSession(savedSessions)));
         setActiveTab(sessionsTab);
         setSyncStatus(
@@ -5244,6 +5382,7 @@ export default function Home() {
     setSessions([]);
     setSelectedSessionId("");
     setSelectedClub("6-Iron");
+    setSessionViewSelection({ club: ALL_SESSION_CLUBS, shotId: null, metric: null });
     setLastImport(EMPTY_LAST_IMPORT);
     setPendingImportReview(null);
     setSyncStatus("Using guest mode. Create an account anytime to save your work.");
@@ -5265,6 +5404,7 @@ export default function Home() {
     setSessions([]);
     setSelectedSessionId("");
     setSelectedClub("6-Iron");
+    setSessionViewSelection({ club: ALL_SESSION_CLUBS, shotId: null, metric: null });
     setPracticeProfile(null);
     setLastImport(EMPTY_LAST_IMPORT);
     setImportConfirmation(null);
@@ -5437,6 +5577,7 @@ export default function Home() {
     setSessions(nextSessions);
     setSelectedSessionId(nextSession.id);
     setSelectedClub(nextSelectedClub);
+    setSessionViewSelection(resolveSessionViewSelection(nextSession, {}, { clubOrder: CLUB_ORDER }) as SessionViewSelection);
     setActiveTab("dashboard");
     setLastImport(nextLastImport);
     setPendingImportReview(null);
@@ -5472,6 +5613,23 @@ export default function Home() {
     url.pathname = pathForTab(tab);
     url.searchParams.delete("tab");
     if (tab !== "videos") url.searchParams.delete("video");
+    if (tab !== "sessions") {
+      url.searchParams.delete("session");
+      url.searchParams.delete("club");
+      url.searchParams.delete("shot");
+    } else if (selectedSession.id !== EMPTY_SESSION.id) {
+      url.searchParams.set("session", selectedSession.id);
+      if (sessionViewSelection.club && sessionViewSelection.club !== ALL_SESSION_CLUBS) {
+        url.searchParams.set("club", sessionViewSelection.club);
+      } else {
+        url.searchParams.delete("club");
+      }
+      if (sessionViewSelection.shotId) {
+        url.searchParams.set("shot", sessionViewSelection.shotId);
+      } else {
+        url.searchParams.delete("shot");
+      }
+    }
     window.history.pushState(null, "", `${url.pathname}${url.search}${url.hash}`);
   }
 
@@ -5553,6 +5711,9 @@ export default function Home() {
         <div className="rail-footer">
           <span>Total Balls Struck</span>
           <strong>{ballCountLabel}</strong>
+          {showDevBuildInfo && (
+            <small className="dev-build-marker">Dev build: {APP_BUILD_INFO.shortCommit}</small>
+          )}
         </div>
       </aside>
 
@@ -5599,6 +5760,7 @@ export default function Home() {
             hasAnySessions={sessions.length > 0}
             insights={performanceInsights}
             onTimeframeChange={setPerformanceTimeframe}
+            onOpenSessionForClub={(sessionId, club) => openSessionView(sessionId, { club, shotId: null })}
             performanceIndex={filteredPerformanceIndex}
             practiceProfile={practiceProfile}
             selectedClub={performanceActiveClub}
@@ -5620,6 +5782,9 @@ export default function Home() {
             canAnalyzeSession={accountMode === "user"}
             onDeleteSession={deleteSession}
             onDeleteShot={deleteShot}
+            onOpenSession={(sessionId, selection) => openSessionView(sessionId, selection)}
+            onSelectionChange={applySessionViewSelection}
+            sessionSelection={sessionViewSelection}
             selectedSession={selectedSession}
             selectedSessionId={selectedSessionId}
             sessions={sessions}
@@ -5786,6 +5951,7 @@ function DashboardView({
   hasAnySessions,
   insights,
   onTimeframeChange,
+  onOpenSessionForClub,
   performanceIndex,
   practiceProfile,
   selectedClub,
@@ -5807,6 +5973,7 @@ function DashboardView({
   hasAnySessions: boolean;
   insights: Insight[];
   onTimeframeChange: (timeframe: PerformanceTimeframe) => void;
+  onOpenSessionForClub: (sessionId: string, club: string) => void;
   performanceIndex: number;
   practiceProfile?: UserPracticeProfile | null;
   selectedClub: string;
@@ -5905,9 +6072,9 @@ function DashboardView({
             kicker="Shot pattern"
             title={selectedSession.title}
             meta={`${formatDate(selectedSession.date)} · ${selectedSession.source}${selectedSession.location ? ` · ${selectedSession.location}` : ""}`}
-            action={<button className="text-button" onClick={() => setActiveTab("sessions")}>Sessions</button>}
+            action={<button className="text-button" onClick={() => onOpenSessionForClub(selectedSession.id, selectedClub)}>Open {selectedClubLabel}</button>}
           />
-          <ShotMap shots={selectedSession.shots} />
+          <ShotMap shots={selectedClubShots.length ? selectedClubShots : selectedSession.shots} />
         </article>
 
         <article className="panel">
@@ -5935,7 +6102,7 @@ function DashboardView({
 
         <article className="panel">
           <PanelHeader kicker="Club ladder" title="Carry gaps" meta={`${clubs.length} clubs tracked`} />
-          <GapLadder clubs={clubs} />
+          <GapLadder clubs={clubs} onSelectClub={(club) => onOpenSessionForClub(selectedSession.id, club)} />
         </article>
 
         <article className="panel panel-large">
@@ -6587,6 +6754,9 @@ function SessionsView({
   canAnalyzeSession,
   onDeleteSession,
   onDeleteShot,
+  onOpenSession,
+  onSelectionChange,
+  sessionSelection,
   selectedSession,
   selectedSessionId,
   sessions,
@@ -6597,6 +6767,9 @@ function SessionsView({
   canAnalyzeSession: boolean;
   onDeleteSession: (sessionId: string) => void;
   onDeleteShot: (sessionId: string, shotId: string) => void;
+  onOpenSession: (sessionId: string, selection?: Partial<SessionViewSelection>) => void;
+  onSelectionChange: (selection: Partial<SessionViewSelection>) => void;
+  sessionSelection: SessionViewSelection;
   selectedSession: Session;
   selectedSessionId: string;
   sessions: Session[];
@@ -6604,27 +6777,52 @@ function SessionsView({
   setSelectedClub: (club: string) => void;
   setSelectedSessionId: (id: string) => void;
 }) {
-  const selectedClubs = summarizeClubs([selectedSession]);
+  const clubOptions = getSessionClubOptions(selectedSession, CLUB_ORDER) as string[];
+  const resolvedSelection = resolveSessionViewSelection(selectedSession, sessionSelection, {
+    clubOrder: CLUB_ORDER,
+  }) as SessionViewSelection;
+  const activeSessionShots = getSessionViewShots(selectedSession, resolvedSelection) as Shot[];
+  const activeSession = { ...selectedSession, shots: activeSessionShots };
+  const activeClubs = summarizeClubs([activeSession]);
+  const allClubMode = resolvedSelection.club === ALL_SESSION_CLUBS;
+  const selectedShot = resolvedSelection.shotId
+    ? activeSessionShots.find((shot) => shot.id === resolvedSelection.shotId) ?? null
+    : null;
+  const selectedShotNumber = selectedShot
+    ? selectedShot.sourceShotNumber ?? String(activeSessionShots.findIndex((shot) => shot.id === selectedShot.id) + 1)
+    : "";
+  const sessionHeaderTitle = selectedShot
+    ? `${getClubDisplayName(selectedShot.club)} · Shot ${selectedShotNumber}`
+    : allClubMode
+      ? selectedSession.title
+      : getClubDisplayName(resolvedSelection.club);
+  const sessionHeaderMeta = selectedShot
+    ? `${formatAvailableMetric(getShotMetric(selectedShot, "carry") ?? Number.NaN, "yd")} carry · ${formatAvailableMetric(getShotMetric(selectedShot, "total") ?? Number.NaN, "yd")} total`
+    : allClubMode
+      ? `${selectedSession.shots.length} shots · ${clubOptions.length} ${clubOptions.length === 1 ? "club" : "clubs"} · ${selectedSession.source}${selectedSession.location ? ` · ${selectedSession.location}` : ""}`
+      : `${activeSessionShots.length} ${activeSessionShots.length === 1 ? "shot" : "shots"} · ${selectedSession.title}`;
+  const analysisKey = makeSessionAnalysisKey(selectedSession.id, resolvedSelection);
   const [analysisBySessionId, setAnalysisBySessionId] = useState<Record<string, SessionAnalysisState>>({});
-  const selectedAnalysis = analysisBySessionId[selectedSession.id] ?? { status: "idle", message: "" };
+  const selectedAnalysis = analysisBySessionId[analysisKey] ?? { status: "idle", message: "" };
   const structuredAnalysis = selectedAnalysis.result?.analysis ?? null;
   const canRequestAnalysis =
     canAnalyzeSession &&
     selectedSession.id !== EMPTY_SESSION.id &&
-    selectedSession.shots.length > 0 &&
+    activeSessionShots.length > 0 &&
     selectedAnalysis.status !== "loading";
   const canExportSession = selectedSession.id !== EMPTY_SESSION.id && selectedSession.shots.length > 0;
 
   useEffect(() => {
-    if (!canAnalyzeSession || selectedSession.id === EMPTY_SESSION.id || !selectedSession.shots.length) return;
+    if (!canAnalyzeSession || selectedSession.id === EMPTY_SESSION.id || !activeSessionShots.length) return;
 
     let cancelled = false;
     const sessionId = selectedSession.id;
+    const contextKey = analysisKey;
     setAnalysisBySessionId((current) => {
-      if (current[sessionId]) return current;
+      if (current[contextKey]) return current;
       return {
         ...current,
-        [sessionId]: {
+        [contextKey]: {
           status: "loading",
           message: "Checking for a saved MAI Coach analysis...",
         },
@@ -6633,7 +6831,9 @@ function SessionsView({
 
     async function loadSavedAnalysis() {
       try {
-        const response = await fetch(`/api/session-analysis?sessionId=${encodeURIComponent(sessionId)}`, {
+        const params = new URLSearchParams({ sessionId });
+        if (resolvedSelection.club !== ALL_SESSION_CLUBS) params.set("club", resolvedSelection.club);
+        const response = await fetch(`/api/session-analysis?${params.toString()}`, {
           cache: "no-store",
         });
         const payload = await response.json().catch(() => ({})) as Partial<SessionAnalysisResponse> & { message?: string; error?: { message?: string } };
@@ -6642,7 +6842,7 @@ function SessionsView({
         if (response.status === 404 && payload.status === "not_analyzed") {
           setAnalysisBySessionId((current) => ({
             ...current,
-            [sessionId]: { status: "idle", message: payload.message ?? "" },
+            [contextKey]: { status: "idle", message: payload.message ?? "" },
           }));
           return;
         }
@@ -6653,7 +6853,7 @@ function SessionsView({
 
         setAnalysisBySessionId((current) => ({
           ...current,
-          [sessionId]: {
+          [contextKey]: {
             status: payload.status === "failed" ? "error" : payload.status === "processing" ? "loading" : "ready",
             message:
               payload.status === "failed"
@@ -6670,7 +6870,7 @@ function SessionsView({
         if (cancelled) return;
         setAnalysisBySessionId((current) => ({
           ...current,
-          [sessionId]: {
+          [contextKey]: {
             status: "error",
             message: error instanceof Error ? error.message : "Saved MAI Coach analysis could not be loaded.",
           },
@@ -6682,25 +6882,25 @@ function SessionsView({
     return () => {
       cancelled = true;
     };
-  }, [canAnalyzeSession, selectedSession.id, selectedSession.shots.length]);
+  }, [analysisKey, canAnalyzeSession, selectedSession.id, activeSessionShots.length, resolvedSelection.club]);
 
   async function analyzeSelectedSession() {
     if (!canAnalyzeSession) {
       setAnalysisBySessionId((current) => ({
         ...current,
-        [selectedSession.id]: {
+        [analysisKey]: {
           status: "error",
           message: "Sign in before running MAI Coach. This first version only analyzes saved account sessions.",
         },
       }));
       return;
     }
-    if (selectedSession.id === EMPTY_SESSION.id || !selectedSession.shots.length) {
+    if (selectedSession.id === EMPTY_SESSION.id || !activeSessionShots.length) {
       setAnalysisBySessionId((current) => ({
         ...current,
-        [selectedSession.id]: {
+        [analysisKey]: {
           status: "error",
-          message: "Save a session with shot data before running MAI Coach.",
+          message: "Choose a saved session view with shot data before running MAI Coach.",
         },
       }));
       return;
@@ -6708,17 +6908,21 @@ function SessionsView({
 
     setAnalysisBySessionId((current) => ({
       ...current,
-      [selectedSession.id]: {
+      [analysisKey]: {
         status: "loading",
-        message: "MAI Coach is reading your stored session data...",
+        message: allClubMode
+          ? "MAI Coach is reading your stored session data..."
+          : `MAI Coach is reading only your ${getClubDisplayName(resolvedSelection.club)} shots...`,
       },
     }));
 
     try {
+      const requestBody: { sessionId: string; club?: string } = { sessionId: selectedSession.id };
+      if (resolvedSelection.club !== ALL_SESSION_CLUBS) requestBody.club = resolvedSelection.club;
       const response = await fetch("/api/session-analysis", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: selectedSession.id }),
+        body: JSON.stringify(requestBody),
       });
       const payload = await response.json().catch(() => ({})) as Partial<SessionAnalysisResponse> & { error?: string | { message?: string } };
       const errorMessage =
@@ -6731,7 +6935,7 @@ function SessionsView({
 
       setAnalysisBySessionId((current) => ({
         ...current,
-        [selectedSession.id]: {
+        [analysisKey]: {
           status: payload.status === "failed" ? "error" : payload.status === "processing" ? "loading" : "ready",
           message:
             payload.status === "insufficient_data"
@@ -6745,7 +6949,7 @@ function SessionsView({
     } catch (error) {
       setAnalysisBySessionId((current) => ({
         ...current,
-        [selectedSession.id]: {
+        [analysisKey]: {
           status: "error",
           message: error instanceof Error ? error.message : "MAI Coach could not analyze this session.",
         },
@@ -6775,6 +6979,7 @@ function SessionsView({
                 className={cls("session-row", session.id === selectedSessionId && "active")}
                 key={session.id}
                 onClick={() => {
+                  onOpenSession(session.id, { club: ALL_SESSION_CLUBS, shotId: null, metric: null });
                   setSelectedSessionId(session.id);
                   if (session.shots[0]?.club) setSelectedClub(session.shots[0].club);
                 }}
@@ -6797,8 +7002,8 @@ function SessionsView({
       <div className="panel panel-large">
         <PanelHeader
           kicker={selectedSession.focus}
-          title={selectedSession.title}
-          meta={`${selectedSession.shots.length} shots · ${selectedSession.source}${selectedSession.location ? ` · ${selectedSession.location}` : ""}`}
+          title={sessionHeaderTitle}
+          meta={sessionHeaderMeta}
           action={
             <div className="button-row panel-header-actions">
               <button
@@ -6827,13 +7032,87 @@ function SessionsView({
             </div>
           }
         />
-        <ShotMap shots={selectedSession.shots} />
+        <div className="session-selection-strip">
+          {clubOptions.length > 1 ? (
+            <label className="select-control">
+              <span>Session view</span>
+              <select
+                value={resolvedSelection.club}
+                onChange={(event) => onSelectionChange({ club: event.target.value, shotId: null, metric: null })}
+              >
+                <option value={ALL_SESSION_CLUBS}>All Clubs</option>
+                {clubOptions.map((club) => (
+                  <option key={club} value={club}>
+                    {getClubDisplayName(club)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <div>
+              <p className="eyebrow">Session view</p>
+              <strong>{clubOptions[0] ? getClubDisplayName(clubOptions[0]) : "Club NA"}</strong>
+            </div>
+          )}
+          <span>
+            {allClubMode
+              ? `${selectedSession.shots.length} shots across ${clubOptions.length} ${clubOptions.length === 1 ? "club" : "clubs"}`
+              : `${activeSessionShots.length} ${activeSessionShots.length === 1 ? "shot" : "shots"} shown`}
+          </span>
+          {selectedShot && (
+            <button className="text-button" onClick={() => onSelectionChange({ club: selectedShot.club, shotId: null })} type="button">
+              Clear shot
+            </button>
+          )}
+        </div>
+        <ShotMap
+          allClubMode={allClubMode}
+          onSelectClub={(club) => onSelectionChange({ club, shotId: null, metric: null })}
+          onSelectShot={(shot) => onSelectionChange({ club: shot.club, shotId: shot.id, metric: null })}
+          selectedShotId={resolvedSelection.shotId ?? null}
+          shots={activeSessionShots}
+        />
+        {selectedShot && (
+          <div className="shot-detail-panel">
+            <div>
+              <p className="eyebrow">Selected shot</p>
+              <h3>{getClubDisplayName(selectedShot.club)} · Shot {selectedShotNumber}</h3>
+              <span>
+                This is a single-shot readout. MAI Coach uses the full {getClubDisplayName(selectedShot.club)} sample before making coaching recommendations.
+              </span>
+            </div>
+            <div className="shot-detail-grid">
+              {[
+                ["Carry", "carry", "yd"],
+                ["Total", "total", "yd"],
+                ["Ball speed", "ballSpeed", "mph"],
+                ["Club speed", "clubSpeed", "mph"],
+                ["Launch", "launch", "deg"],
+                ["Spin", "spin", "rpm"],
+                ["Club path", "clubPath", "deg"],
+                ["Face angle", "faceAngle", "deg"],
+                ["Face to path", "faceToPath", "deg"],
+                ["Side total", "sideTotal", "yd"],
+              ].map(([label, metric, unit]) => {
+                const value = getShotMetric(selectedShot, metric as NumericShotMetric);
+                const source = selectedShot.metricSources?.[metric];
+                return (
+                  <div key={metric}>
+                    <span>{label}</span>
+                    <strong>{metric === "spin" ? formatAvailableMetric(value ?? Number.NaN, unit, 0) : metric === "faceToPath" || metric === "clubPath" || metric === "faceAngle" || metric === "sideTotal" ? formatSignedMetric(value, unit) : formatAvailableMetric(value ?? Number.NaN, unit)}</strong>
+                    <small>{source?.kind ? `${source.kind}${source.method ? ` · ${source.method}` : ""}` : "Source NA"}</small>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
         {selectedAnalysis.status !== "idle" && (
           <div className={cls("mai-analysis-panel", selectedAnalysis.status)}>
             <div className="mai-analysis-heading">
               <div>
                 <p className="eyebrow">MAI Coach</p>
-                <h3>Session analysis</h3>
+                <h3>{allClubMode ? "Session analysis" : `${getClubDisplayName(resolvedSelection.club)} analysis`}</h3>
               </div>
               <span>
                 {selectedAnalysis.status === "loading"
@@ -6991,7 +7270,7 @@ function SessionsView({
             <span>Dispersion</span>
             <span>Smash</span>
           </div>
-          {selectedClubs.map((club) => (
+          {activeClubs.map((club) => (
             <div className="table-row" key={club.club}>
               <span>{getClubDisplayName(club.club)}</span>
               <span>{club.shots}</span>
@@ -7006,7 +7285,7 @@ function SessionsView({
             </div>
           ))}
         </div>
-        {selectedSession.shots.length > 0 && (
+        {activeSessionShots.length > 0 && (
           <div className="shot-delete-table">
             <div className="shot-delete-table-heading">
               <div>
@@ -7027,8 +7306,20 @@ function SessionsView({
                 <span>Shape</span>
                 <span>Action</span>
               </div>
-              {selectedSession.shots.map((shot, index) => (
-                <div className="table-row shot-row" key={shot.id}>
+              {activeSessionShots.map((shot, index) => (
+                <div
+                  className={cls("table-row shot-row", resolvedSelection.shotId === shot.id && "selected-row")}
+                  key={shot.id}
+                  onClick={() => onSelectionChange({ club: shot.club, shotId: shot.id, metric: null })}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onSelectionChange({ club: shot.club, shotId: shot.id, metric: null });
+                    }
+                  }}
+                >
                   <span>{shot.sourceShotNumber ? `#${shot.sourceShotNumber}` : `#${index + 1}`}</span>
                   <span>{getClubDisplayName(shot.club)}</span>
                   <span>{formatAvailableMetric(getShotMetric(shot, "carry") ?? Number.NaN, "yd")}</span>
@@ -7041,7 +7332,10 @@ function SessionsView({
                     <button
                       aria-label={`Delete ${shot.sourceShotNumber ? `shot ${shot.sourceShotNumber}` : `${getClubDisplayName(shot.club)} shot ${index + 1}`}`}
                       className="icon-button danger-text-button"
-                      onClick={() => onDeleteShot(selectedSession.id, shot.id)}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onDeleteShot(selectedSession.id, shot.id);
+                      }}
                       title="Delete shot"
                       type="button"
                     >
@@ -13526,7 +13820,7 @@ function PanelHeader({
   );
 }
 
-const SHOT_MAP_COLORS = ["#96cb39", "#38bdf8", "#facc15", "#ef4444", "#a78bfa", "#2dd4bf"];
+const SHOT_MAP_COLORS = ["#96cb39", "#38bdf8", "#facc15", "#ef4444", "#a78bfa", "#2dd4bf", "#fb7185", "#f97316", "#c084fc"];
 const SHOT_SHAPE_METRICS: NumericShotMetric[] = [
   "offline",
   "sideTotal",
@@ -13618,14 +13912,39 @@ function formatLateralDistance(value: number | undefined) {
   return `${Math.abs(value).toFixed(1)} yd ${value < 0 ? "L" : "R"}`;
 }
 
-function ShotMap({ shots }: { shots: Shot[] }) {
+function averageProfile(profiles: ReturnType<typeof getShotFlightProfile>[]) {
+  return {
+    carry: average(profiles.map((profile) => profile.carry)),
+    total: average(profiles.map((profile) => profile.total)),
+    startLineYards: average(profiles.map((profile) => profile.startLineYards)),
+    curveYards: average(profiles.map((profile) => profile.curveYards)),
+    carrySide: average(profiles.map((profile) => profile.carrySide)),
+    totalSide: average(profiles.map((profile) => profile.totalSide)),
+    shape: "Average",
+  };
+}
+
+function ShotMap({
+  allClubMode,
+  onSelectClub,
+  onSelectShot,
+  selectedShotId = null,
+  shots,
+}: {
+  allClubMode?: boolean;
+  onSelectClub?: (club: string) => void;
+  onSelectShot?: (shot: Shot) => void;
+  selectedShotId?: string | null;
+  shots: Shot[];
+}) {
   const carryShots = shots.filter((shot) => hasShotMetric(shot, "carry"));
   if (!carryShots.length) {
     return <EmptyState title="Carry data is NA" body="This session did not include enough distance data to draw a shot pattern." />;
   }
 
-  const clubNames = Array.from(new Set(carryShots.map((shot) => shot.club))).slice(0, 6);
+  const clubNames = Array.from(new Set(carryShots.map((shot) => shot.club)));
   const profiles = carryShots.map((shot) => getShotFlightProfile(shot));
+  const isAllClubMode = allClubMode ?? clubNames.length > 1;
   const rawMaxDistance = Math.max(...profiles.map((profile) => Math.max(profile.carry, profile.total)), 1);
   const distanceStep = rawMaxDistance <= 150 ? 25 : 50;
   const maxDistance = Math.max(distanceStep, Math.ceil(rawMaxDistance / distanceStep) * distanceStep);
@@ -13659,6 +13978,32 @@ function ShotMap({ shots }: { shots: Shot[] }) {
     ["Face-to-path", formatSignedMetric(averageMetric(carryShots, "faceToPath"), "deg")],
     ["Launch direction", formatSignedMetric(averageMetric(carryShots, "horizontalAngle"), "deg")],
   ];
+  const clubGroups = clubNames.map((club, clubIndex) => {
+    const clubShots = carryShots.filter((shot) => shot.club === club);
+    const clubProfiles = clubShots.map((shot) => getShotFlightProfile(shot));
+    const averageShot = averageProfile(clubProfiles);
+    const sideSpread = standardDeviation(clubProfiles.map((profile) => profile.carrySide));
+    const carrySpread = standardDeviation(clubProfiles.map((profile) => profile.carry));
+    return {
+      averageShot,
+      carrySpread,
+      club,
+      clubIndex,
+      clubProfiles,
+      clubShots,
+      color: SHOT_MAP_COLORS[clubIndex] ?? SHOT_MAP_COLORS[0],
+      sideSpread,
+    };
+  });
+  const pathForProfile = (profile: ReturnType<typeof getShotFlightProfile>) => {
+    const carryX = xScale(profile.carrySide);
+    const carryY = yScale(profile.carry);
+    const controlOneX = xScale(profile.startLineYards * 0.34);
+    const controlOneY = yScale(profile.carry * 0.34);
+    const controlTwoX = xScale(profile.startLineYards * 0.82 + profile.curveYards * 0.3);
+    const controlTwoY = yScale(profile.carry * 0.78);
+    return `M ${xScale(0)} ${yScale(0)} C ${controlOneX} ${controlOneY}, ${controlTwoX} ${controlTwoY}, ${carryX} ${carryY}`;
+  };
 
   return (
     <div className="shot-map">
@@ -13710,46 +14055,86 @@ function ShotMap({ shots }: { shots: Shot[] }) {
             Distance from tee
           </text>
 
-          {carryShots.map((shot, index) => {
-            const profile = profiles[index];
-            const clubIndex = clubNames.indexOf(shot.club);
-            const color = SHOT_MAP_COLORS[clubIndex] ?? SHOT_MAP_COLORS[0];
-            const carryY = yScale(profile.carry);
-            const carryX = xScale(profile.carrySide);
-            const controlOneX = xScale(profile.startLineYards * 0.34);
-            const controlOneY = yScale(profile.carry * 0.34);
-            const controlTwoX = xScale(profile.startLineYards * 0.82 + profile.curveYards * 0.3);
-            const controlTwoY = yScale(profile.carry * 0.78);
-            const totalX = xScale(profile.totalSide);
-            const totalY = yScale(profile.total);
-            const path = `M ${xScale(0)} ${yScale(0)} C ${controlOneX} ${controlOneY}, ${controlTwoX} ${controlTwoY}, ${carryX} ${carryY}`;
-            const recordedFinish = getRecordedShotFinish(shot);
-            const displayedFinish = recordedFinish ?? (hasShotShapeInput(shot) ? profile.totalSide : undefined);
-
-            return (
-              <g key={shot.id}>
-                <title>
-                  {`Shot ${index + 1}: ${getClubDisplayName(shot.club)}, ${hasShotShapeInput(shot) ? profile.shape : "shape NA"}, ${profile.carry.toFixed(1)} yd carry, ${formatLateralDistance(displayedFinish)}${recordedFinish === undefined && displayedFinish !== undefined ? " estimated finish" : ""}`}
-                </title>
-                <path d={path} fill="none" stroke={color} strokeLinecap="round" strokeWidth="3" opacity="0.72" />
-                {profile.total > profile.carry + 0.5 && (
-                  <line
-                    x1={carryX}
-                    x2={totalX}
-                    y1={carryY}
-                    y2={totalY}
-                    stroke={color}
-                    strokeDasharray="5 5"
-                    strokeLinecap="round"
-                    strokeWidth="2"
-                    opacity="0.65"
+          {isAllClubMode ? (
+            <>
+              {clubGroups.map((group) => {
+                const profile = group.averageShot;
+                const carryX = xScale(profile.carrySide);
+                const carryY = yScale(profile.carry);
+                const ellipseRx = Math.max(16, Math.min(82, (Number.isFinite(group.sideSpread) ? group.sideSpread : 0) / lateralExtent * (plot.right - plot.left)));
+                const ellipseRy = Math.max(12, Math.min(68, (Number.isFinite(group.carrySpread) ? group.carrySpread : 0) / maxDistance * (plot.bottom - plot.top)));
+                return (
+                  <g key={`average-${group.club}`} className="shot-club-cluster" onClick={() => onSelectClub?.(group.club)}>
+                    <title>{`${getClubDisplayName(group.club)} average: ${group.clubShots.length} shots, ${profile.carry.toFixed(1)} yd carry`}</title>
+                    <ellipse cx={carryX} cy={carryY} fill={group.color} opacity="0.12" rx={ellipseRx} ry={ellipseRy} stroke={group.color} strokeWidth="2" />
+                    <path d={pathForProfile(profile)} fill="none" stroke={group.color} strokeLinecap="round" strokeWidth="4.5" opacity="0.9" />
+                    <circle cx={carryX} cy={carryY} fill="#07130e" r="8" stroke={group.color} strokeWidth="3" />
+                    <text className="shot-club-label" x={carryX + 12} y={carryY - 10}>{getClubDisplayName(group.club)}</text>
+                  </g>
+                );
+              })}
+              {clubGroups.flatMap((group) => group.clubShots.map((shot, index) => {
+                const profile = group.clubProfiles[index];
+                const selected = selectedShotId === shot.id;
+                return (
+                  <circle
+                    aria-label={`${getClubDisplayName(shot.club)} shot ${shot.sourceShotNumber ?? index + 1}`}
+                    className={cls("shot-point", selected && "selected")}
+                    cx={xScale(profile.carrySide)}
+                    cy={yScale(profile.carry)}
+                    fill={selected ? "#ffffff" : group.color}
+                    key={shot.id}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onSelectShot?.(shot);
+                    }}
+                    opacity={selected ? 1 : 0.34}
+                    r={selected ? 7 : 4}
+                    stroke={group.color}
+                    strokeWidth={selected ? 3 : 1}
                   />
-                )}
-                <circle cx={carryX} cy={carryY} fill="#151f29" r="7" stroke={color} strokeWidth="2.5" />
-                <text className="shot-number" x={carryX} y={carryY + 3} textAnchor="middle">{index + 1}</text>
-              </g>
-            );
-          })}
+                );
+              }))}
+            </>
+          ) : (
+            carryShots.map((shot, index) => {
+              const profile = profiles[index];
+              const clubIndex = clubNames.indexOf(shot.club);
+              const color = SHOT_MAP_COLORS[clubIndex] ?? SHOT_MAP_COLORS[0];
+              const carryY = yScale(profile.carry);
+              const carryX = xScale(profile.carrySide);
+              const totalX = xScale(profile.totalSide);
+              const totalY = yScale(profile.total);
+              const path = pathForProfile(profile);
+              const recordedFinish = getRecordedShotFinish(shot);
+              const displayedFinish = recordedFinish ?? (hasShotShapeInput(shot) ? profile.totalSide : undefined);
+              const selected = selectedShotId === shot.id;
+
+              return (
+                <g className={cls("shot-flight", selected && "selected")} key={shot.id} onClick={() => onSelectShot?.(shot)}>
+                  <title>
+                    {`Shot ${shot.sourceShotNumber ?? index + 1}: ${getClubDisplayName(shot.club)}, ${hasShotShapeInput(shot) ? profile.shape : "shape NA"}, ${profile.carry.toFixed(1)} yd carry, ${formatLateralDistance(displayedFinish)}${recordedFinish === undefined && displayedFinish !== undefined ? " estimated finish" : ""}`}
+                  </title>
+                  <path d={path} fill="none" stroke={color} strokeLinecap="round" strokeWidth={selected ? "4.5" : "3"} opacity={selected ? "1" : "0.72"} />
+                  {profile.total > profile.carry + 0.5 && (
+                    <line
+                      x1={carryX}
+                      x2={totalX}
+                      y1={carryY}
+                      y2={totalY}
+                      stroke={color}
+                      strokeDasharray="5 5"
+                      strokeLinecap="round"
+                      strokeWidth={selected ? "3" : "2"}
+                      opacity={selected ? "0.9" : "0.65"}
+                    />
+                  )}
+                  <circle cx={carryX} cy={carryY} fill="#151f29" r={selected ? "9" : "7"} stroke={color} strokeWidth={selected ? "3.5" : "2.5"} />
+                  <text className="shot-number" x={carryX} y={carryY + 3} textAnchor="middle">{shot.sourceShotNumber ?? index + 1}</text>
+                </g>
+              );
+            })
+          )}
 
           <circle cx={xScale(0)} cy={yScale(0)} fill="#96cb39" r="5" />
           <text className="tee-label" x={xScale(0) + 10} y={yScale(0) - 10}>Tee</text>
@@ -13758,13 +14143,14 @@ function ShotMap({ shots }: { shots: Shot[] }) {
 
       <div className="map-legend">
         {clubNames.map((club, index) => (
-          <span key={club}>
+          <button className="map-legend-item" key={club} onClick={() => onSelectClub?.(club)} type="button">
             <i style={{ background: SHOT_MAP_COLORS[index] }} />
             {getClubDisplayName(club)}
-          </span>
+          </button>
         ))}
         <span><b className="flight-key" />Carry flight</span>
-        <span><b className="roll-key" />Rollout</span>
+        {!isAllClubMode && <span><b className="roll-key" />Rollout</span>}
+        {isAllClubMode && <span>Average lines · low-opacity shot points</span>}
       </div>
 
       <div className="shot-shape-table-shell">
@@ -13789,8 +14175,8 @@ function ShotMap({ shots }: { shots: Shot[] }) {
               const recordedFinish = getRecordedShotFinish(shot);
               const displayedFinish = recordedFinish ?? (hasShotShapeInput(shot) ? profiles[index].totalSide : undefined);
               return (
-                <tr key={shot.id}>
-                  <td><span className="shot-index" style={{ background: SHOT_MAP_COLORS[clubIndex] ?? SHOT_MAP_COLORS[0] }}>{index + 1}</span></td>
+                <tr className={selectedShotId === shot.id ? "selected-shot-row" : undefined} key={shot.id} onClick={() => onSelectShot?.(shot)}>
+                  <td><span className="shot-index" style={{ background: SHOT_MAP_COLORS[clubIndex] ?? SHOT_MAP_COLORS[0] }}>{shot.sourceShotNumber ?? index + 1}</span></td>
                   <td>{getClubDisplayName(shot.club)}</td>
                   <td><strong>{hasShotShapeInput(shot) ? profiles[index].shape : "NA"}</strong></td>
                   <td>{formatAvailableMetric(getShotMetric(shot, "carry") ?? Number.NaN, "yd")}</td>
@@ -13819,7 +14205,15 @@ function ShotMap({ shots }: { shots: Shot[] }) {
   );
 }
 
-function GapLadder({ clubs, extended = false }: { clubs: ClubSummary[]; extended?: boolean }) {
+function GapLadder({
+  clubs,
+  extended = false,
+  onSelectClub,
+}: {
+  clubs: ClubSummary[];
+  extended?: boolean;
+  onSelectClub?: (club: string) => void;
+}) {
   const availableCarry = clubs.map((club) => club.carry).filter(Number.isFinite);
   const maxCarry = Math.max(...availableCarry, 1);
 
@@ -13831,7 +14225,20 @@ function GapLadder({ clubs, extended = false }: { clubs: ClubSummary[]; extended
           ? round(club.carry - nextClub.carry)
           : Number.NaN;
         return (
-          <div className="gap-row" key={club.club}>
+          <div
+            className={cls("gap-row", onSelectClub && "clickable")}
+            key={club.club}
+            onClick={() => onSelectClub?.(club.club)}
+            role={onSelectClub ? "button" : undefined}
+            tabIndex={onSelectClub ? 0 : undefined}
+            onKeyDown={(event) => {
+              if (!onSelectClub) return;
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onSelectClub(club.club);
+              }
+            }}
+          >
             <div>
               <strong>{getClubDisplayName(club.club)}</strong>
               <span>{formatAvailableMetric(club.carry, "yd")}</span>

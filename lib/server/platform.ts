@@ -92,6 +92,7 @@ export type SafeOpenAIDiagnostic = {
   httpStatus: number | null;
   errorType: string | null;
   errorCode: string | null;
+  providerMessage: string | null;
   requestId: string | null;
   model: string | null;
   endpoint: string;
@@ -104,6 +105,12 @@ function stringField(value: unknown, maxLength = 140) {
 
 function numberField(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function redactSensitiveText(value: string) {
+  return value
+    .replace(/sk-[A-Za-z0-9_-]+/g, "[redacted_api_key]")
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [redacted_token]");
 }
 
 export function sanitizeOpenAIError(
@@ -147,6 +154,7 @@ export function sanitizeOpenAIError(
     httpStatus: status,
     errorType,
     errorCode,
+    providerMessage: stringField(redactSensitiveText(message), 500),
     requestId,
     model: stringField(context.model) ?? null,
     endpoint: context.endpoint,

@@ -3,6 +3,7 @@ import { WorkflowEntrypoint } from "cloudflare:workers";
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 
+import { isDevBuildTarget } from "@/lib/build-info";
 import { handlePhotoImportRequest } from "@/lib/server/photo-import-request";
 import { requireIdentityFromRequest, responseFromError } from "@/lib/server/platform";
 import {
@@ -53,6 +54,24 @@ type WorkflowEvent = {
   params?: VideoLessonRecapWorkflowParams;
 };
 
+function isHtmlNavigation(request: Request, response: Response) {
+  const accept = request.headers.get("Accept") ?? "";
+  const contentType = response.headers.get("Content-Type") ?? "";
+  return request.method === "GET" && (accept.includes("text/html") || contentType.includes("text/html"));
+}
+
+function withDevNoCache(request: Request, response: Response) {
+  const url = new URL(request.url);
+  if (!isDevBuildTarget(url.hostname) || !isHtmlNavigation(request, response)) return response;
+  const headers = new Headers(response.headers);
+  headers.set("Cache-Control", "no-cache");
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
 export class VideoLessonRecapWorkflow extends WorkflowEntrypoint<Env, VideoLessonRecapWorkflowParams> {
   async run(event: WorkflowEvent, step: WorkflowStep) {
     await runVideoLessonRecapWorkflow(this.env, event, step);
@@ -89,7 +108,8 @@ const worker = {
       }, allowedWidths);
     }
 
-    return handler.fetch(request, env, ctx);
+    const response = await handler.fetch(request, env, ctx);
+    return withDevNoCache(request, response);
   },
 };
 

@@ -11,6 +11,7 @@ import {
   type SessionMetrics,
   type ShotRecord,
 } from "@/lib/server/mai-caddy-metrics";
+import { ALL_SESSION_CLUBS, makeSessionAnalysisKey } from "@/lib/session-view-selection-policy.mjs";
 import {
   ensureMaiCaddyAnalysisSchema,
   ensurePlatformSchema,
@@ -24,6 +25,23 @@ import {
 const PROMPT_VERSION = "mai-caddy-v1";
 const DEFAULT_MODEL = "gpt-4.1-mini";
 const MIN_USABLE_SHOTS = 3;
+const OPENAI_MEMBER_UNAVAILABLE_MESSAGE = "MAI analysis is temporarily unavailable. Your session data is saved.";
+const OPENAI_ANALYSIS_ERROR_CODES = new Set([
+  "empty_openai_response",
+  "empty_response",
+  "insufficient_quota",
+  "invalid_api_key",
+  "model_access_denied",
+  "model_not_found",
+  "openai_api_key_missing",
+  "openai_rate_limited",
+  "openai_request_failed",
+  "openai_timeout",
+  "payload_too_large",
+  "rate_limit",
+  "schema_validation_failed",
+  "timeout",
+]);
 
 type AnalysisStatus = "processing" | "completed" | "failed" | "insufficient_data";
 
@@ -43,6 +61,10 @@ type StoredSession = {
   importNotes?: string;
   missingMetrics?: string[];
   shots: StoredShot[];
+};
+
+type AnalysisSelection = {
+  club?: string | null;
 };
 
 type UserRow = {
@@ -362,6 +384,37 @@ async function loadOwnedSession(identity: AuthIdentity, sessionId: string, datab
 
 function clubName(shot: ShotRecord) {
   return text(shot.club, "Unknown club");
+}
+
+function normalizedClubKey(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function selectAnalysisSession(session: StoredSession, selection: AnalysisSelection = {}) {
+  const requestedClub = text(selection.club);
+  if (!requestedClub || requestedClub === ALL_SESSION_CLUBS) {
+    return {
+      analysisSessionId: session.id,
+      session,
+    };
+  }
+
+  const requestedKey = normalizedClubKey(requestedClub);
+  const matchingShots = session.shots.filter((shot) => normalizedClubKey(clubName(shot)) === requestedKey);
+  if (!matchingShots.length) {
+    throw new AnalysisError(404, "club_not_found", "That club was not found in this saved session.");
+  }
+
+  const resolvedClub = clubName(matchingShots[0]);
+  return {
+    analysisSessionId: makeSessionAnalysisKey(session.id, { club: resolvedClub }) as string,
+    session: {
+      ...session,
+      focus: `${resolvedClub} analysis`,
+      title: `${resolvedClub} · ${session.title}`,
+      shots: matchingShots,
+    },
+  };
 }
 
 function dominantClub(shots: ShotRecord[]) {
@@ -1167,20 +1220,25 @@ async function updateAnalysisRecord(values: {
 }
 
 function analysisError(error: unknown) {
-  if (error instanceof AnalysisError) return error;
+  if (error instanceof AnalysisError) {
+    return OPENAI_ANALYSIS_ERROR_CODES.has(error.code)
+      ? new AnalysisError(error.status, error.code, OPENAI_MEMBER_UNAVAILABLE_MESSAGE)
+      : error;
+  }
   const diagnostic = sanitizeOpenAIError(error, {
     endpoint: "responses.create",
     model: getPlatformEnvironment().OPENAI_ANALYSIS_MODEL || getPlatformEnvironment().OPENAI_MODEL || DEFAULT_MODEL,
     operation: "session_analysis",
   });
+  console.warn("MAI Coach OpenAI diagnostic", diagnostic);
   const message = error instanceof Error ? error.message : "MAI Coach could not analyze this session.";
   if (/rate.?limit/i.test(message)) {
-    return new AnalysisError(429, diagnostic.category || "openai_rate_limited", "MAI Coach is busy right now. Please retry in a minute.");
+    return new AnalysisError(429, diagnostic.category || "openai_rate_limited", OPENAI_MEMBER_UNAVAILABLE_MESSAGE);
   }
   if (/timeout|timed out|abort/i.test(message)) {
-    return new AnalysisError(504, diagnostic.category || "openai_timeout", "MAI Coach took too long to respond. Please retry.");
+    return new AnalysisError(504, diagnostic.category || "openai_timeout", OPENAI_MEMBER_UNAVAILABLE_MESSAGE);
   }
-  return new AnalysisError(502, diagnostic.category || "openai_request_failed", "MAI Coach could not complete this analysis. Please retry.");
+  return new AnalysisError(502, diagnostic.category || "openai_request_failed", OPENAI_MEMBER_UNAVAILABLE_MESSAGE);
 }
 
 function serializeAnalysis(row: AnalysisRow, session: StoredSession | null = null) {
@@ -1208,7 +1266,9 @@ function serializeAnalysis(row: AnalysisRow, session: StoredSession | null = nul
     error: row.error_code
       ? {
           code: row.error_code,
-          message: row.error_message ?? "MAI Coach could not complete this analysis.",
+          message: OPENAI_ANALYSIS_ERROR_CODES.has(row.error_code)
+            ? OPENAI_MEMBER_UNAVAILABLE_MESSAGE
+            : row.error_message ?? "MAI Coach could not complete this analysis.",
         }
       : null,
     contextSummary: session && metricsRecord
@@ -1217,11 +1277,12 @@ function serializeAnalysis(row: AnalysisRow, session: StoredSession | null = nul
   };
 }
 
-export async function getStoredSessionAnalysis(identity: AuthIdentity, sessionId: string) {
+export async function getStoredSessionAnalysis(identity: AuthIdentity, sessionId: string, selection: AnalysisSelection = {}) {
   try {
     const database = getRequiredDatabase();
     await prepareDatabase(database);
-    const { session } = await loadOwnedSession(identity, sessionId, database);
+    const loaded = await loadOwnedSession(identity, sessionId, database);
+    const { analysisSessionId, session } = selectAnalysisSession(loaded.session, selection);
     const row = await database
       .prepare(
         `SELECT *
@@ -1230,13 +1291,13 @@ export async function getStoredSessionAnalysis(identity: AuthIdentity, sessionId
          ORDER BY created_at DESC
          LIMIT 1`,
       )
-      .bind(identity.id, sessionId)
+      .bind(identity.id, analysisSessionId)
       .first<AnalysisRow>();
 
     if (!row) {
       return Response.json({
         status: "not_analyzed",
-        sessionId,
+        sessionId: analysisSessionId,
         message: "This saved session has not been analyzed yet.",
       }, { status: 404 });
     }
@@ -1246,7 +1307,7 @@ export async function getStoredSessionAnalysis(identity: AuthIdentity, sessionId
     const safe = analysisError(error);
     return Response.json({
       status: "failed",
-      sessionId,
+      sessionId: makeSessionAnalysisKey(sessionId, { club: selection.club ?? "" }),
       error: {
         code: safe.code,
         message: safe.message,
@@ -1255,11 +1316,12 @@ export async function getStoredSessionAnalysis(identity: AuthIdentity, sessionId
   }
 }
 
-export async function analyzeStoredSession(identity: AuthIdentity, sessionId: string) {
+export async function analyzeStoredSession(identity: AuthIdentity, sessionId: string, selection: AnalysisSelection = {}) {
   const database = getRequiredDatabase();
   await prepareDatabase(database);
 
   let analysisId: string | null = null;
+  let analysisSessionId = makeSessionAnalysisKey(sessionId, { club: selection.club ?? "" }) as string;
   const model = getPlatformEnvironment().OPENAI_ANALYSIS_MODEL || getPlatformEnvironment().OPENAI_MODEL || DEFAULT_MODEL;
   let fallbackContext: ReturnType<typeof buildAnalysisContext> | null = null;
   let fallbackMetrics: SessionMetrics | null = null;
@@ -1267,14 +1329,18 @@ export async function analyzeStoredSession(identity: AuthIdentity, sessionId: st
   let fallbackSessions: StoredSession[] | null = null;
 
   try {
-    const { session, sessions } = await loadOwnedSession(identity, sessionId, database);
+    const loaded = await loadOwnedSession(identity, sessionId, database);
+    const selected = selectAnalysisSession(loaded.session, selection);
+    const session = selected.session;
+    const sessions = loaded.sessions;
+    analysisSessionId = selected.analysisSessionId;
     fallbackSession = session;
     fallbackSessions = sessions;
     if (!session.shots.length) {
       throw new AnalysisError(400, "empty_session", "This session does not contain shot data to analyze.");
     }
 
-    analysisId = await startProcessingAnalysis(database, identity, session.id, model);
+    analysisId = await startProcessingAnalysis(database, identity, analysisSessionId, model);
     const playerContext = await loadProfileContext(identity, database);
     const previousShots = previousComparableShots(session, sessions);
     const metrics = calculateSessionMetrics(session.shots, previousShots);
@@ -1398,7 +1464,7 @@ export async function analyzeStoredSession(identity: AuthIdentity, sessionId: st
           });
           return Response.json({
             analysisId,
-            sessionId: sessionForFallback.id,
+            sessionId: analysisSessionId,
             status: "completed",
             analysis,
             calculatedMetrics: metricsForFallback,
@@ -1437,7 +1503,7 @@ export async function analyzeStoredSession(identity: AuthIdentity, sessionId: st
     }
     return Response.json({
       status: "failed",
-      sessionId,
+      sessionId: analysisSessionId,
       error: {
         code: safe.code,
         message: safe.message,
