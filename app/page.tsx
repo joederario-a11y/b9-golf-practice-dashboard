@@ -7096,11 +7096,31 @@ function SessionsView({
               ].map(([label, metric, unit]) => {
                 const value = getShotMetric(selectedShot, metric as NumericShotMetric);
                 const source = selectedShot.metricSources?.[metric];
+                const clubAverage = averageMetric(activeSessionShots, metric as NumericShotMetric);
+                const digits = metric === "spin" ? 0 : 1;
+                const valueLabel = metric === "spin"
+                  ? formatAvailableMetric(value ?? Number.NaN, unit, 0)
+                  : metric === "faceToPath" || metric === "clubPath" || metric === "faceAngle" || metric === "sideTotal"
+                    ? formatSignedMetric(value, unit)
+                    : formatAvailableMetric(value ?? Number.NaN, unit);
+                const averageLabel = metric === "spin"
+                  ? formatAvailableMetric(clubAverage, unit, 0)
+                  : metric === "faceToPath" || metric === "clubPath" || metric === "faceAngle" || metric === "sideTotal"
+                    ? formatSignedMetric(clubAverage, unit)
+                    : formatAvailableMetric(clubAverage, unit);
+                const delta = typeof value === "number" && Number.isFinite(value) && Number.isFinite(clubAverage)
+                  ? value - clubAverage
+                  : Number.NaN;
                 return (
                   <div key={metric}>
                     <span>{label}</span>
-                    <strong>{metric === "spin" ? formatAvailableMetric(value ?? Number.NaN, unit, 0) : metric === "faceToPath" || metric === "clubPath" || metric === "faceAngle" || metric === "sideTotal" ? formatSignedMetric(value, unit) : formatAvailableMetric(value ?? Number.NaN, unit)}</strong>
+                    <strong>{valueLabel}</strong>
                     <small>{source?.kind ? `${source.kind}${source.method ? ` · ${source.method}` : ""}` : "Source NA"}</small>
+                    <small>
+                      {Number.isFinite(delta)
+                        ? `${formatSignedMetric(delta, unit, digits)} vs ${getClubDisplayName(selectedShot.club)} avg ${averageLabel}`
+                        : `${getClubDisplayName(selectedShot.club)} avg ${averageLabel}`}
+                    </small>
                   </div>
                 );
               })}
