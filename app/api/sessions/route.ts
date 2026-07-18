@@ -4,6 +4,7 @@ import {
   getRequiredDatabase,
   responseFromError,
 } from "@/lib/server/platform";
+import { generateCanonicalLaunchMonitorCsv } from "@/lib/launch-monitor-import-policy.mjs";
 import { sanitizeSessionList } from "@/lib/session-data-policy.mjs";
 
 type SessionPayload = {
@@ -24,7 +25,15 @@ function parseStoredSessionsJson(value: string | null | undefined) {
   }
 }
 
-export async function GET() {
+function csvDownloadName(value: string) {
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `${slug || "session"}-normalized.csv`;
+}
+
+export async function GET(request: Request) {
   try {
     const identity = await getIdentity();
     if (!identity) {
@@ -50,6 +59,31 @@ export async function GET() {
         )
         .bind(JSON.stringify(sessions), identity.id)
         .run();
+    }
+
+    const url = new URL(request.url);
+    if (url.searchParams.get("format") === "csv") {
+      const sessionId = url.searchParams.get("sessionId") ?? "";
+      if (!sessionId) {
+        return Response.json({ error: "sessionId is required." }, { status: 400 });
+      }
+      const session = sessions.find((item) => item.id === sessionId);
+      if (!session) {
+        return Response.json({ error: "Session not found." }, { status: 404 });
+      }
+      const csv = generateCanonicalLaunchMonitorCsv({
+        sessionId: session.importMetadata?.sessionId ?? session.id,
+        sessionDate: session.date,
+        simulator: session.importMetadata?.simulator ?? session.source,
+        shots: session.shots,
+        notes: session.importNotes ?? "",
+      });
+      return new Response(csv, {
+        headers: {
+          "Content-Disposition": `attachment; filename="${csvDownloadName(session.title)}"`,
+          "Content-Type": "text/csv;charset=utf-8",
+        },
+      });
     }
 
     return Response.json({

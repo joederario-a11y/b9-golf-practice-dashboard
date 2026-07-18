@@ -2139,6 +2139,20 @@ function getLastImportSession(sessions: Session[]) {
   return sessions.find((session) => session.importMetadata || session.id.startsWith("import-")) ?? sessions[0];
 }
 
+function downloadCsvFile(csv: string, fileName: string) {
+  if (typeof document === "undefined") return;
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.style.display = "none";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 function getClubMetricConfig(metricKey: ClubMetricKey) {
   return CLUB_METRIC_OPTIONS.find((metric) => metric.key === metricKey) ?? CLUB_METRIC_OPTIONS[1];
 }
@@ -6599,6 +6613,7 @@ function SessionsView({
     selectedSession.id !== EMPTY_SESSION.id &&
     selectedSession.shots.length > 0 &&
     selectedAnalysis.status !== "loading";
+  const canExportSession = selectedSession.id !== EMPTY_SESSION.id && selectedSession.shots.length > 0;
 
   useEffect(() => {
     if (!canAnalyzeSession || selectedSession.id === EMPTY_SESSION.id || !selectedSession.shots.length) return;
@@ -6795,6 +6810,14 @@ function SessionsView({
               >
                 Analyze Session
               </button>
+              {canExportSession && (
+                <a
+                  className="text-button"
+                  href={`/api/sessions?format=csv&sessionId=${encodeURIComponent(selectedSession.id)}`}
+                >
+                  Download CSV
+                </a>
+              )}
               <button className="text-button" onClick={() => setActiveTab("coach")} type="button">Coach notes</button>
               {selectedSession.id !== EMPTY_SESSION.id && (
                 <button className="text-button danger-text-button" onClick={() => onDeleteSession(selectedSession.id)} type="button">
@@ -11407,13 +11430,7 @@ function ImportView({
   }
 
   function downloadReviewCsv(csv: string) {
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "mai-coach-normalized-session.csv";
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadCsvFile(csv, "mai-coach-normalized-session.csv");
     setCsvFileStatus("Normalized CSV downloaded.");
   }
 
