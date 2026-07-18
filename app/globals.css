@@ -7923,12 +7923,38 @@ input::file-selector-button {
   font-size: 26px;
 }
 
-.import-review-heading span,
-.import-review-metrics span,
-.import-review-warnings,
-.import-review-table span {
-  color: var(--muted);
-}
+	.import-review-heading span,
+	.import-review-metrics span,
+	.import-review-warnings,
+	.import-review-table span {
+	  color: var(--muted);
+	}
+
+	.photo-import-summary-grid {
+	  display: grid;
+	  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+	  gap: 10px;
+	}
+
+	.photo-import-summary-grid > div {
+	  display: grid;
+	  gap: 5px;
+	  border: 1px solid var(--line);
+	  border-radius: 8px;
+	  background: rgba(255, 255, 255, 0.045);
+	  padding: 11px 12px;
+	}
+
+	.photo-import-summary-grid span,
+	.import-review-table-wide span,
+	.normalized-csv-preview summary {
+	  color: var(--muted);
+	}
+
+	.photo-import-summary-grid strong {
+	  color: var(--ink);
+	  font-size: 18px;
+	}
 
 .import-review-grid {
   display: grid;
@@ -7951,16 +7977,24 @@ input::file-selector-button {
   font-weight: 950;
 }
 
-.import-review-warnings {
-  display: grid;
-  gap: 6px;
-  margin: 0;
-  padding-left: 18px;
-}
+	.import-review-warnings {
+	  display: grid;
+	  gap: 6px;
+	  margin: 0;
+	  padding-left: 18px;
+	}
 
-.import-review-table {
-  display: grid;
-  overflow: auto;
+	.import-review-warnings.blocking {
+	  border: 1px solid rgba(255, 74, 74, 0.4);
+	  border-radius: 8px;
+	  background: rgba(255, 74, 74, 0.08);
+	  color: #ffb3b3;
+	  padding: 12px 12px 12px 30px;
+	}
+
+	.import-review-table {
+	  display: grid;
+	  overflow: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
 }
@@ -7975,9 +8009,119 @@ input::file-selector-button {
   padding: 11px 12px;
 }
 
-.import-review-table > div:last-child {
-  border-bottom: 0;
-}
+	.import-review-table > div:last-child {
+	  border-bottom: 0;
+	}
+
+	.import-review-table-wide {
+	  display: grid;
+	  gap: 0;
+	  overflow-x: auto;
+	  border: 1px solid var(--line);
+	  border-radius: 8px;
+	  background: rgba(0, 0, 0, 0.18);
+	}
+
+	.import-review-table-header,
+	.import-review-shot-row {
+	  display: grid;
+	  grid-template-columns: 72px 96px minmax(720px, 1fr) minmax(640px, 1fr);
+	  align-items: stretch;
+	  min-width: 1530px;
+	  border-bottom: 1px solid var(--line);
+	}
+
+	.import-review-table-header {
+	  background: rgba(255, 255, 255, 0.045);
+	  color: var(--ink);
+	  font-size: 12px;
+	  font-weight: 950;
+	  letter-spacing: 0;
+	  text-transform: uppercase;
+	}
+
+	.import-review-table-header > span,
+	.import-review-shot-row > span,
+	.import-review-shot-row > strong {
+	  display: flex;
+	  align-items: center;
+	  border-right: 1px solid var(--line);
+	  padding: 10px;
+	}
+
+	.import-review-shot-row:last-child {
+	  border-bottom: 0;
+	}
+
+	.import-review-shot-row > strong {
+	  color: var(--ink);
+	}
+
+	.photo-review-metric-group {
+	  display: grid;
+	  grid-template-columns: repeat(9, minmax(72px, 1fr));
+	  gap: 0;
+	}
+
+	.import-review-shot-row .photo-review-metric-group:last-child {
+	  grid-template-columns: repeat(8, minmax(72px, 1fr));
+	}
+
+	.photo-review-metric-group label {
+	  display: grid;
+	  gap: 5px;
+	  border-right: 1px solid var(--line);
+	  padding: 8px;
+	}
+
+	.photo-review-metric-group span {
+	  overflow: hidden;
+	  font-size: 11px;
+	  font-weight: 800;
+	  line-height: 1.2;
+	  text-overflow: ellipsis;
+	  white-space: nowrap;
+	}
+
+	.photo-review-metric-group input {
+	  width: 100%;
+	  min-width: 0;
+	  border: 1px solid rgba(255, 255, 255, 0.13);
+	  border-radius: 6px;
+	  background: rgba(0, 0, 0, 0.24);
+	  color: var(--ink);
+	  font: inherit;
+	  font-size: 13px;
+	  padding: 8px;
+	}
+
+	.normalized-csv-preview {
+	  display: grid;
+	  gap: 10px;
+	  border: 1px solid var(--line);
+	  border-radius: 8px;
+	  background: rgba(255, 255, 255, 0.035);
+	  padding: 12px;
+	}
+
+	.normalized-csv-preview summary {
+	  cursor: pointer;
+	  font-weight: 900;
+	}
+
+	.normalized-csv-preview textarea {
+	  min-height: 220px;
+	  width: 100%;
+	  border: 1px solid rgba(255, 255, 255, 0.13);
+	  border-radius: 8px;
+	  background: rgba(0, 0, 0, 0.24);
+	  color: var(--ink);
+	  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+	  font-size: 12px;
+	  line-height: 1.45;
+	  padding: 12px;
+	  resize: vertical;
+	}
 
 .practice-skill-note {
   margin: 0 0 18px;

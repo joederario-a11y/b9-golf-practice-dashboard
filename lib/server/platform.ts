@@ -27,6 +27,7 @@ export type PlatformEnvironment = {
   OPENAI_API_KEY?: string;
   OPENAI_MODEL?: string;
   OPENAI_TRANSCRIPTION_MODEL?: string;
+  OPENAI_VISION_MODEL?: string;
   RESEND_API_KEY?: string;
   RESEND_FROM?: string;
   MEDIA?: {

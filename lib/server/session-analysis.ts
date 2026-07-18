@@ -622,6 +622,195 @@ function insufficientDataAnalysis(context: ReturnType<typeof buildAnalysisContex
   };
 }
 
+function metricText(value: number | null | undefined, unit = "", digits = 1) {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "NA";
+  const rounded = roundMetric(value, digits);
+  return unit ? `${rounded} ${unit}` : `${rounded}`;
+}
+
+function metricSummaryText(summary: SessionMetrics["metricSummaries"][string], unit = "", digits = 1) {
+  if (!summary || summary.average === null) return "NA";
+  const average = metricText(summary.average, unit, digits);
+  const spread = summary.standardDeviation === null
+    ? ""
+    : `, ${metricText(summary.standardDeviation, unit, digits)} standard deviation`;
+  return `${average} across ${summary.count} measured shot${summary.count === 1 ? "" : "s"}${spread}`;
+}
+
+function unitForMetricKey(key: string) {
+  if (key === "smashFactor") return "";
+  if (key === "spinRate") return "rpm";
+  if (key.includes("Angle") || key.includes("Path")) return "deg";
+  if (key === "clubSpeed" || key === "ballSpeed") return "mph";
+  return "yd";
+}
+
+function digitsForMetricKey(key: string) {
+  if (key === "smashFactor") return 2;
+  if (key === "spinRate") return 0;
+  return 1;
+}
+
+function deterministicIssueList(context: ReturnType<typeof buildAnalysisContext>): MaiCaddyAnalysisOutput["issues"] {
+  const metrics = context.calculatedMetrics;
+  const issues: MaiCaddyAnalysisOutput["issues"] = [];
+  const smash = metrics.averageSmashFactor;
+  const faceToPath = metrics.averageFaceToPath;
+  const offlineSummary = metrics.metricSummaries.offlineDistance;
+  const carrySummary = metrics.metricSummaries.carry;
+
+  if (smash !== null && smash < 1.33) {
+    issues.push({
+      metric: "Smash factor",
+      finding: "Contact efficiency is costing ball speed relative to club speed.",
+      severity: smash < 1.28 ? "high" : "medium",
+      evidence: `Average smash factor was ${metricText(smash, "", 2)}.`,
+      certainty: "measured",
+      possibleCause: "Strike location or delivered loft may be reducing energy transfer.",
+    });
+  }
+
+  if (faceToPath !== null && Math.abs(faceToPath) >= 2.5) {
+    issues.push({
+      metric: "Face-to-path",
+      finding: "Face and path are separated enough to influence curve control.",
+      severity: Math.abs(faceToPath) >= 4.5 ? "high" : "medium",
+      evidence: `Average face-to-path was ${metricText(faceToPath, "deg")}.`,
+      certainty: "measured",
+      possibleCause: "Face control and path delivery may not be matching the intended shot shape.",
+    });
+  }
+
+  if (offlineSummary?.standardDeviation !== null && offlineSummary?.standardDeviation !== undefined && offlineSummary.standardDeviation >= 7.5) {
+    issues.push({
+      metric: "Offline distance",
+      finding: "Dispersion is wide enough to make target selection harder.",
+      severity: offlineSummary.standardDeviation >= 12 ? "high" : "medium",
+      evidence: `Offline distance spread was ${metricSummaryText(offlineSummary, "yd")}.`,
+      certainty: "measured",
+      possibleCause: "Start line, curve control, or strike quality may be moving together.",
+    });
+  }
+
+  if (carrySummary?.standardDeviation !== null && carrySummary?.standardDeviation !== undefined && carrySummary.standardDeviation >= 10) {
+    issues.push({
+      metric: "Carry distance",
+      finding: "Carry distance varied enough to affect front-to-back distance control.",
+      severity: carrySummary.standardDeviation >= 15 ? "high" : "medium",
+      evidence: `Carry distance was ${metricSummaryText(carrySummary, "yd")}.`,
+      certainty: "measured",
+      possibleCause: "Contact consistency, launch, or spin variation may be changing peak height and landing distance.",
+    });
+  }
+
+  return issues.slice(0, 4);
+}
+
+function deterministicPrimaryPriority(context: ReturnType<typeof buildAnalysisContext>): MaiCaddyAnalysisOutput["primaryPriority"] {
+  const firstIssue = deterministicIssueList(context)[0];
+  if (firstIssue) {
+    return {
+      title: firstIssue.metric === "Smash factor" ? "Tighten contact before chasing speed" : `Stabilize ${firstIssue.metric.toLowerCase()}`,
+      whyItMatters: firstIssue.finding,
+      evidence: firstIssue.evidence,
+    };
+  }
+
+  return {
+    title: "Turn this baseline into a repeatable target window",
+    whyItMatters: "The session has enough measured data to begin tracking trends, but the next useful step is repeating the same club and target.",
+    evidence: `${context.dataQuality.usableShotCount} usable shots were available for ${context.session.primaryClub}.`,
+  };
+}
+
+function deterministicSessionAnalysis(
+  context: ReturnType<typeof buildAnalysisContext>,
+): MaiCaddyAnalysisOutput {
+  const metrics = context.calculatedMetrics;
+  const available = availableMetrics(metrics);
+  const limitations = Array.from(new Set([
+    ...context.dataQuality.limitations,
+    "Live model generation did not complete, so this report uses stored shot data and MAI Coach measured-metric rules.",
+  ]));
+  const issues = deterministicIssueList(context);
+  const primaryPriority = deterministicPrimaryPriority(context);
+  const carry = metricText(metrics.averageCarry, "yd");
+  const total = metricText(metrics.averageTotalDistance, "yd");
+  const smash = metricText(metrics.averageSmashFactor, "", 2);
+  const launch = metricText(metrics.averageLaunchAngle, "deg");
+  const tendency = metrics.leftRightTendency.available
+    ? `${metrics.leftRightTendency.dominant} tendency with average offline ${metricText(metrics.leftRightTendency.averageOffline, "yd")}`
+    : "offline tendency unavailable";
+  const confidence = Math.min(
+    0.82,
+    Math.max(0.55, 0.52 + Math.min(context.dataQuality.usableShotCount, 12) * 0.025 + available.length * 0.01),
+  );
+
+  const analysis: MaiCaddyAnalysisOutput = {
+    headline: `MAI Coach reviewed this ${context.session.primaryClub} session from measured launch-monitor data.`,
+    dataQuality: {
+      confidence: confidence >= 0.72 ? "medium" : "low",
+      usableShotCount: context.dataQuality.usableShotCount,
+      limitations,
+    },
+    sessionSummary: `${context.session.title} includes ${context.dataQuality.usableShotCount} usable ${context.session.primaryClub} shots. Average carry was ${carry}, total was ${total}, smash factor was ${smash}, and launch was ${launch}. Directionally, the saved shot data shows ${tendency}.`,
+    measuredFindings: available.slice(0, 6).map((metric) => ({
+      metric: metric.label,
+      value: metricSummaryText(metric, unitForMetricKey(metric.key), digitsForMetricKey(metric.key)),
+      meaning: "This is calculated only from saved, detected shot measurements for this session.",
+    })),
+    strengths: [
+      {
+        title: "Enough same-session data for a baseline",
+        evidence: `${context.dataQuality.usableShotCount} usable shots were saved in this session.`,
+      },
+      {
+        title: "Distance and delivery metrics were preserved",
+        evidence: `${available.length} metric groups were available for review without converting missing values to zero.`,
+      },
+    ],
+    primaryPriority,
+    issues,
+    practicePlan: [
+      {
+        drill: "Centered contact ladder",
+        problemAddressed: primaryPriority.title,
+        whyThisFits: "The saved metrics point first to contact quality and repeatability before adding more swing speed.",
+        setup: `Hit three sets of five ${context.session.primaryClub} shots, resetting after each swing and recording strike location when possible.`,
+        feel: "Balanced finish, centered strike, and a committed target line.",
+        metricToMonitor: metrics.averageSmashFactor !== null ? "Smash factor" : "Carry distance",
+        measurableTarget: metrics.averageSmashFactor !== null
+          ? "Move smash factor closer to 1.34 or better for this club."
+          : "Keep carry dispersion inside a 10-yard window.",
+        durationOrSwingCount: "15 swings",
+        progressionRule: "Only add speed when at least 10 of 15 swings finish inside the intended target window.",
+      },
+      {
+        drill: "Start-line gate",
+        problemAddressed: "Shot direction and curve control",
+        whyThisFits: "Face, path, and side-distance numbers are most useful when paired with a clear starting window.",
+        setup: "Pick a start line and create a narrow visual gate 10 to 15 feet in front of the ball.",
+        feel: "Start the ball through the gate, then let the curve happen naturally.",
+        metricToMonitor: "Face-to-path and side total",
+        measurableTarget: "Keep face-to-path inside about 3 degrees and side total inside 10 yards.",
+        durationOrSwingCount: "10 swings",
+        progressionRule: "Tighten the gate only after seven of ten balls start through it.",
+      },
+    ],
+    nextSessionGoal: `Repeat a ${context.session.primaryClub} block with the same target and compare carry, smash factor, face-to-path, and side total.`,
+    progressComparison: {
+      available: metrics.previousSessionComparison.available,
+      summary: metrics.previousSessionComparison.summary,
+    },
+    courseRelevance: "Use the average carry and dispersion window from this session as the starting point for safer target selection until a larger trend is built.",
+    followUpQuestion: "Were all of these shots aimed at the same target line?",
+    confidence: roundMetric(confidence, 2),
+  };
+
+  assertNoDisallowedAnalysisContent(analysis);
+  return analysis;
+}
+
 function getString(record: Record<string, unknown>, key: string) {
   const value = record[key];
   if (typeof value !== "string" || !value.trim()) {
@@ -987,10 +1176,40 @@ export async function analyzeStoredSession(identity: AuthIdentity, sessionId: st
       playerContext,
     });
 
-    const analysis = metrics.validShotCount < MIN_USABLE_SHOTS
-      ? insufficientDataAnalysis(context)
-      : await callOpenAI(context, model);
-    const status: AnalysisStatus = metrics.validShotCount < MIN_USABLE_SHOTS ? "insufficient_data" : "completed";
+    let analysis: MaiCaddyAnalysisOutput;
+    let status: AnalysisStatus;
+    let savedModel = model;
+    let errorCode: string | null = null;
+    let errorMessage: string | null = null;
+
+    if (metrics.validShotCount < MIN_USABLE_SHOTS) {
+      analysis = insufficientDataAnalysis(context);
+      status = "insufficient_data";
+    } else {
+      try {
+        analysis = await callOpenAI(context, model);
+        status = "completed";
+      } catch (error) {
+        const safe = analysisError(error);
+        const canUseMeasuredFallback = [
+          "openai_request_failed",
+          "openai_rate_limited",
+          "openai_timeout",
+          "empty_openai_response",
+        ].includes(safe.code);
+
+        if (!canUseMeasuredFallback) {
+          throw error;
+        }
+
+        analysis = deterministicSessionAnalysis(context);
+        status = "completed";
+        savedModel = `fallback:${model}`;
+        errorCode = safe.code;
+        errorMessage = safe.message;
+      }
+    }
+
     await updateAnalysisRecord({
       database,
       analysisId,
@@ -998,7 +1217,9 @@ export async function analyzeStoredSession(identity: AuthIdentity, sessionId: st
       status,
       analysis,
       metrics,
-      model,
+      model: savedModel,
+      errorCode,
+      errorMessage,
     });
 
     const row = await database

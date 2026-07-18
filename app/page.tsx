@@ -10,6 +10,12 @@ import {
   METRIC_EDUCATION_VIDEO_PRELOAD,
   metricEducationHasVideo,
 } from "@/lib/metric-education-policy.mjs";
+import {
+  generateNormalizedPhotoImportCsv,
+  normalizedCsvDataRowCount,
+  parseNormalizedPhotoImportCsv,
+  PHOTO_IMPORT_CSV_SCHEMA_VERSION,
+} from "@/lib/photo-import-policy.mjs";
 import { sanitizeSessionList } from "@/lib/session-data-policy.mjs";
 
 type Tab = "dashboard" | "sessions" | "clubs" | "videos" | "coach" | "admin" | "practice" | "import";
@@ -59,6 +65,9 @@ type Shot = {
   sideTotal?: number;
   curve?: number;
   detectedMetrics?: NumericShotMetric[];
+  extractionConfidence?: number;
+  reviewStatus?: string;
+  sourceImages?: string[];
   sourceShotNumber?: string;
 };
 
@@ -320,9 +329,34 @@ type PhotoImportMetadata = {
   latitude?: number;
   longitude?: number;
   fileNames?: string[];
+  averageValidation?: Record<string, number>;
+  blockingIssues?: string[];
+  csvSchemaVersion?: string;
+  duplicateShotNumbers?: number[];
+  normalizedCsv?: string;
+  pageCounts?: {
+    distance: number;
+    delivery: number;
+  };
+  photoImportJobId?: string;
+  photoImportSummary?: {
+    simulator: string;
+    club: string;
+    canonicalClub: string | null;
+    imageCount: number;
+    distancePageCount: number;
+    deliveryPageCount: number;
+    uniqueShotCount: number;
+    shotNumbers: number[];
+    overlappingShotsDeduplicated: number[];
+    avgRowsExcluded: boolean;
+  };
+  sourcePaths?: string[];
 };
 
 type ImportReview = {
+  blockingIssues?: string[];
+  csvText?: string;
   id: string;
   date: string;
   detectedMetrics: NumericShotMetric[];
@@ -334,6 +368,7 @@ type ImportReview = {
   shots: Shot[];
   simulator: string;
   submissionType: LastImport["submissionType"];
+  summary?: PhotoImportMetadata["photoImportSummary"];
   warnings: string[];
 };
 
@@ -369,6 +404,8 @@ type PhotoScanResult =
       csvText: string;
       confidence: number;
       metadata: PhotoImportMetadata;
+      pageType?: string;
+      warnings?: string[];
     }
   | {
       id: string;
@@ -376,6 +413,35 @@ type PhotoScanResult =
       status: "error";
       message: string;
     };
+
+type PhotoBatchImportResult = {
+  jobId: string;
+  status: "needs_review" | "partial" | "failed" | "complete";
+  simulator: string;
+  club: string | null;
+  clubDisplay?: string;
+  shots: Shot[];
+  csvText: string;
+  pages: Array<{
+    imageId: string;
+    fileName: string;
+    pageType: string;
+    visibleShotNumbers: number[];
+    confidence: number;
+    warnings: string[];
+  }>;
+  summary?: PhotoImportMetadata["photoImportSummary"];
+  pageCounts?: {
+    distance: number;
+    delivery: number;
+  };
+  duplicateShotNumbers?: number[];
+  blockingIssues?: string[];
+  warnings?: string[];
+  averages?: Record<string, number>;
+  sourcePaths?: string[];
+  csvSchemaVersion?: string;
+};
 
 type CoachMessage = {
   id: string;
@@ -2910,9 +2976,13 @@ function buildImportReview(
     ...(clubNames.some((club) => normalizeDataLabel(club) === "unknownclub") && !normalized.inferredClub
       ? ["Club was not detected. Add it in the notes or choose it before saving."]
       : []),
+    ...(metadata.duplicateShotNumbers?.length ? [`Merged overlapping shots ${metadata.duplicateShotNumbers.join(", ")}.`] : []),
   ];
+  const blockingIssues = metadata.blockingIssues ?? [];
 
   return {
+    blockingIssues,
+    csvText: metadata.normalizedCsv,
     id: `review-${Date.now()}`,
     date: metadata.capturedAt ?? getTodayDateString(),
     detectedMetrics,
@@ -2924,6 +2994,7 @@ function buildImportReview(
     shots: normalized.shots,
     simulator,
     submissionType,
+    summary: metadata.photoImportSummary,
     warnings,
   };
 }
@@ -2949,6 +3020,9 @@ function parseCurveFeet(value: string) {
 }
 
 function parseCsv(text: string): Shot[] {
+  const normalizedRows = parseNormalizedPhotoImportCsv(text) as Shot[];
+  if (normalizedRows.length) return normalizedRows;
+
   const rows = parseCsvRows(text);
   if (rows.length < 2) return [];
   const headers = rows[0].map(normalizeDataLabel);
@@ -2992,33 +3066,34 @@ function parseCsv(text: string): Shot[] {
       .map(([key]) => key);
     if (!detectedMetrics.length) return [];
 
-    const metric = (key: NumericShotMetric) => values[key] ?? 0;
-    const offline = metric("offline");
-    return [{
+    const shot: Shot = {
       id: `csv-${Date.now()}-${index}`,
       club,
-      carry: metric("carry"),
-      total: metric("total"),
-      ballSpeed: metric("ballSpeed"),
-      clubSpeed: metric("clubSpeed"),
-      smash: metric("smash"),
-      launch: metric("launch"),
-      spin: Math.round(metric("spin")),
-      offline,
-      proximity: metric("proximity"),
-      apex: metric("apex"),
-      spinAxis: metric("spinAxis"),
-      descent: metric("descent"),
-      horizontalAngle: metric("horizontalAngle"),
-      faceAngle: metric("faceAngle"),
-      clubPath: metric("clubPath"),
-      faceToPath: metric("faceToPath"),
-      sideCarry: metric("sideCarry"),
-      sideTotal: metric("sideTotal"),
-      curve: metric("curve"),
+      carry: Number.NaN,
+      total: Number.NaN,
+      ballSpeed: Number.NaN,
+      clubSpeed: Number.NaN,
+      smash: Number.NaN,
+      launch: Number.NaN,
+      spin: Number.NaN,
+      offline: Number.NaN,
       shape: "Not recorded",
+      sourceShotNumber: readCell(cells, ["shot_number", "shot number", "shot"]) || String(index + 1),
       detectedMetrics,
-    }];
+    };
+    detectedMetrics.forEach((metric) => {
+      const value = values[metric];
+      if (typeof value === "number" && Number.isFinite(value)) {
+        (shot[metric] as number) = metric === "spin" ? Math.round(value) : value;
+      }
+    });
+    if (hasShotMetric(shot, "sideTotal")) shot.offline = shot.sideTotal as number;
+    else if (hasShotMetric(shot, "sideCarry")) shot.offline = shot.sideCarry as number;
+    else if (!hasShotMetric(shot, "offline")) delete (shot as Partial<Shot>).offline;
+    if (hasShotMetric(shot, "offline")) {
+      shot.shape = shot.offline < -8 ? "Draw" : shot.offline > 8 ? "Fade" : "Straight";
+    }
+    return [shot];
   });
 }
 
@@ -3444,37 +3519,39 @@ function parseShotHistoryRows(text: string, fileName: string, fileIndex: number,
     );
     if (coreMetrics.length < 2) return [];
 
-    const metric = (key: NumericShotMetric) => values[key] ?? 0;
-    const offline = metric("offline");
-
-    return [{
+    const shot: Shot = {
       id: `photo-table-${Date.now()}-${fileIndex}-${shotNumber ?? rowIndex}`,
       club: detectPhotoClub(text),
-      carry: metric("carry"),
-      total: metric("total"),
-      ballSpeed: metric("ballSpeed"),
-      clubSpeed: metric("clubSpeed"),
-      smash: metric("smash"),
-      launch: metric("launch"),
-      spin: Math.round(metric("spin")),
-      offline,
-      proximity: metric("proximity"),
-      apex: metric("apex"),
-      spinAxis: metric("spinAxis"),
-      descent: metric("descent"),
-      horizontalAngle: metric("horizontalAngle"),
-      faceAngle: metric("faceAngle"),
-      clubPath: metric("clubPath"),
-      faceToPath: metric("faceToPath"),
-      sideCarry: metric("sideCarry"),
-      sideTotal: metric("sideTotal"),
-      curve: metric("curve"),
-      shape: detectedMetrics.some((item) => ["offline", "sideTotal", "sideCarry"].includes(item))
-        ? offline < -12 ? "Draw" : offline > 12 ? "Fade" : "Straight"
-        : "Not recorded",
+      carry: Number.NaN,
+      total: Number.NaN,
+      ballSpeed: Number.NaN,
+      clubSpeed: Number.NaN,
+      smash: Number.NaN,
+      launch: Number.NaN,
+      spin: Number.NaN,
+      offline: Number.NaN,
+      shape: "Not recorded",
       detectedMetrics,
       sourceShotNumber: shotNumber,
-    }];
+    };
+
+    detectedMetrics.forEach((metric) => {
+      const value = values[metric];
+      if (typeof value === "number" && Number.isFinite(value)) {
+        (shot[metric] as number) = metric === "spin" ? Math.round(value) : value;
+      }
+    });
+
+    if (hasShotMetric(shot, "sideTotal")) shot.offline = shot.sideTotal as number;
+    else if (hasShotMetric(shot, "sideCarry")) shot.offline = shot.sideCarry as number;
+    else if (!hasShotMetric(shot, "offline")) delete (shot as Partial<Shot>).offline;
+
+    const offline = getShotMetric(shot, "offline");
+    if (typeof offline === "number" && Number.isFinite(offline)) {
+      shot.shape = offline < -12 ? "Draw" : offline > 12 ? "Fade" : "Straight";
+    }
+
+    return [shot];
   });
 }
 
@@ -3524,17 +3601,17 @@ function csvEscape(value: string | number | undefined) {
 }
 
 function shotsToCsv(shots: Shot[]) {
-  const headers = ["club", ...SHOT_HISTORY_CSV_COLUMNS];
-  const rows = shots.map((shot, index) => {
-    const rowValues = headers.map((header) => {
-      if (header === "club") return getClubDisplayName(shot.club);
-      if (header === "shot") return shot.sourceShotNumber ?? String(index + 1);
-      const metric = header as NumericShotMetric;
-      return hasShotMetric(shot, metric) ? shot[metric] : undefined;
-    });
-    return rowValues.map(csvEscape).join(",");
+  return generateNormalizedPhotoImportCsv({
+    sessionId: `photo-import-preview-${Date.now()}`,
+    sessionDate: getTodayDateString(),
+    simulator: "Simulator photo",
+    club: shots[0]?.club ?? "Unknown Club",
+    shots: shots.map((shot, index) => ({
+      ...shot,
+      sourceShotNumber: shot.sourceShotNumber ?? String(index + 1),
+    })),
+    notes: "",
   });
-  return [headers.join(","), ...rows].join("\n");
 }
 
 function detectPhotoClub(text: string) {
@@ -3728,41 +3805,42 @@ function parsePhotoOcr(text: string, fileName: string, fileIndex: number, tsv?: 
   }
 
   const club = detectPhotoClub(text);
-  const ballSpeed = parsedMetrics.ballSpeed ?? 0;
-  const clubSpeed = parsedMetrics.clubSpeed ?? 0;
   const derivedSmash = parsedMetrics.smash ?? (
     parsedMetrics.ballSpeed && parsedMetrics.clubSpeed ? parsedMetrics.ballSpeed / parsedMetrics.clubSpeed : undefined
   );
   if (derivedSmash !== undefined && !detectedMetrics.includes("smash")) detectedMetrics.push("smash");
-  const offline = parsedMetrics.offline ?? parsedMetrics.sideTotal ?? parsedMetrics.sideCarry ?? 0;
 
   const shot: Shot = {
     id: `photo-${Date.now()}-${fileIndex}`,
     club,
-    carry: round(parsedMetrics.carry ?? 0, 1),
-    total: round(parsedMetrics.total ?? 0, 1),
-    ballSpeed: round(ballSpeed, 1),
-    clubSpeed: round(clubSpeed, 1),
-    smash: round(derivedSmash ?? 0, 2),
-    launch: parsedMetrics.launch ?? 0,
-    spin: Math.round(parsedMetrics.spin ?? 0),
-    offline,
-    proximity: parsedMetrics.proximity ?? 0,
-    apex: parsedMetrics.apex ?? 0,
-    spinAxis: parsedMetrics.spinAxis ?? 0,
-    descent: parsedMetrics.descent ?? 0,
-    horizontalAngle: parsedMetrics.horizontalAngle ?? 0,
-    faceAngle: parsedMetrics.faceAngle ?? 0,
-    clubPath: parsedMetrics.clubPath ?? 0,
-    faceToPath: parsedMetrics.faceToPath ?? 0,
-    sideCarry: parsedMetrics.sideCarry ?? offline,
-    sideTotal: parsedMetrics.sideTotal ?? offline,
-    curve: parsedMetrics.curve ?? 0,
-    shape: detectedMetrics.some((metric) => ["offline", "sideTotal", "sideCarry"].includes(metric))
-      ? offline < -12 ? "Draw" : offline > 12 ? "Fade" : "Straight"
-      : "Not recorded",
+    carry: Number.NaN,
+    total: Number.NaN,
+    ballSpeed: Number.NaN,
+    clubSpeed: Number.NaN,
+    smash: Number.NaN,
+    launch: Number.NaN,
+    spin: Number.NaN,
+    offline: Number.NaN,
+    shape: "Not recorded",
     detectedMetrics,
   };
+
+  if (derivedSmash !== undefined) parsedMetrics.smash = derivedSmash;
+  detectedMetrics.forEach((metric) => {
+    const value = parsedMetrics[metric];
+    if (typeof value === "number" && Number.isFinite(value)) {
+      (shot[metric] as number) = metric === "spin" ? Math.round(value) : round(value, metric === "smash" ? 2 : 1);
+    }
+  });
+
+  if (hasShotMetric(shot, "sideTotal")) shot.offline = shot.sideTotal as number;
+  else if (hasShotMetric(shot, "sideCarry")) shot.offline = shot.sideCarry as number;
+  else if (!hasShotMetric(shot, "offline")) delete (shot as Partial<Shot>).offline;
+
+  const offline = getShotMetric(shot, "offline");
+  if (typeof offline === "number" && Number.isFinite(offline)) {
+    shot.shape = offline < -12 ? "Draw" : offline > 12 ? "Fade" : "Straight";
+  }
 
   return {
     shot,
@@ -5264,9 +5342,24 @@ export default function Home() {
     setPendingImportReview((current) => {
       if (!current) return current;
       const updated = updater(current);
+      const normalizedCsv = updated.submissionType === "Photo"
+        ? generateNormalizedPhotoImportCsv({
+          sessionId: updated.metadata.photoImportJobId ?? updated.id,
+          sessionDate: updated.date,
+          simulator: updated.simulator,
+          club: updated.shots[0]?.club ?? updated.inferredClub ?? "Unknown Club",
+          shots: updated.shots,
+          notes: updated.notes,
+        })
+        : updated.csvText;
       return {
         ...updated,
+        csvText: normalizedCsv,
         detectedMetrics: getDetectedImportMetrics(updated.shots),
+        metadata: {
+          ...updated.metadata,
+          normalizedCsv,
+        },
         missingMetrics: getMissingImportMetrics(updated.shots),
       };
     });
@@ -5278,6 +5371,10 @@ export default function Home() {
       return;
     }
     const review = pendingImportReview;
+    if (review.blockingIssues?.length) {
+      setImportMessage(`Resolve before saving: ${review.blockingIssues.join(" ")}`);
+      return;
+    }
     const nextSession = buildImportedSession(
       review.shots,
       review.submissionType,
@@ -10917,6 +11014,96 @@ const MANUAL_SHOT_FIELDS: Array<{ key: NumericShotMetric; label: string; unit: s
   { key: "faceToPath", label: "Face to path", unit: "deg", placeholder: "2.2" },
 ];
 
+const PHOTO_REVIEW_DISTANCE_FIELDS: Array<{ key: NumericShotMetric; label: string }> = [
+  { key: "proximity", label: "Proximity" },
+  { key: "carry", label: "Carry" },
+  { key: "total", label: "Total" },
+  { key: "ballSpeed", label: "Ball speed" },
+  { key: "clubSpeed", label: "Club speed" },
+  { key: "smash", label: "Smash" },
+  { key: "apex", label: "Apex" },
+  { key: "spin", label: "Spin" },
+  { key: "spinAxis", label: "Spin axis" },
+];
+
+const PHOTO_REVIEW_DELIVERY_FIELDS: Array<{ key: NumericShotMetric; label: string }> = [
+  { key: "launch", label: "Launch" },
+  { key: "descent", label: "Descent" },
+  { key: "horizontalAngle", label: "Horiz." },
+  { key: "faceAngle", label: "Face" },
+  { key: "clubPath", label: "Path" },
+  { key: "faceToPath", label: "Face-path" },
+  { key: "sideCarry", label: "Side carry" },
+  { key: "sideTotal", label: "Side total" },
+];
+
+const PHOTO_UPLOAD_MAX_DIMENSION = 900;
+const PHOTO_UPLOAD_JPEG_QUALITY = 0.68;
+const PHOTO_UPLOAD_RESIZE_THRESHOLD = 180 * 1024;
+
+async function sha256FileHex(file: File) {
+  const bytes = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function imageBitmapFromFile(file: File): Promise<ImageBitmap | HTMLImageElement> {
+  if ("createImageBitmap" in window) {
+    return createImageBitmap(file, { imageOrientation: "from-image" });
+  }
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Photo could not be prepared for upload."));
+    };
+    image.src = url;
+  });
+}
+
+function canvasBlob(canvas: HTMLCanvasElement, type: string, quality: number) {
+  return new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, type, quality));
+}
+
+async function preparePhotoForPrivateImport(file: File) {
+  const originalHash = await sha256FileHex(file);
+  if (file.size <= PHOTO_UPLOAD_RESIZE_THRESHOLD) {
+    return { file, originalHash, wasResized: false };
+  }
+
+  const source = await imageBitmapFromFile(file);
+  const width = source.width;
+  const height = source.height;
+  const scale = Math.min(1, PHOTO_UPLOAD_MAX_DIMENSION / Math.max(width, height));
+  if (scale >= 1) return { file, originalHash, wasResized: false };
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(width * scale));
+  canvas.height = Math.max(1, Math.round(height * scale));
+  const context = canvas.getContext("2d", { alpha: false });
+  if (!context) return { file, originalHash, wasResized: false };
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(source, 0, 0, canvas.width, canvas.height);
+  if ("close" in source && typeof source.close === "function") source.close();
+
+  const blob = await canvasBlob(canvas, "image/jpeg", PHOTO_UPLOAD_JPEG_QUALITY);
+  if (!blob || blob.size >= file.size) return { file, originalHash, wasResized: false };
+  const uploadName = file.name.replace(/\.[^.]+$/, "") || "session-photo";
+  const uploadFile = new File([blob], `${uploadName}.jpg`, {
+    lastModified: file.lastModified,
+    type: "image/jpeg",
+  });
+  return { file: uploadFile, originalHash, wasResized: true };
+}
+
 function ImportView({
   cancelImportReview,
   confirmImportReview,
@@ -10944,6 +11131,7 @@ function ImportView({
 }) {
   const [importMode, setImportMode] = useState<"api" | "file" | "photo" | "manual">("api");
   const [importNotes, setImportNotes] = useState("");
+  const [photoBatchImport, setPhotoBatchImport] = useState<PhotoBatchImportResult | null>(null);
   const [photoScans, setPhotoScans] = useState<PhotoScanResult[]>([]);
   const [photoScanState, setPhotoScanState] = useState<"idle" | "scanning" | "ready" | "error">("idle");
   const [photoProgress, setPhotoProgress] = useState(0);
@@ -11022,6 +11210,56 @@ function ImportView({
     }, importNotes);
   }
 
+  function reviewInputValue(shot: Shot, metric: NumericShotMetric) {
+    const value = getShotMetric(shot, metric);
+    return typeof value === "number" && Number.isFinite(value) ? String(value) : "";
+  }
+
+  function updateReviewShotMetric(shotId: string, metric: NumericShotMetric, value: string) {
+    updateImportReview((review) => ({
+      ...review,
+      shots: review.shots.map((shot) => {
+        if (shot.id !== shotId) return shot;
+        const next = { ...shot };
+        const detected = new Set(next.detectedMetrics ?? []);
+        const trimmed = value.trim();
+        if (!trimmed) {
+          delete (next as Partial<Shot>)[metric];
+          detected.delete(metric);
+        } else {
+          const parsed = parseDirectionalNumber(trimmed);
+          if (parsed !== undefined) {
+            (next[metric] as number) = metric === "spin" ? Math.round(parsed) : parsed;
+            detected.add(metric);
+          }
+        }
+        if (metric === "sideTotal" || metric === "sideCarry") {
+          if (hasShotMetric(next, "sideTotal")) next.offline = next.sideTotal as number;
+          else if (hasShotMetric(next, "sideCarry")) next.offline = next.sideCarry as number;
+          else delete (next as Partial<Shot>).offline;
+        }
+        next.detectedMetrics = Array.from(detected) as NumericShotMetric[];
+        return next;
+      }),
+    }));
+  }
+
+  function copyReviewCsv(csv: string) {
+    void navigator.clipboard?.writeText(csv);
+    setCsvFileStatus("Normalized CSV copied.");
+  }
+
+  function downloadReviewCsv(csv: string) {
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "mai-coach-normalized-session.csv";
+    link.click();
+    URL.revokeObjectURL(url);
+    setCsvFileStatus("Normalized CSV downloaded.");
+  }
+
   async function readCsvFile(file: File | undefined) {
     if (!file) return;
     if (!file.name.toLowerCase().endsWith(".csv") || file.size > 5 * 1024 * 1024) {
@@ -11045,11 +11283,11 @@ function ImportView({
   }
 
   async function scanPhotoFiles(files: File[]) {
-    const selectedFiles = files.slice(0, 5);
+    const selectedFiles = files.slice(0, 8);
     if (!selectedFiles.length) return;
 
     const supportedFiles = selectedFiles.filter((file) =>
-      ["image/png", "image/jpeg", "image/webp", "application/pdf"].includes(file.type) && file.size <= 15 * 1024 * 1024,
+      file.type.startsWith("image/") && file.size <= 18 * 1024 * 1024,
     );
     const rejectedFiles: PhotoScanResult[] = selectedFiles
       .filter((file) => !supportedFiles.includes(file))
@@ -11062,112 +11300,125 @@ function ImportView({
 
     setPhotoScans(rejectedFiles);
     if (!supportedFiles.length) {
-      setPhotoScanState("error");
-      setPhotoStatus("No supported images were selected.");
-      return;
-    }
+	    setPhotoScanState("error");
+	    setPhotoStatus("No supported images were selected.");
+	    return;
+	  }
 
+    setPhotoBatchImport(null);
     setPhotoScanState("scanning");
     setPhotoProgress(0);
-    setPhotoStatus("Starting the private photo reader...");
-
-    let worker: Awaited<ReturnType<(typeof import("tesseract.js"))["createWorker"]>> | undefined;
-    const results: PhotoScanResult[] = [...rejectedFiles];
+    setPhotoStatus(`Preparing ${supportedFiles.length} ${supportedFiles.length === 1 ? "image" : "images"} for the private session reader...`);
 
     try {
-      const { createWorker, PSM } = await import("tesseract.js");
-      worker = await createWorker("eng", undefined, {
-        logger: (message) => {
-          const currentProgress = Math.round(message.progress * 100);
-          setPhotoProgress(currentProgress);
-          setPhotoStatus(
-            message.status === "recognizing text"
-              ? `Reading shot data... ${currentProgress}%`
-              : "Preparing the photo reader...",
-          );
-        },
+      const metadataList = await Promise.all(supportedFiles.map(readPhotoMetadata));
+      const combinedMetadata = metadataList.reduce<PhotoImportMetadata>(
+        (combined, metadata, index) => ({
+          fileNames: [...(combined.fileNames ?? []), supportedFiles[index].name],
+          location: combined.location ?? metadata.location,
+          capturedAt: combined.capturedAt ?? metadata.capturedAt,
+          latitude: combined.latitude ?? metadata.latitude,
+          longitude: combined.longitude ?? metadata.longitude,
+        }),
+        {},
+      );
+      setPhotoProgress(12);
+      const preparedFiles = await Promise.all(supportedFiles.map(preparePhotoForPrivateImport));
+      const resizedCount = preparedFiles.filter((photo) => photo.wasResized).length;
+      const formData = new FormData();
+      preparedFiles.forEach((photo) => {
+        formData.append("images", photo.file, photo.file.name);
+        formData.append("originalHashes", photo.originalHash);
       });
-      await worker.setParameters({
-        tessedit_pageseg_mode: PSM.SPARSE_TEXT,
-        preserve_interword_spaces: "1",
+      formData.append("notes", importNotes);
+      formData.append("sessionDate", combinedMetadata.capturedAt ?? getTodayDateString());
+      setPhotoProgress(30);
+      setPhotoStatus(
+        resizedCount
+          ? `Uploading optimized photos (${resizedCount} resized) and classifying Full Swing pages...`
+          : "Uploading photos and classifying Full Swing pages...",
+      );
+      const response = await fetch("/api/import/photos", {
+        method: "POST",
+        body: formData,
+        credentials: "same-origin",
       });
-
-      for (let index = 0; index < supportedFiles.length; index += 1) {
-        const file = supportedFiles[index];
-        setPhotoStatus(`Reading ${file.name} (${index + 1} of ${supportedFiles.length})...`);
-
-        try {
-          if (file.type === "application/pdf") {
-            throw new Error("PDF selected. Export the visible report page as PNG or JPG for OCR review in this browser preview.");
-          }
-
-          const [ocrSource, metadata] = await Promise.all([
-            preparePhotoForOcr(file),
-            readPhotoMetadata(file),
-          ]);
-          const recognition = await worker.recognize(
-            ocrSource,
-            { rotateAuto: true },
-            { text: true, tsv: true },
-          );
-          const parsed = parsePhotoOcr(recognition.data.text, file.name, index, recognition.data.tsv ?? undefined);
-          results.push({
-            id: `scan-${Date.now()}-${index}`,
-            fileName: file.name,
-            status: "ready",
-            simulator: parsed.simulator,
-            shot: parsed.shot,
-            shots: parsed.shots,
-            csvText: parsed.csvText,
-            confidence: Math.round(recognition.data.confidence),
-            metadata,
-          });
-        } catch (error) {
-          results.push({
-            id: `scan-error-${Date.now()}-${index}`,
-            fileName: file.name,
-            status: "error",
-            message: error instanceof Error ? error.message : "This image could not be read.",
-          });
-        }
+      const responseText = await response.text();
+      let payload: PhotoBatchImportResult & { error?: string };
+      try {
+        payload = JSON.parse(responseText) as PhotoBatchImportResult & { error?: string };
+      } catch {
+        throw new Error(responseText || "The private photo reader could not read the upload response.");
       }
-    } catch {
+      if (!response.ok && payload.status !== "partial") {
+        throw new Error(payload.error || payload.warnings?.[0] || "No readable shot data was found.");
+      }
+
+      const importedMetadata: PhotoImportMetadata = {
+        ...combinedMetadata,
+        averageValidation: payload.averages,
+        blockingIssues: payload.blockingIssues,
+        csvSchemaVersion: payload.csvSchemaVersion ?? PHOTO_IMPORT_CSV_SCHEMA_VERSION,
+        duplicateShotNumbers: payload.duplicateShotNumbers,
+        normalizedCsv: payload.csvText,
+        pageCounts: payload.pageCounts,
+        photoImportJobId: payload.jobId,
+        photoImportSummary: payload.summary,
+        sourcePaths: payload.sourcePaths,
+      };
+      const pageResults: PhotoScanResult[] = payload.pages.length
+        ? payload.pages.map((page, index) => {
+          const pageShotNumbers = new Set(page.visibleShotNumbers.map(String));
+          const pageShots = payload.shots.filter((shot) => shot.sourceShotNumber && pageShotNumbers.has(shot.sourceShotNumber));
+          return {
+            id: `scan-${payload.jobId}-${index}`,
+            fileName: page.fileName,
+            status: "ready",
+            simulator: payload.simulator,
+            shot: pageShots[0] ?? payload.shots[0],
+            shots: pageShots.length ? pageShots : payload.shots,
+            csvText: payload.csvText,
+            confidence: Math.round((page.confidence ?? 0.8) * 100),
+            metadata: importedMetadata,
+            pageType: page.pageType,
+            warnings: page.warnings,
+          };
+        })
+        : [];
+
+      const results: PhotoScanResult[] = [...rejectedFiles, ...pageResults];
+      setPhotoBatchImport({
+        ...payload,
+        csvSchemaVersion: payload.csvSchemaVersion ?? PHOTO_IMPORT_CSV_SCHEMA_VERSION,
+      });
+      setCsvText(payload.csvText);
+      setCsvFileName("Normalized photo CSV");
+      setCsvFileStatus(`${normalizedCsvDataRowCount(payload.csvText)} photo rows are ready in normalized CSV format.`);
+      setPhotoScans(results);
+      setPhotoProgress(100);
+      setPhotoScanState(payload.shots.length ? "ready" : "error");
+      setPhotoStatus(
+        payload.shots.length
+          ? `${payload.summary?.simulator ?? payload.simulator} ${payload.summary?.club ?? payload.clubDisplay ?? "session"}: ${payload.shots.length} unique shots ready for review. CSV ready.`
+          : payload.warnings?.[0] ?? "No readable shot data was found. Try a sharper, tighter crop.",
+      );
+    } catch (error) {
       setPhotoScanState("error");
-      setPhotoStatus("The photo reader could not start. Check your connection and try again.");
+      setPhotoStatus(error instanceof Error ? error.message : "The private photo reader could not complete this batch.");
+      setPhotoScans(rejectedFiles);
       return;
-    } finally {
-      await worker?.terminate();
     }
-
-    const readyResults = results.filter(
-      (result): result is Extract<PhotoScanResult, { status: "ready" }> => result.status === "ready",
-    );
-    const mergedPhotoShots = mergePhotoShotsByShotNumber(readyResults.flatMap((result) => result.shots));
-    if (mergedPhotoShots.length) {
-      setCsvText(shotsToCsv(mergedPhotoShots));
-      setCsvFileName("Converted photo CSV");
-      setCsvFileStatus(`${mergedPhotoShots.length} photo ${mergedPhotoShots.length === 1 ? "row was" : "rows were"} converted to CSV format.`);
-    }
-
-    const readyCount = readyResults.length;
-    const shotCount = mergedPhotoShots.length;
-    setPhotoScans(results);
-    setPhotoProgress(100);
-    setPhotoScanState(readyCount ? "ready" : "error");
-    setPhotoStatus(
-      readyCount
-        ? `${readyCount} ${readyCount === 1 ? "photo is" : "photos are"} readable. ${shotCount} ${shotCount === 1 ? "shot row" : "shot rows"} converted for review.`
-        : "No readable shot data was found. Try a sharper, tighter crop.",
-    );
   }
 
   const readyPhotoScans = photoScans.filter(
     (result): result is Extract<PhotoScanResult, { status: "ready" }> => result.status === "ready",
   );
-  const mergedPhotoShots = mergePhotoShotsByShotNumber(readyPhotoScans.flatMap((result) => result.shots));
+  const mergedPhotoShots = photoBatchImport?.shots ?? mergePhotoShotsByShotNumber(readyPhotoScans.flatMap((result) => result.shots));
   const detectedSimulators = [...new Set(readyPhotoScans.map((result) => result.simulator))];
-  const photoSimulator = detectedSimulators.length === 1 ? detectedSimulators[0] : "Simulator photos";
-  const photoMetadata = readyPhotoScans.reduce<PhotoImportMetadata>(
+  const photoSimulator = photoBatchImport?.simulator ?? (detectedSimulators.length === 1 ? detectedSimulators[0] : "Simulator photos");
+  const photoMetadata = photoBatchImport
+    ? readyPhotoScans[0]?.metadata ?? {}
+    : readyPhotoScans.reduce<PhotoImportMetadata>(
     (combined, result) => ({
       fileNames: [...(combined.fileNames ?? []), result.fileName],
       location: combined.location ?? result.metadata.location,
@@ -11181,6 +11432,7 @@ function ImportView({
     ? Array.from(new Set(pendingImportReview.shots.map((shot) => getClubDisplayName(shot.club))))
     : [];
   const reviewClubValue = reviewClubNames.length === 1 ? reviewClubNames[0] : reviewClubNames.join(", ");
+  const reviewCsvText = pendingImportReview?.csvText ?? pendingImportReview?.metadata.normalizedCsv ?? "";
 
   return (
     <section className="import-grid">
@@ -11207,6 +11459,19 @@ function ImportView({
               </div>
               <span className="scan-status ready">Ready</span>
             </div>
+
+            {pendingImportReview.summary && (
+              <div className="photo-import-summary-grid">
+                <div><span>Simulator</span><strong>{pendingImportReview.summary.simulator}</strong></div>
+                <div><span>Club</span><strong>{pendingImportReview.summary.club}</strong></div>
+                <div><span>Images</span><strong>{pendingImportReview.summary.imageCount}</strong></div>
+                <div><span>Distance pages</span><strong>{pendingImportReview.summary.distancePageCount}</strong></div>
+                <div><span>Delivery pages</span><strong>{pendingImportReview.summary.deliveryPageCount}</strong></div>
+                <div><span>Unique shots</span><strong>{pendingImportReview.summary.uniqueShotCount}</strong></div>
+                <div><span>Overlap merged</span><strong>{pendingImportReview.summary.overlappingShotsDeduplicated.join(", ") || "None"}</strong></div>
+                <div><span>CSV</span><strong>{normalizedCsvDataRowCount(reviewCsvText)} rows ready</strong></div>
+              </div>
+            )}
 
             <div className="import-review-grid">
               <label>
@@ -11248,6 +11513,14 @@ function ImportView({
               </div>
             </div>
 
+            {(pendingImportReview.blockingIssues?.length ?? 0) > 0 && (
+              <ul className="import-review-warnings blocking">
+                {pendingImportReview.blockingIssues?.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            )}
+
             {pendingImportReview.warnings.length > 0 && (
               <ul className="import-review-warnings">
                 {pendingImportReview.warnings.map((warning) => (
@@ -11256,22 +11529,66 @@ function ImportView({
               </ul>
             )}
 
-            <div className="import-review-table">
-              {pendingImportReview.shots.slice(0, 6).map((shot, index) => (
-                <div key={shot.id}>
-                  <span>{shot.sourceShotNumber ? `#${shot.sourceShotNumber}` : `#${index + 1}`}</span>
-                  <strong>{getClubDisplayName(shot.club)}</strong>
-                  <span>Carry {formatAvailableMetric(getShotMetric(shot, "carry") ?? Number.NaN, "yd")}</span>
-                  <span>Ball {formatAvailableMetric(getShotMetric(shot, "ballSpeed") ?? Number.NaN, "mph")}</span>
-                  <span>Launch {formatAvailableMetric(getShotMetric(shot, "launch") ?? Number.NaN, "deg")}</span>
-                  <span>Spin {formatAvailableMetric(getShotMetric(shot, "spin") ?? Number.NaN, "rpm", 0)}</span>
+            <div className="import-review-table-wide" role="table" aria-label="Merged photo shot review">
+              <div className="import-review-table-header" role="row">
+                <span>Shot</span>
+                <span>Club</span>
+                <span className="review-column-group">Distance</span>
+                <span className="review-column-group">Delivery</span>
+              </div>
+              {pendingImportReview.shots.map((shot, index) => (
+                <div className="import-review-shot-row" key={shot.id} role="row">
+                  <strong>{shot.sourceShotNumber ? `#${shot.sourceShotNumber}` : `#${index + 1}`}</strong>
+                  <span>{getClubDisplayName(shot.club)}</span>
+                  <div className="photo-review-metric-group">
+                    {PHOTO_REVIEW_DISTANCE_FIELDS.map((field) => (
+                      <label key={field.key}>
+                        <span>{field.label}</span>
+                        <input
+                          inputMode="decimal"
+                          onChange={(event) => updateReviewShotMetric(shot.id, field.key, event.target.value)}
+                          placeholder="NA"
+                          value={reviewInputValue(shot, field.key)}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <div className="photo-review-metric-group">
+                    {PHOTO_REVIEW_DELIVERY_FIELDS.map((field) => (
+                      <label key={field.key}>
+                        <span>{field.label}</span>
+                        <input
+                          inputMode="decimal"
+                          onChange={(event) => updateReviewShotMetric(shot.id, field.key, event.target.value)}
+                          placeholder="NA"
+                          value={reviewInputValue(shot, field.key)}
+                        />
+                      </label>
+                    ))}
+                  </div>
                 </div>
               ))}
             </div>
 
+            {reviewCsvText && (
+              <details className="normalized-csv-preview">
+                <summary>Preview CSV</summary>
+                <textarea readOnly value={reviewCsvText} />
+                <div className="button-row">
+                  <button className="secondary-action" onClick={() => copyReviewCsv(reviewCsvText)} type="button">Copy CSV</button>
+                  <button className="secondary-action" onClick={() => downloadReviewCsv(reviewCsvText)} type="button">Download CSV</button>
+                </div>
+              </details>
+            )}
+
             <div className="button-row">
               <button className="secondary-action" onClick={cancelImportReview} type="button">Cancel review</button>
-              <button className="primary-action" onClick={confirmImportReview} type="button">
+              <button
+                className="primary-action"
+                disabled={(pendingImportReview.blockingIssues?.length ?? 0) > 0}
+                onClick={confirmImportReview}
+                type="button"
+              >
                 <span>✓</span>
                 Save session
               </button>
@@ -11365,12 +11682,13 @@ function ImportView({
 
         {importMode === "photo" && (
           <div className="import-panel">
-            <input
-              className="file-input"
-              type="file"
-              accept="image/png,image/jpeg,image/webp,application/pdf,.pdf"
-              multiple
-              disabled={photoScanState === "scanning"}
+	            <input
+	              className="file-input"
+	              type="file"
+	              accept="image/*"
+	              capture="environment"
+	              multiple
+	              disabled={photoScanState === "scanning"}
               onChange={(event) => {
                 const files = Array.from(event.currentTarget.files ?? []);
                 event.currentTarget.value = "";
@@ -11428,22 +11746,24 @@ function ImportView({
               <div className="button-row">
                 <button
                   className="secondary-action"
-                  onClick={() => {
-                    setPhotoScans([]);
-                    setPhotoScanState("idle");
-                    setPhotoProgress(0);
+	                  onClick={() => {
+	                    setPhotoBatchImport(null);
+	                    setPhotoScans([]);
+	                    setPhotoScanState("idle");
+	                    setPhotoProgress(0);
                     setPhotoStatus("Choose up to five launch monitor screenshots or result photos.");
                   }}
                 >
                   Clear
                 </button>
                 <button
-                  className="primary-action"
-                  onClick={() => importPhotoShots(mergedPhotoShots, photoSimulator, photoMetadata, importNotes)}
-                >
-                  <span>⇧</span>
-                  Import converted CSV
-                </button>
+	                  className="primary-action"
+	                  disabled={!mergedPhotoShots.length}
+	                  onClick={() => importPhotoShots(mergedPhotoShots, photoSimulator, photoMetadata, importNotes)}
+	                >
+	                  <span>⇧</span>
+	                  Review normalized CSV
+	                </button>
               </div>
             )}
           </div>
