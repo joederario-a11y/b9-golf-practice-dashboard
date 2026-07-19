@@ -539,6 +539,8 @@ type VideoType =
   | "Practice Assignment"
   | "Coach Feedback"
   | "Before / After"
+  | "Educational"
+  | "System Test"
   | "User Upload"
   | "Other";
 type VideoSwingType = "Driver" | "Iron" | "Wedge" | "Putting" | "Chipping" | "Bunker" | "Other";
@@ -4163,10 +4165,7 @@ function storePracticeProfile(profile: UserPracticeProfile) {
 async function readVideoLibrary(memberId?: string) {
   const query = memberId ? `?memberId=${encodeURIComponent(memberId)}` : "";
   const response = await fetch(`/api/videos${query}`, { cache: "no-store" });
-  const payload = await response.json();
-  if (!response.ok) {
-    throw new Error(payload.error ?? "Saved videos could not be loaded.");
-  }
+  const payload = await readApiJson<{ videos?: VideoLibraryRecord[] }>(response, "Saved videos could not be loaded.");
   return (payload.videos ?? []) as VideoLibraryRecord[];
 }
 
@@ -4204,12 +4203,20 @@ function videoRecapProcessingStatusText(status: string) {
   if (status === "queued") return "Video uploaded";
   if (status === "extracting_audio") return "Checking for coach audio";
   if (status === "transcribing") return "Transcribing coach feedback";
+  if (status === "transcribing_coach_feedback") return "Transcribing coach feedback";
   if (status === "generating_recap") return "Creating lesson recap";
   if (status === "ready_for_review") return "Ready for coach review";
   if (status === "no_usable_audio") return "No clear coach voiceover was detected.";
   if (status === "published") return "Coach-approved recap published";
   if (status === "failed") return "Audio processing needs attention";
   return status || "Not queued";
+}
+
+function videoRecapProcessingStepText(step?: string | null) {
+  if (!step) return "No workflow step yet";
+  if (step === "transcribing_coach_feedback") return "Transcribing coach feedback";
+  if (step === "retry_requeued_stale_job") return "Previous job retired for retry";
+  return step.replaceAll("_", " ");
 }
 
 function videoPatchPayload(video: VideoLibraryRecord) {
@@ -4248,21 +4255,16 @@ async function saveVideoRecord(video: VideoLibraryRecord) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(videoPatchPayload(video)),
   });
-  const payload = await response.json();
-  if (!response.ok) {
-    throw new Error(payload.error ?? "The video could not be saved.");
-  }
-  return payload.video as VideoLibraryRecord;
+  const payload = await readApiJson<{ video?: VideoLibraryRecord }>(response, "The video could not be saved.");
+  if (!payload.video) throw new Error("The video could not be saved.");
+  return payload.video;
 }
 
 async function deleteVideoRecord(videoId: string) {
   const response = await fetch(`/api/videos?videoId=${encodeURIComponent(videoId)}`, {
     method: "DELETE",
   });
-  const payload = await response.json();
-  if (!response.ok) {
-    throw new Error(payload.error ?? "The video could not be removed.");
-  }
+  await readApiJson<{ ok?: boolean }>(response, "The video could not be removed.");
 }
 
 async function readStaffDashboard() {
@@ -4281,20 +4283,17 @@ async function readStaffMember(memberId: string) {
 
 async function readMyCoaches() {
   const response = await fetch("/api/my-coaches", { cache: "no-store" });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error ?? "Assigned coach could not be loaded.");
+  const payload = await readApiJson<{ coaches?: CoachSummary[] }>(response, "Assigned coach could not be loaded.");
   return (payload.coaches ?? []) as CoachSummary[];
 }
 
-async function postStaffAction(payload: Record<string, unknown>) {
+async function postStaffAction<T extends Record<string, unknown> = Record<string, unknown>>(payload: Record<string, unknown>): Promise<T> {
   const response = await fetch("/api/admin", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error ?? "The admin action could not be completed.");
-  return result;
+  return readApiJson<T>(response, "The admin action could not be completed.");
 }
 
 async function uploadCoachPhoto(userId: string, file: File) {
@@ -4358,13 +4357,12 @@ async function createVideoRecord(
       ...metadata,
       fileName: videoFile.name,
       fileSize: videoFile.size,
+      mediaCapturedAt: videoFile.lastModified ? new Date(videoFile.lastModified).toISOString() : undefined,
       mimeType: videoFile.type,
     }),
   });
-  const payload = await response.json();
-  if (!response.ok || !payload.video) {
-    throw new Error(payload.error ?? "The video upload could not be started.");
-  }
+  const payload = await readApiJson<{ video?: VideoLibraryRecord }>(response, "The video upload could not be started.");
+  if (!payload.video) throw new Error("The video upload could not be started.");
   return payload.video as VideoLibraryRecord;
 }
 
@@ -4416,20 +4414,47 @@ async function finalizeVideoRecord(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ videoId, ...patch }),
   });
-  const payload = await response.json();
-  if (!response.ok || !payload.video) {
-    throw new Error(payload.error ?? "The video could not be published.");
+  const payload = await readApiJson<{ video?: VideoLibraryRecord }>(response, "The video could not be published.");
+  if (!payload.video) {
+    throw new Error("The video could not be published.");
   }
-  return payload.video as VideoLibraryRecord;
+  return payload.video;
+}
+
+function apiErrorMessage(payload: unknown, fallback: string, status?: number) {
+  if (status === 401) return "Your session has expired. Please sign in again.";
+  if (!payload || typeof payload !== "object") return fallback;
+  const record = payload as Record<string, unknown>;
+  const nestedError = record.error && typeof record.error === "object" ? record.error as Record<string, unknown> : null;
+  if (typeof nestedError?.message === "string" && nestedError.message.trim()) return nestedError.message.trim();
+  if (typeof record.publicMessage === "string" && record.publicMessage.trim()) return record.publicMessage.trim();
+  if (typeof record.error === "string" && record.error.trim()) return record.error.trim();
+  if (typeof record.message === "string" && record.message.trim()) return record.message.trim();
+  return fallback;
+}
+
+async function readApiJson<T>(response: Response, fallback: string) {
+  const contentType = response.headers.get("content-type") ?? "";
+  const rawText = await response.text();
+  let payload: unknown = {};
+  if (rawText && contentType.includes("application/json")) {
+    try {
+      payload = JSON.parse(rawText) as unknown;
+    } catch {
+      throw new Error(fallback);
+    }
+  } else if (rawText && response.ok) {
+    throw new Error(fallback);
+  }
+  if (!response.ok) {
+    throw new Error(apiErrorMessage(payload, fallback, response.status));
+  }
+  return payload as T;
 }
 
 async function readVideoRecap(videoId: string) {
   const response = await fetch(`/api/video-recaps?videoId=${encodeURIComponent(videoId)}`, { cache: "no-store" });
-  const payload = await response.json();
-  if (!response.ok) {
-    throw new Error(payload.error ?? "The MAI Coach recap could not be loaded.");
-  }
-  return payload as VideoRecapState;
+  return readApiJson<VideoRecapState>(response, "The MAI Coach recap could not be loaded.");
 }
 
 async function updateVideoRecap(payload: Record<string, unknown>) {
@@ -4438,11 +4463,7 @@ async function updateVideoRecap(payload: Record<string, unknown>) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  const result = await response.json();
-  if (!response.ok) {
-    throw new Error(result.error ?? "The MAI Coach recap could not be updated.");
-  }
-  return result as VideoRecapState;
+  return readApiJson<VideoRecapState>(response, "The MAI Coach recap could not be updated.");
 }
 
 function stripVideoObjectUrl(video: VideoLibraryItem): VideoLibraryRecord {
@@ -7689,6 +7710,7 @@ function AdminView({
     firstName: "",
     lastName: "",
     email: "",
+    temporaryPassword: "",
     phone: "",
     skillLevel: "",
     notes: "",
@@ -7766,6 +7788,7 @@ function AdminView({
       firstName: "",
       lastName: "",
       email: "",
+      temporaryPassword: "",
       phone: "",
       skillLevel: "",
       notes: "",
@@ -7782,6 +7805,7 @@ function AdminView({
       firstName: user.firstName,
       lastName: user.lastName,
       email: user.email,
+      temporaryPassword: "",
       phone: user.phone,
       skillLevel: user.skillLevel,
       notes: user.notes,
@@ -7814,7 +7838,7 @@ function AdminView({
         : { action: "createUser", ...userForm };
       await postStaffAction(payload);
       setShowUserModal(false);
-      setMessage(editingUserId ? "User updated." : "User created and invitation attempted.");
+      setMessage(editingUserId ? "User updated." : "User created with a temporary password.");
       await refreshWorkspace(selectedMemberId);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "The user could not be saved.");
@@ -8336,6 +8360,9 @@ function AdminView({
               <label><span>First name</span><input required value={userForm.firstName} onChange={(event) => setUserForm((current) => ({ ...current, firstName: event.target.value }))} /></label>
               <label><span>Last name</span><input required value={userForm.lastName} onChange={(event) => setUserForm((current) => ({ ...current, lastName: event.target.value }))} /></label>
               <label className="video-form-wide"><span>Email</span><input required type="email" value={userForm.email} onChange={(event) => setUserForm((current) => ({ ...current, email: event.target.value }))} /></label>
+              {!editingUserId && userForm.role === "member" && (
+                <label className="video-form-wide"><span>Temporary password</span><input autoComplete="new-password" minLength={8} required type="password" value={userForm.temporaryPassword} onChange={(event) => setUserForm((current) => ({ ...current, temporaryPassword: event.target.value }))} /></label>
+              )}
               <label><span>Phone</span><input value={userForm.phone} onChange={(event) => setUserForm((current) => ({ ...current, phone: event.target.value }))} /></label>
               <label><span>Skill / title</span><input value={userForm.skillLevel} onChange={(event) => setUserForm((current) => ({ ...current, skillLevel: event.target.value }))} /></label>
               {userForm.role === "member" && (
@@ -8344,7 +8371,7 @@ function AdminView({
               <label className="video-form-wide"><span>Notes</span><textarea value={userForm.notes} onChange={(event) => setUserForm((current) => ({ ...current, notes: event.target.value }))} /></label>
             </div>
             <div className="video-modal-actions">
-              <span>{editingUserId ? "Profile, role, coach assignment, and account status will update immediately." : "A registration/login email is attempted when email is configured."}</span>
+              <span>{editingUserId ? "Profile, role, coach assignment, and account status will update immediately." : "The member can log in immediately with the temporary password. Email is best-effort when configured."}</span>
               <div className="button-row">
                 <button className="secondary-action" onClick={() => setShowUserModal(false)} type="button">Cancel</button>
                 <button className="primary-action" type="submit">{editingUserId ? "Save user" : "Create user"}</button>
@@ -8895,10 +8922,8 @@ function CoachVideoWorkspace({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(newMember),
       });
-      const payload = await response.json();
-      if (!response.ok || !payload.member) {
-        throw new Error(payload.error ?? "The member could not be added.");
-      }
+      const payload = await readApiJson<{ member?: CoachMember; invite?: { status?: string }; passwordConfigured?: boolean }>(response, "The member could not be added.");
+      if (!payload.member) throw new Error("The member could not be added.");
       const member = payload.member as CoachMember;
       setMembers((current) => [
         member,
@@ -8910,12 +8935,15 @@ function CoachVideoWorkspace({
         firstName: "",
         lastName: "",
         email: "",
+        temporaryPassword: "",
         phone: "",
         skillLevel: "",
         notes: "",
       });
       setWorkspaceMessage(
-        payload.invite?.status === "sent"
+        payload.passwordConfigured
+          ? `${member.name} was added with a temporary password and can log in now.`
+          : payload.invite?.status === "sent"
           ? `${member.name} was added and invited by email.`
           : `${member.name} was added. The login invitation is pending email configuration.`,
       );
@@ -8970,7 +8998,7 @@ function CoachVideoWorkspace({
       return;
     }
     setVideoFile(file);
-    if (!videoTitle.trim()) setVideoTitle(file.name.replace(/\.[^.]+$/, ""));
+    if (!videoTitle.trim()) setVideoTitle(videoDateTitleFromFile(file));
     setWorkspaceMessage(`${file.name} is ready to upload.`);
   }
 
@@ -9062,8 +9090,8 @@ function CoachVideoWorkspace({
       setStep(1);
       return;
     }
-    if (!videoTitle.trim() || (!videoFile && !editingVideo)) {
-      setWorkspaceMessage("Choose a video and add a title before continuing.");
+    if (!videoFile && !editingVideo) {
+      setWorkspaceMessage("Choose a video before continuing.");
       setStep(2);
       return;
     }
@@ -9080,9 +9108,10 @@ function CoachVideoWorkspace({
       const nextSessionGoalText = nextSessionGoal.trim();
       const preserveLegacyKeyIssue = Boolean(editingVideo && mainFocusText === getLessonMainFocus(editingVideo));
       const preserveLegacyRecommendedDrill = Boolean(editingVideo && practiceNextText === getLessonPracticeNext(editingVideo));
+      const resolvedTitle = videoTitle.trim() || (videoFile ? videoDateTitleFromFile(videoFile) : editingVideo?.title ?? videoDateTitleFromSource(lessonDate));
       const metadata = {
         memberId: selectedMember.id,
-        title: videoTitle.trim(),
+        title: resolvedTitle,
         description: videoDescription.trim(),
         videoType,
         tags: tags.split(",").map((tag) => tag.trim()).filter(Boolean),
@@ -9196,7 +9225,7 @@ function CoachVideoWorkspace({
   }
 
   async function removeManagedVideo(video: VideoLibraryItem) {
-    if (viewerRole !== "admin") return;
+    if (!window.confirm(`Delete "${video.title}"? This permanently removes the video, transcript, recap, and stored media.`)) return;
     try {
       await deleteVideoRecord(video.id);
       setVideos((items) => items.filter((item) => item.id !== video.id));
@@ -9267,8 +9296,8 @@ function CoachVideoWorkspace({
       setWorkspaceMessage("Select a member before uploading a lesson video.");
       return;
     }
-    if (step === 2 && (!videoTitle.trim() || (!videoFile && !editingVideo))) {
-      setWorkspaceMessage("Choose a video and add a title before continuing.");
+    if (step === 2 && (!videoFile && !editingVideo)) {
+      setWorkspaceMessage("Choose a video before continuing.");
       return;
     }
     setStep((current) => Math.min(5, current + 1));
@@ -9502,7 +9531,7 @@ function CoachVideoWorkspace({
                 </button>
               )}
               <div className="coach-video-form-grid">
-                <label className="wide"><span>Video title</span><input maxLength={120} onChange={(event) => setVideoTitle(event.target.value)} placeholder="7-Iron takeaway lesson recap" value={videoTitle} /></label>
+                <label className="wide"><span>Video title</span><input maxLength={120} onChange={(event) => setVideoTitle(event.target.value)} placeholder={videoFile ? videoDateTitleFromFile(videoFile) : videoDateTitleFromSource(lessonDate)} value={videoTitle} /></label>
                 <label><span>Video type</span><select onChange={(event) => setVideoType(event.target.value as VideoType)} value={videoType}>{VIDEO_TYPES.filter((type) => type !== "User Upload" && type !== "Practice Session" && type !== "Drill").map((type) => <option key={type}>{type}</option>)}</select></label>
                 <label><span>Lesson date</span><input onChange={(event) => setLessonDate(event.target.value)} type="date" value={lessonDate} /></label>
                 <label><span>Focus area</span><select onChange={(event) => setFocusArea(event.target.value as VideoFocusArea)} value={focusArea}>{VIDEO_FOCUS_AREAS.map((area) => <option key={area}>{area}</option>)}</select></label>
@@ -9609,7 +9638,7 @@ function CoachVideoWorkspace({
                 <dl className="coach-review-list">
                   <div><dt>Member</dt><dd><CoachAvatar coach={selectedMember} /><span>{selectedMember.name}<small>{selectedMember.email}</small></span></dd></div>
                   <div><dt>Coach</dt><dd><CoachAvatar coach={{ name: coachName, profileImageUrl: coachProfileImageUrl }} /><span>{coachName}<small>{viewerRole === "admin" ? "Admin upload" : "Coach upload"}</small></span></dd></div>
-                  <div><dt>Video</dt><dd>{videoTitle || "Untitled"}<small>{videoType}</small></dd></div>
+                  <div><dt>Video</dt><dd>{videoTitle || (videoFile ? videoDateTitleFromFile(videoFile) : editingVideo?.title ?? videoDateTitleFromSource(lessonDate))}<small>{videoType}</small></dd></div>
                   <div><dt>Lesson</dt><dd>{formatFullDate(lessonDate)}<small>{focusArea}</small></dd></div>
                   <div><dt>Session</dt><dd>{selectedSession?.title ?? "No session attached"}<small>{selectedSession?.source ?? "Standalone video"}</small></dd></div>
                   <div><dt>Lesson Summary</dt><dd>{lessonSummary || "Blank"}<small>Editable before approval.</small></dd></div>
@@ -9731,9 +9760,7 @@ function CoachVideoWorkspace({
                   >
                     ⌄
                   </button>
-                  {viewerRole === "admin" && (
-                    <button aria-label={`Delete ${video.title}`} className="icon-button danger-text-button" onClick={() => void removeManagedVideo(video)} title="Delete video">×</button>
-                  )}
+                  <button aria-label={`Delete ${video.title}`} className="icon-button danger-text-button" onClick={() => void removeManagedVideo(video)} title="Delete video">×</button>
                 </div>
                 {viewerRole === "admin" && (
                   <label className="coach-owner-control">
@@ -9787,11 +9814,12 @@ function CoachVideoWorkspace({
               </div>
               <button aria-label="Close add member dialog" className="icon-button" onClick={() => setShowAddMember(false)} type="button">×</button>
             </div>
-            <p className="muted-copy">The member record is saved in D1 and tied to their login email. An invitation is sent when email delivery is configured.</p>
+            <p className="muted-copy">The member record is saved in D1 and tied to their login email. Set a temporary password so they can log in immediately; email delivery remains optional.</p>
             <div className="video-form-grid">
               <label><span>First name</span><input required value={newMember.firstName} onChange={(event) => setNewMember((current) => ({ ...current, firstName: event.target.value }))} /></label>
               <label><span>Last name</span><input required value={newMember.lastName} onChange={(event) => setNewMember((current) => ({ ...current, lastName: event.target.value }))} /></label>
               <label className="video-form-wide"><span>Email</span><input required type="email" value={newMember.email} onChange={(event) => setNewMember((current) => ({ ...current, email: event.target.value }))} /></label>
+              <label className="video-form-wide"><span>Temporary password</span><input autoComplete="new-password" minLength={8} required type="password" value={newMember.temporaryPassword} onChange={(event) => setNewMember((current) => ({ ...current, temporaryPassword: event.target.value }))} /></label>
               <label><span>Phone optional</span><input type="tel" value={newMember.phone} onChange={(event) => setNewMember((current) => ({ ...current, phone: event.target.value }))} /></label>
               <label><span>Skill level optional</span><input placeholder="Beginner, 12 handicap, competitive..." value={newMember.skillLevel} onChange={(event) => setNewMember((current) => ({ ...current, skillLevel: event.target.value }))} /></label>
               <label className="video-form-wide"><span>Coach notes optional</span><textarea placeholder="Goals, tendencies, or lesson context..." value={newMember.notes} onChange={(event) => setNewMember((current) => ({ ...current, notes: event.target.value }))} /></label>
@@ -10260,6 +10288,20 @@ function formatVideoUploadDate(value: string) {
   }).format(date);
 }
 
+function videoDateTitleFromSource(value?: string | number | null) {
+  const date = value ? new Date(value) : new Date();
+  const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(safeDate);
+}
+
+function videoDateTitleFromFile(file: File) {
+  return videoDateTitleFromSource(file.lastModified || Date.now());
+}
+
 function canViewLibraryVideo(video: VideoLibraryRecord, ownerId: string, viewerRole: VideoViewerRole) {
   if (video.ownerId !== ownerId) return false;
   if (viewerRole === "admin") return true;
@@ -10595,7 +10637,9 @@ function AiLessonRecapReviewModal({
   const canPublish = hasDraft && (draftStatus === "ready_for_review" || draftStatus === "needs_coach_input");
   const evidence = state?.draft?.transcriptEvidence ?? [];
   const noUsableAudio = jobStatus === "no_usable_audio";
-  const canRetryProcessing = !isProcessingActive && (jobStatus === "failed" || noUsableAudio || !state?.job);
+  const jobUpdatedAt = state?.job?.updatedAt ? new Date(state.job.updatedAt).getTime() : Number.NaN;
+  const isStaleProcessing = isProcessingActive && Number.isFinite(jobUpdatedAt) && Date.now() - jobUpdatedAt > 15 * 60 * 1000;
+  const canRetryProcessing = (!isProcessingActive || isStaleProcessing) && (jobStatus === "failed" || noUsableAudio || !state?.job || isStaleProcessing);
   const statusLabel = videoRecapProcessingStatusText(draftStatus === "published" ? "published" : jobStatus);
 
   return (
@@ -10616,7 +10660,7 @@ function AiLessonRecapReviewModal({
               <div><dt>Video</dt><dd>{video.title}<small>{video.fileName}</small></dd></div>
               <div><dt>Member</dt><dd>{video.memberName ?? "Member"}<small>{video.memberEmail ?? "No email"}</small></dd></div>
               <div><dt>Coach</dt><dd>{video.coachName ?? video.uploadedBy}<small>{video.lessonDate ? formatFullDate(video.lessonDate) : formatVideoUploadDate(video.uploadedAt)}</small></dd></div>
-              <div><dt>Audio status</dt><dd>{statusLabel}<small>{state?.job?.currentStep ?? "No workflow step yet"}</small></dd></div>
+              <div><dt>Audio status</dt><dd>{statusLabel}<small>{videoRecapProcessingStepText(state?.job?.currentStep)}</small></dd></div>
             </dl>
             {state?.job?.errorMessage && <p className="coach-inline-warning">{state.job.errorMessage}</p>}
             {noUsableAudio && (
@@ -10962,6 +11006,7 @@ function VideosView({
   const [reviewFilter, setReviewFilter] = useState("all");
   const [dateFilter, setDateFilter] = useState("all");
   const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
+  const [showFilters, setShowFilters] = useState(false);
   const [filterReferenceTime] = useState(() => Date.now());
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [uploadTitle, setUploadTitle] = useState("");
@@ -11080,6 +11125,15 @@ function VideosView({
     visibleVideos,
   ]);
   const selectedVideo = videos.find((video) => video.id === selectedVideoId);
+  const activeFilterCount = [
+    uploaderFilter !== "all",
+    typeFilter !== "all",
+    clubFilter !== "all",
+    sessionFilter !== "all",
+    reviewFilter !== "all",
+    dateFilter !== "all",
+    sortOrder !== "newest",
+  ].filter(Boolean).length;
   const comparisonVideos = comparisonIds
     .map((videoId) => videos.find((video) => video.id === videoId))
     .filter((video): video is VideoLibraryItem => Boolean(video));
@@ -11107,6 +11161,7 @@ function VideosView({
   }
 
   async function removeVideo(video: VideoLibraryItem) {
+    if (!window.confirm(`Delete "${video.title}"? This permanently removes the video, transcript, recap, and stored media.`)) return;
     try {
       await deleteVideoRecord(video.id);
       setVideos((items) => items.filter((item) => item.id !== video.id));
@@ -11116,6 +11171,16 @@ function VideosView({
     } catch (error) {
       setLibraryMessage(error instanceof Error ? error.message : "The video could not be removed.");
     }
+  }
+
+  function clearVideoFilters() {
+    setUploaderFilter("all");
+    setTypeFilter("all");
+    setClubFilter("all");
+    setSessionFilter("all");
+    setReviewFilter("all");
+    setDateFilter("all");
+    setSortOrder("newest");
   }
 
   function toggleComparison(videoId: string) {
@@ -11166,8 +11231,8 @@ function VideosView({
 
   async function uploadVideo(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!videoFile || !uploadTitle.trim()) {
-      setLibraryMessage("Choose a video and add a title.");
+    if (!videoFile) {
+      setLibraryMessage("Choose a video.");
       return;
     }
     if (videoFile.size > 500 * 1024 * 1024) {
@@ -11183,9 +11248,10 @@ function VideosView({
     setUploadProgress(2);
     try {
       const duration = await readVideoDuration(videoFile);
+      const resolvedTitle = uploadTitle.trim() || videoDateTitleFromFile(videoFile);
       const created = await createVideoRecord({
         memberId: ownerId,
-        title: uploadTitle.trim(),
+        title: resolvedTitle,
         description: uploadDescription.trim(),
         videoType: uploadType,
         tags: uploadTags.split(",").map((tag) => tag.trim()).filter(Boolean),
@@ -11197,7 +11263,7 @@ function VideosView({
       }, videoFile);
       await uploadVideoAsset(created.id, videoFile, "video", setUploadProgress);
       const record = await finalizeVideoRecord(created.id, {
-        title: uploadTitle.trim(),
+        title: resolvedTitle,
         description: uploadDescription.trim(),
         videoType: uploadType,
         tags: uploadTags.split(",").map((tag) => tag.trim()).filter(Boolean),
@@ -11280,13 +11346,23 @@ function VideosView({
           <span>Search</span>
           <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Title, notes, tags, or coach comments" type="search" />
         </label>
-        <label><span>Uploaded by</span><select value={uploaderFilter} onChange={(event) => setUploaderFilter(event.target.value)}><option value="all">Anyone</option><option>User</option><option>Coach</option><option>Admin</option></select></label>
-        <label><span>Video type</span><select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="all">All types</option>{VIDEO_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>
-        <label><span>Club</span><select value={clubFilter} onChange={(event) => setClubFilter(event.target.value)}><option value="all">All clubs</option>{clubOptions.map((club) => <option key={club} value={club}>{getClubDisplayName(club)}</option>)}</select></label>
-        <label><span>Session</span><select value={sessionFilter} onChange={(event) => setSessionFilter(event.target.value)}><option value="all">Any linkage</option><option value="attached">Session attached</option><option value="none">No session</option></select></label>
-        <label><span>Review</span><select value={reviewFilter} onChange={(event) => setReviewFilter(event.target.value)}><option value="all">Any status</option><option value="reviewed">Reviewed</option><option value="unreviewed">Not reviewed</option></select></label>
-        <label><span>Date</span><select value={dateFilter} onChange={(event) => setDateFilter(event.target.value)}><option value="all">Any date</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last year</option></select></label>
-        <label><span>Sort</span><select value={sortOrder} onChange={(event) => setSortOrder(event.target.value as "newest" | "oldest")}><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label>
+        <div className="video-filter-actions">
+          <button className="secondary-action" onClick={() => setShowFilters((current) => !current)} type="button">
+            {showFilters ? `Hide filters${activeFilterCount ? ` (${activeFilterCount})` : ""}` : `Filters${activeFilterCount ? ` (${activeFilterCount})` : ""}`}
+          </button>
+          {activeFilterCount > 0 && <button className="text-button" onClick={clearVideoFilters} type="button">Clear Filters</button>}
+        </div>
+        {showFilters && (
+          <div className="video-filter-panel">
+            <label><span>Uploaded by</span><select value={uploaderFilter} onChange={(event) => setUploaderFilter(event.target.value)}><option value="all">Anyone</option><option>User</option><option>Coach</option><option>Admin</option></select></label>
+            <label><span>Video type</span><select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="all">All types</option>{VIDEO_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>
+            <label><span>Club</span><select value={clubFilter} onChange={(event) => setClubFilter(event.target.value)}><option value="all">All clubs</option>{clubOptions.map((club) => <option key={club} value={club}>{getClubDisplayName(club)}</option>)}</select></label>
+            <label><span>Session</span><select value={sessionFilter} onChange={(event) => setSessionFilter(event.target.value)}><option value="all">Any linkage</option><option value="attached">Session attached</option><option value="none">No session</option></select></label>
+            <label><span>Review</span><select value={reviewFilter} onChange={(event) => setReviewFilter(event.target.value)}><option value="all">Any status</option><option value="reviewed">Reviewed</option><option value="unreviewed">Not reviewed</option></select></label>
+            <label><span>Date</span><select value={dateFilter} onChange={(event) => setDateFilter(event.target.value)}><option value="all">Any date</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last year</option></select></label>
+            <label><span>Sort</span><select value={sortOrder} onChange={(event) => setSortOrder(event.target.value as "newest" | "oldest")}><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></label>
+          </div>
+        )}
       </section>
 
       <div className="video-view-controls">
@@ -11364,7 +11440,7 @@ function VideosView({
                 onChange={(event) => {
                   const file = event.currentTarget.files?.[0] ?? null;
                   setVideoFile(file);
-                  if (file && !uploadTitle) setUploadTitle(file.name.replace(/\.[^.]+$/, ""));
+                  if (file && !uploadTitle) setUploadTitle(videoDateTitleFromFile(file));
                 }}
                 required
                 type="file"
@@ -11375,7 +11451,7 @@ function VideosView({
             </label>
 
             <div className="video-form-grid">
-              <label className="video-form-wide"><span>Title</span><input maxLength={120} onChange={(event) => setUploadTitle(event.target.value)} required value={uploadTitle} /></label>
+              <label className="video-form-wide"><span>Title</span><input maxLength={120} onChange={(event) => setUploadTitle(event.target.value)} placeholder={videoFile ? videoDateTitleFromFile(videoFile) : "Jul 19, 2026"} value={uploadTitle} /></label>
               <label><span>Video type</span><select value={uploadType} onChange={(event) => setUploadType(event.target.value as VideoType)}>{VIDEO_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>
               <label><span>Visibility</span><select value={uploadVisibility} onChange={(event) => setUploadVisibility(event.target.value as VideoVisibility)}>{viewerRole === "user" ? <><option>User only</option><option>Coach + User</option></> : viewerRole === "coach" ? <><option>Coach + User</option><option>Admin only</option></> : <><option>User only</option><option>Coach + User</option><option>Admin only</option></>}</select></label>
               <label><span>Related session</span><select value={uploadSessionId} onChange={(event) => setUploadSessionId(event.target.value)}><option value="">No session attached</option>{sessions.map((session) => <option key={session.id} value={session.id}>{formatDate(session.date)} · {session.title}</option>)}</select></label>

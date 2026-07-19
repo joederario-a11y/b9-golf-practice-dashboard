@@ -193,6 +193,7 @@ const MAX_TRANSCRIPTION_BYTES = 25 * 1024 * 1024;
 const MAX_MEDIA_AUDIO_CHUNK_SECONDS = 60;
 const MAX_MEDIA_VIDEO_CHUNK_SECONDS = 10;
 const MAX_MEDIA_AUDIO_TOTAL_SECONDS = 60 * 30;
+const STALE_ACTIVE_JOB_MS = 15 * 60 * 1000;
 const ACTIVE_VIDEO_RECAP_JOB_STATUS_LIST = Array.from(ACTIVE_VIDEO_RECAP_JOB_STATUSES);
 
 function text(value: unknown, maxLength = 4000) {
@@ -1249,6 +1250,12 @@ function serializeJob(row: ProcessingJobRow | null) {
   };
 }
 
+function activeJobIsStale(row: ProcessingJobRow | null) {
+  if (!row || !ACTIVE_VIDEO_RECAP_JOB_STATUSES.has(row.status)) return false;
+  const updatedAt = new Date(row.updated_at).getTime();
+  return Number.isFinite(updatedAt) && Date.now() - updatedAt > STALE_ACTIVE_JOB_MS;
+}
+
 export async function readVideoRecapState(identity: AuthIdentity, videoId: string) {
   const database = getRequiredDatabase();
   await prepareDatabase(database);
@@ -1505,7 +1512,13 @@ export async function updateVideoRecapState(identity: AuthIdentity, payload: Rec
   if (action === "retry" || action === "retranscribeVideo") {
     const activeJob = await loadActiveJob(database, video.id);
     if (activeJob) {
-      return readVideoRecapState(identity, video.id);
+      if (!activeJobIsStale(activeJob)) return readVideoRecapState(identity, video.id);
+      await markJob(database, activeJob.id, {
+        errorCode: "stale_processing_retried",
+        errorMessage: "Previous processing stopped before completion and was retried.",
+        status: "failed",
+        step: "retry_requeued_stale_job",
+      });
     }
     const jobId = await createVideoRecapProcessingJob(database, identity, video.id, true, text(payload.language, 12) || "en");
     if (jobId) {

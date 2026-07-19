@@ -297,6 +297,7 @@ async function listUsers(database: D1Database, identity: AuthIdentity) {
     LEFT JOIN user_profile_images AS profile_image
       ON profile_image.user_id = users.id AND profile_image.is_current = 1
     LEFT JOIN lesson_videos ON lesson_videos.member_id = users.id
+      AND LOWER(COALESCE(lesson_videos.video_type, '')) NOT IN ('system_test', 'system test')
     LEFT JOIN golf_session_snapshots ON golf_session_snapshots.user_id = users.id
   `;
 
@@ -367,13 +368,14 @@ async function dashboard(database: D1Database, identity: AuthIdentity) {
   const sessionsAdded = members.reduce((sum, user) => sum + user.sessionCount, 0);
   const feedbackRows = identity.role === "admin"
     ? await database
-        .prepare("SELECT COUNT(*) AS count FROM lesson_videos WHERE publication_status = 'Published' AND review_status IN ('New', 'Coach Feedback')")
+        .prepare("SELECT COUNT(*) AS count FROM lesson_videos WHERE publication_status = 'Published' AND review_status IN ('New', 'Coach Feedback') AND LOWER(COALESCE(video_type, '')) NOT IN ('system_test', 'system test')")
         .first<{ count: number }>()
     : await database
         .prepare(
           `SELECT COUNT(*) AS count FROM lesson_videos
            WHERE publication_status = 'Published'
              AND review_status IN ('New', 'Coach Feedback')
+             AND LOWER(COALESCE(video_type, '')) NOT IN ('system_test', 'system test')
              AND member_id IN (SELECT member_id FROM coach_members WHERE coach_id = ?)`,
         )
         .bind(identity.id)
@@ -430,6 +432,7 @@ async function memberDetail(database: D1Database, identity: AuthIdentity, member
        FROM lesson_videos
        LEFT JOIN users AS coach ON coach.id = lesson_videos.coach_id
        WHERE lesson_videos.member_id = ?
+         AND LOWER(COALESCE(lesson_videos.video_type, '')) NOT IN ('system_test', 'system test')
        ORDER BY lesson_videos.created_at DESC LIMIT 30`,
     )
     .bind(memberId)
@@ -518,6 +521,15 @@ async function createUser(request: Request, database: D1Database, identity: Auth
   const notes = nullableText(payload.notes, 2000);
   const accountStatus = safeAccountStatus(text(payload.accountStatus, 20), "active");
   const inviteStatus = safeInviteStatus(text(payload.inviteStatus, 20), "pending");
+  const temporaryPassword = typeof payload.temporaryPassword === "string"
+    ? payload.temporaryPassword
+    : typeof payload.password === "string"
+      ? payload.password
+      : "";
+  if (role === "member") {
+    const passwordError = validatePasswordConfirmation(temporaryPassword, temporaryPassword);
+    if (passwordError) throw new Response(passwordError, { status: 400 });
+  }
   const existing = await database
     .prepare("SELECT id, email, role FROM users WHERE LOWER(email) = ?")
     .bind(email)
@@ -533,8 +545,12 @@ async function createUser(request: Request, database: D1Database, identity: Auth
         account_status, invite_status, invited_at, created_by, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
     )
-    .bind(userId, role, firstName, lastName, email, phone, skillLevel, notes, accountStatus, inviteStatus, identity.id)
+    .bind(userId, role, firstName, lastName, email, phone, skillLevel, notes, accountStatus, temporaryPassword ? "accepted" : inviteStatus, identity.id)
     .run();
+
+  if (temporaryPassword) {
+    await setUserPassword(userId, temporaryPassword, { temporary: role === "member" });
+  }
 
   if (role === "member") {
     const coachId = identity.role === "coach" ? identity.id : text(payload.coachId, 80);

@@ -7,8 +7,9 @@ import {
   recordActivity,
   requireIdentity,
   responseFromError,
+  setUserPassword,
 } from "@/lib/server/platform";
-import { normalizeEmail, singleCoachAssignmentGuard } from "@/lib/admin-user-policy.mjs";
+import { normalizeEmail, singleCoachAssignmentGuard, validatePasswordConfirmation } from "@/lib/admin-user-policy.mjs";
 
 type MemberPayload = {
   coachId?: unknown;
@@ -16,6 +17,7 @@ type MemberPayload = {
   firstName?: unknown;
   lastName?: unknown;
   notes?: unknown;
+  temporaryPassword?: unknown;
   phone?: unknown;
   skillLevel?: unknown;
 };
@@ -143,6 +145,7 @@ export async function GET() {
 	          MAX(lesson_videos.created_at) AS last_video_at
 	        FROM users
 	        LEFT JOIN lesson_videos ON lesson_videos.member_id = users.id
+            AND LOWER(COALESCE(lesson_videos.video_type, '')) NOT IN ('system_test', 'system test')
 	        LEFT JOIN user_profile_images AS profile_image
 	          ON profile_image.user_id = users.id AND profile_image.is_current = 1
 	        WHERE users.role = 'member'
@@ -158,6 +161,7 @@ export async function GET() {
 	        FROM coach_members
 	        JOIN users ON users.id = coach_members.member_id
 	        LEFT JOIN lesson_videos ON lesson_videos.member_id = users.id
+            AND LOWER(COALESCE(lesson_videos.video_type, '')) NOT IN ('system_test', 'system test')
 	        LEFT JOIN user_profile_images AS profile_image
 	          ON profile_image.user_id = users.id AND profile_image.is_current = 1
         WHERE coach_members.coach_id = ?
@@ -187,6 +191,7 @@ export async function POST(request: Request) {
     const phone = text(payload.phone, 40);
     const skillLevel = text(payload.skillLevel, 80);
     const notes = text(payload.notes, 2000);
+    const temporaryPassword = typeof payload.temporaryPassword === "string" ? payload.temporaryPassword : "";
     const requestedCoachId = text(payload.coachId, 80);
     if (!firstName || !lastName || !email) {
       return Response.json({ error: "First name, last name, and email are required." }, { status: 400 });
@@ -219,6 +224,10 @@ export async function POST(request: Request) {
       return Response.json({ error: "That email belongs to a coach or administrator." }, { status: 409 });
     }
     const memberId = existing?.id ?? crypto.randomUUID();
+    if (!existing) {
+      const passwordError = validatePasswordConfirmation(temporaryPassword, temporaryPassword);
+      if (passwordError) return Response.json({ error: passwordError }, { status: 400 });
+    }
     const coachId = identity.role === "coach" ? identity.id : requestedCoachId || null;
     if (coachId) {
       const coach = await database
@@ -265,7 +274,7 @@ export async function POST(request: Request) {
             `INSERT INTO users (
               id, role, first_name, last_name, email, phone, skill_level, notes,
               invite_status, invited_at, created_by, created_at, updated_at
-            ) VALUES (?, 'member', ?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+            ) VALUES (?, 'member', ?, ?, ?, ?, ?, ?, 'accepted', CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
           )
           .bind(memberId, firstName, lastName, email, phone || null, skillLevel || null, notes || null, identity.id),
         coachId
@@ -278,6 +287,7 @@ export async function POST(request: Request) {
               .bind(crypto.randomUUID(), coachId, memberId)
           : database.prepare("SELECT 1"),
       ]);
+      await setUserPassword(memberId, temporaryPassword, { temporary: true });
     }
     if (coachId) {
       await recordActivity({
@@ -322,7 +332,7 @@ export async function POST(request: Request) {
             ),
           database
             .prepare("UPDATE users SET invite_status = ?, invited_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-            .bind(sentInvite.status, memberId),
+            .bind(temporaryPassword ? "accepted" : sentInvite.status, memberId),
         ]);
         return sentInvite;
       })();
@@ -337,6 +347,7 @@ export async function POST(request: Request) {
 	          MAX(lesson_videos.created_at) AS last_video_at
 	        FROM users
 	        LEFT JOIN lesson_videos ON lesson_videos.member_id = users.id
+            AND LOWER(COALESCE(lesson_videos.video_type, '')) NOT IN ('system_test', 'system test')
 	        LEFT JOIN user_profile_images AS profile_image
 	          ON profile_image.user_id = users.id AND profile_image.is_current = 1
         WHERE users.id = ?
@@ -348,6 +359,7 @@ export async function POST(request: Request) {
     return Response.json({
       member: row ? serializeMember(row) : null,
       invite,
+      passwordConfigured: Boolean(!existing && temporaryPassword),
     }, { status: existing ? 200 : 201 });
   } catch (error) {
     return responseFromError(error);
@@ -416,6 +428,7 @@ export async function PATCH(request: Request) {
           MAX(lesson_videos.created_at) AS last_video_at
         FROM users
         LEFT JOIN lesson_videos ON lesson_videos.member_id = users.id
+          AND LOWER(COALESCE(lesson_videos.video_type, '')) NOT IN ('system_test', 'system test')
         WHERE users.id = ?
         GROUP BY users.id`,
       )

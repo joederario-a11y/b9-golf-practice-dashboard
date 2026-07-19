@@ -1444,8 +1444,63 @@ export async function getAssignedMemberIds(identity: AuthIdentity, database = ge
   return result.results.map((row) => row.member_id);
 }
 
-export function responseFromError(error: unknown) {
-  if (error instanceof Response) return error;
+export async function responseFromError(error: unknown) {
+  if (error instanceof Response) {
+    const status = error.status || 500;
+    const code = status === 401
+      ? "unauthorized"
+      : status === 403
+        ? "forbidden"
+        : status === 404
+          ? "not_found"
+          : status === 409
+            ? "conflict"
+            : "request_failed";
+    const fallbackMessage = status === 401
+      ? "Please sign in again."
+      : status === 403
+        ? "You do not have permission to do that."
+        : "The request could not be completed.";
+    const bodyText = error.body
+      ? await error.clone().text().catch(() => fallbackMessage)
+      : fallbackMessage;
+    let message = bodyText.trim() || fallbackMessage;
+    if ((error.headers.get("content-type") ?? "").includes("application/json") && bodyText.trim()) {
+      try {
+        const parsed = JSON.parse(bodyText) as unknown;
+        if (parsed && typeof parsed === "object") {
+          const record = parsed as Record<string, unknown>;
+          const nested = record.error && typeof record.error === "object"
+            ? record.error as Record<string, unknown>
+            : null;
+          message = typeof nested?.message === "string"
+            ? nested.message
+            : typeof record.error === "string"
+              ? record.error
+              : typeof record.message === "string"
+                ? record.message
+                : message;
+        }
+      } catch {
+        message = fallbackMessage;
+      }
+    }
+    return Response.json({
+      ok: false,
+      error: {
+        code,
+        message,
+      },
+      publicMessage: message,
+    }, { status });
+  }
   const message = error instanceof Error ? error.message : "Unexpected server error.";
-  return Response.json({ error: message }, { status: 500 });
+  return Response.json({
+    ok: false,
+    error: {
+      code: "server_error",
+      message,
+    },
+    publicMessage: "Unexpected server error.",
+  }, { status: 500 });
 }

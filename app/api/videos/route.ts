@@ -159,6 +159,21 @@ function optionalText(value: unknown, maxLength: number) {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : undefined;
 }
 
+function defaultVideoTitleFromDate(...values: unknown[]) {
+  const source = values
+    .map((value) => typeof value === "string" || typeof value === "number" ? String(value).trim() : "")
+    .find(Boolean);
+  const date = source ? new Date(source) : new Date();
+  const safeDate = Number.isNaN(date.getTime()) ? new Date() : date;
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(safeDate);
+}
+
+const HIDDEN_TEST_VIDEO_CLAUSE = "LOWER(COALESCE(videos.video_type, '')) NOT IN ('system_test', 'system test')";
+
 function stringList(value: unknown) {
   if (!Array.isArray(value)) return [];
   return value
@@ -312,7 +327,9 @@ export async function GET(request: Request) {
     const database = getRequiredDatabase();
     await ensurePlatformSchema(database);
     const assignedMemberIds = await getAssignedMemberIds(identity, database);
-    const requestedMemberId = new URL(request.url).searchParams.get("memberId")?.trim() || "";
+    const url = new URL(request.url);
+    const requestedMemberId = url.searchParams.get("memberId")?.trim() || "";
+    const includeTests = identity.role === "admin" && url.searchParams.get("includeTests") === "1";
     if (requestedMemberId && !canUploadToMember(identity, requestedMemberId, assignedMemberIds)) {
       return Response.json({ error: "You do not have access to that member." }, { status: 403 });
     }
@@ -336,6 +353,9 @@ export async function GET(request: Request) {
     } else if (requestedMemberId) {
       query += " WHERE videos.member_id = ?";
       bindings.push(requestedMemberId);
+    }
+    if (!includeTests) {
+      query += query.includes(" WHERE ") ? ` AND ${HIDDEN_TEST_VIDEO_CLAUSE}` : ` WHERE ${HIDDEN_TEST_VIDEO_CLAUSE}`;
     }
     query += " ORDER BY videos.created_at DESC";
     const statement = database.prepare(query);
@@ -367,13 +387,14 @@ export async function POST(request: Request) {
       return Response.json({ error: "Member not found." }, { status: 404 });
     }
 
-    const title = text(payload.title, 120);
+    const lessonDate = text(payload.lessonDate, 20) || null;
+    const title = text(payload.title, 120) || defaultVideoTitleFromDate(payload.mediaCapturedAt, lessonDate, new Date().toISOString());
     const fileName = text(payload.fileName, 255);
     const mimeType = text(payload.mimeType, 100).toLowerCase();
     const fileSize = Number(payload.fileSize);
     const validationError = validateVideoFile(mimeType, fileSize);
-    if (!title || !fileName) {
-      return Response.json({ error: "Video title and file name are required." }, { status: 400 });
+    if (!fileName) {
+      return Response.json({ error: "Video file name is required." }, { status: 400 });
     }
     if (validationError) {
       return Response.json({ error: validationError }, { status: 400 });
@@ -423,7 +444,7 @@ export async function POST(request: Request) {
         fileSize,
         mimeType,
         Math.max(0, Math.round(Number(payload.duration) || 0)),
-        text(payload.lessonDate, 20) || null,
+        lessonDate,
         publicationStatus,
         identity.role === "member" ? 1 : 0,
         text(payload.lessonSummary, 4000),
@@ -709,7 +730,7 @@ export async function DELETE(request: Request) {
     const keys = [
       video.storage_path,
       video.thumbnail_storage_path,
-      ...(aiAssets.results ?? []).map((asset) => asset.audio_storage_path),
+      ...(aiAssets.results ?? []).flatMap((asset) => asset.audio_storage_path.split("\n")),
     ].filter((key): key is string => Boolean(key));
     if (keys.length) await bucket.delete(keys);
     await database.batch([
