@@ -126,6 +126,18 @@ type TranscriptRow = {
   updated_at: string;
 };
 
+type AudioExtractionResult = {
+  paths: string[];
+  source: "media_chunks" | "original_media";
+};
+
+type TranscriptionSegmentResult = {
+  duration: number | null;
+  model: string;
+  segments: unknown[];
+  text: string;
+};
+
 type DraftRow = {
   id: string;
   video_id: string;
@@ -177,7 +189,9 @@ type RecapEnv = {
   VIDEO_STORAGE: R2Bucket;
 };
 
-const MAX_TRANSCRIPTION_BYTES = 100 * 1024 * 1024;
+const MAX_TRANSCRIPTION_BYTES = 25 * 1024 * 1024;
+const MAX_MEDIA_AUDIO_CHUNK_SECONDS = 60;
+const MAX_MEDIA_AUDIO_TOTAL_SECONDS = 60 * 30;
 const ACTIVE_VIDEO_RECAP_JOB_STATUS_LIST = Array.from(ACTIVE_VIDEO_RECAP_JOB_STATUSES);
 
 function text(value: unknown, maxLength = 4000) {
@@ -352,8 +366,13 @@ function transcriptionFileInfo(video: VideoRecapRow, storagePath: string) {
 async function cleanupTemporaryAudio(env: RecapEnv, database: D1Database, jobOrId: ProcessingJobRow | string, actor?: AuthIdentity) {
   const job = typeof jobOrId === "string" ? await loadJob(database, jobOrId) : jobOrId;
   if (!job?.audio_storage_path) return false;
+  const audioStoragePaths = job.audio_storage_path
+    .split("\n")
+    .map((path) => path.trim())
+    .filter((path) => path.startsWith("video-processing/"));
+  if (!audioStoragePaths.length) return false;
   try {
-    await env.VIDEO_STORAGE.delete(job.audio_storage_path);
+    await Promise.all(audioStoragePaths.map((path) => env.VIDEO_STORAGE.delete(path)));
     await database
       .prepare("UPDATE video_ai_processing_jobs SET audio_storage_path = NULL, audio_deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .bind(job.id)
@@ -679,33 +698,51 @@ async function extractAudio(env: RecapEnv, database: D1Database, job: Processing
   if (!env.MEDIA) throw new RecapProcessingError("media_binding_missing", "Cloudflare Media binding MEDIA is not configured.");
   const object = await env.VIDEO_STORAGE.get(video.storage_path);
   if (!object?.body) throw new RecapProcessingError("video_missing_from_r2", "The source video could not be found in private R2.");
+  const audioStoragePaths: string[] = [];
   try {
     const durationSeconds = Number.isFinite(video.duration) && video.duration > 0
-      ? Math.min(Math.ceil(video.duration), 60 * 30)
-      : 60 * 30;
-    const audioResponse = await env.MEDIA.input(object.body).output({
-      mode: "audio",
-      time: "0s",
-      duration: `${durationSeconds}s`,
-      format: "m4a",
-    }).response();
-    if (!audioResponse.ok || !audioResponse.body) {
-      throw new RecapProcessingError("audio_extraction_failed", "No usable audio track could be extracted from this video.", "no_usable_audio");
+      ? Math.min(Math.ceil(video.duration), MAX_MEDIA_AUDIO_TOTAL_SECONDS)
+      : MAX_MEDIA_AUDIO_CHUNK_SECONDS;
+    const chunkCount = Math.max(1, Math.ceil(durationSeconds / MAX_MEDIA_AUDIO_CHUNK_SECONDS));
+    for (let index = 0; index < chunkCount; index += 1) {
+      await assertWorkflowCanContinue(database, job.id, video);
+      const chunkSource = index === 0 ? object : await env.VIDEO_STORAGE.get(video.storage_path);
+      if (!chunkSource?.body) throw new RecapProcessingError("video_missing_from_r2", "The source video could not be found in private R2.");
+      const startSeconds = index * MAX_MEDIA_AUDIO_CHUNK_SECONDS;
+      const chunkDuration = Math.max(1, Math.min(MAX_MEDIA_AUDIO_CHUNK_SECONDS, durationSeconds - startSeconds));
+      await markJob(database, job.id, {
+        status: "extracting_audio",
+        step: `extracting_audio_chunk_${index + 1}_of_${chunkCount}`,
+      });
+      const audioResponse = await env.MEDIA.input(chunkSource.body).output({
+        mode: "audio",
+        time: `${startSeconds}s`,
+        duration: `${chunkDuration}s`,
+        format: "m4a",
+      }).response();
+      if (!audioResponse.ok || !audioResponse.body) {
+        throw new RecapProcessingError("audio_extraction_failed", "Cloudflare Media audio extraction failed for this video.");
+      }
+      const audioStoragePath = `video-processing/${video.id}/audio/${job.id}-part-${index + 1}.m4a`;
+      await env.VIDEO_STORAGE.put(audioStoragePath, audioResponse.body, {
+        httpMetadata: { contentType: audioResponse.headers.get("content-type") || "audio/mp4" },
+        customMetadata: {
+          coachId: job.coach_id,
+          jobId: job.id,
+          memberId: video.member_id,
+          part: String(index + 1),
+          videoId: video.id,
+        },
+      });
+      audioStoragePaths.push(audioStoragePath);
     }
-    const audioStoragePath = `video-processing/${video.id}/audio/${job.id}.m4a`;
-    await env.VIDEO_STORAGE.put(audioStoragePath, audioResponse.body, {
-      httpMetadata: { contentType: audioResponse.headers.get("content-type") || "audio/mp4" },
-      customMetadata: {
-	        coachId: job.coach_id,
-        jobId: job.id,
-        memberId: video.member_id,
-        videoId: video.id,
-      },
-    });
-    await markJob(database, job.id, { audioStoragePath, status: "extracting_audio", step: "audio_extraction_completed" });
-    await recordProcessingEvent(database, "audio_extraction_completed", job, "MAI Coach extracted temporary coach voiceover audio.");
-    return audioStoragePath;
+    await markJob(database, job.id, { audioStoragePath: audioStoragePaths.join("\n"), status: "extracting_audio", step: "audio_extraction_completed" });
+    await recordProcessingEvent(database, "audio_extraction_completed", job, "MAI Coach extracted temporary coach voiceover audio.", { chunks: audioStoragePaths.length });
+    return { paths: audioStoragePaths, source: "media_chunks" } satisfies AudioExtractionResult;
   } catch (error) {
+    if (audioStoragePaths.length) {
+      await Promise.all(audioStoragePaths.map((path) => env.VIDEO_STORAGE.delete(path).catch(() => undefined)));
+    }
     if (object.size <= MAX_TRANSCRIPTION_BYTES) {
       await markJob(database, job.id, { status: "extracting_audio", step: "using_original_media_for_transcription" });
       await recordProcessingEvent(
@@ -714,17 +751,19 @@ async function extractAudio(env: RecapEnv, database: D1Database, job: Processing
         job,
         "Media audio extraction failed, so MAI Coach will transcribe the original uploaded video directly.",
       );
-      return video.storage_path;
+      return { paths: [video.storage_path], source: "original_media" } satisfies AudioExtractionResult;
     }
     if (error instanceof RecapProcessingError) throw error;
     throw new RecapProcessingError("audio_extraction_failed", "Audio extraction failed for this video.");
   }
 }
 
-async function transcribeAudio(env: RecapEnv, database: D1Database, job: ProcessingJobRow, video: VideoRecapRow, audioStoragePath: string) {
-  await assertWorkflowCanContinue(database, job.id, video);
-  await markJob(database, job.id, { status: "transcribing", step: "transcribing_coach_feedback" });
-  await recordProcessingEvent(database, "transcription_started", job, "MAI Coach started transcribing coach voiceover audio.");
+async function transcribeAudioSegment(
+  env: RecapEnv,
+  video: VideoRecapRow,
+  job: ProcessingJobRow,
+  audioStoragePath: string,
+): Promise<TranscriptionSegmentResult> {
   const configurationIssue = getOpenAIConfigurationIssue(env);
   if (configurationIssue) {
     throw new RecapProcessingError(configurationIssue.code, configurationIssue.publicMessage);
@@ -764,7 +803,31 @@ async function transcribeAudio(env: RecapEnv, database: D1Database, job: Process
     });
     throw new RecapProcessingError(diagnostic.category || "transcription_failed", "MAI Coach transcription is temporarily unavailable.");
   }
-  const transcriptText = text(payload.text, 120_000);
+  return {
+    duration: Number.isFinite(payload.duration) ? Number(payload.duration) : null,
+    model,
+    segments: Array.isArray(payload.segments) ? payload.segments : [],
+    text: text(payload.text, 120_000),
+  };
+}
+
+async function transcribeAudio(env: RecapEnv, database: D1Database, job: ProcessingJobRow, video: VideoRecapRow, audio: AudioExtractionResult) {
+  await assertWorkflowCanContinue(database, job.id, video);
+  await markJob(database, job.id, { status: "transcribing", step: "transcribing_coach_feedback" });
+  await recordProcessingEvent(database, "transcription_started", job, "MAI Coach started transcribing coach voiceover audio.", { chunks: audio.paths.length, source: audio.source });
+  const results: TranscriptionSegmentResult[] = [];
+  for (const [index, audioStoragePath] of audio.paths.entries()) {
+    await assertWorkflowCanContinue(database, job.id, video);
+    await markJob(database, job.id, {
+      status: "transcribing",
+      step: audio.paths.length > 1 ? `transcribing_audio_chunk_${index + 1}_of_${audio.paths.length}` : "transcribing_coach_feedback",
+    });
+    results.push(await transcribeAudioSegment(env, video, job, audioStoragePath));
+  }
+  const transcriptText = text(results.map((result) => result.text).filter(Boolean).join("\n\n"), 120_000);
+  const segments = results.flatMap((result) => result.segments);
+  const duration = results.reduce((total, result) => total + (Number.isFinite(result.duration) ? Number(result.duration) : 0), 0);
+  const model = results[0]?.model || env.OPENAI_TRANSCRIPTION_MODEL || DEFAULT_TRANSCRIPTION_MODEL;
   const transcriptId = crypto.randomUUID();
   await assertWorkflowCanContinue(database, job.id, video);
   await database.prepare("UPDATE video_transcripts SET is_current = 0, updated_at = CURRENT_TIMESTAMP WHERE video_id = ?")
@@ -784,13 +847,13 @@ async function transcribeAudio(env: RecapEnv, database: D1Database, job: Process
       video.member_id,
 	      job.coach_id,
       transcriptText,
-      JSON.stringify(Array.isArray(payload.segments) ? payload.segments : []),
+      JSON.stringify(segments),
       job.requested_language || "en",
       model,
-      Number.isFinite(payload.duration) ? Number(payload.duration) : null,
+      duration > 0 ? duration : null,
       job.id,
       job.processing_version,
-      JSON.stringify({ usable: transcriptLooksUsable(transcriptText), source: "openai_audio_transcription" }),
+      JSON.stringify({ chunks: audio.paths.length, source: "openai_audio_transcription", usable: transcriptLooksUsable(transcriptText) }),
     )
     .run();
   await markJob(database, job.id, { status: "transcribing", step: "transcription_completed" });
