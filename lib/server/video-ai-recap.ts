@@ -128,7 +128,7 @@ type TranscriptRow = {
 
 type AudioExtractionResult = {
   paths: string[];
-  source: "media_chunks" | "original_media";
+  source: "media_chunks" | "normalized_video_chunks" | "original_media";
 };
 
 type TranscriptionSegmentResult = {
@@ -191,6 +191,7 @@ type RecapEnv = {
 
 const MAX_TRANSCRIPTION_BYTES = 25 * 1024 * 1024;
 const MAX_MEDIA_AUDIO_CHUNK_SECONDS = 60;
+const MAX_MEDIA_VIDEO_CHUNK_SECONDS = 20;
 const MAX_MEDIA_AUDIO_TOTAL_SECONDS = 60 * 30;
 const ACTIVE_VIDEO_RECAP_JOB_STATUS_LIST = Array.from(ACTIVE_VIDEO_RECAP_JOB_STATUSES);
 
@@ -354,9 +355,11 @@ function assertRowsMatch(video: VideoRecapRow, draft?: DraftRow | null, transcri
 }
 
 function transcriptionFileInfo(video: VideoRecapRow, storagePath: string) {
+  if (storagePath.endsWith(".mp4")) return { name: "coach-video-clip.mp4", type: "video/mp4" };
   if (storagePath !== video.storage_path) return { name: "coach-voiceover.m4a", type: "audio/mp4" };
-  const mimeType = text(video.mime_type, 100) || "video/mp4";
-  const extension = mimeType.includes("quicktime") ? "mov" : mimeType.includes("webm") ? "webm" : "mp4";
+  const rawMimeType = text(video.mime_type, 100) || "video/mp4";
+  const mimeType = rawMimeType.includes("quicktime") ? "video/mp4" : rawMimeType;
+  const extension = rawMimeType.includes("quicktime") ? "mp4" : rawMimeType.includes("webm") ? "webm" : "mp4";
   return {
     name: text(video.file_name, 180) || `coach-video.${extension}`,
     type: mimeType,
@@ -417,6 +420,21 @@ async function recordProcessingEvent(database: D1Database, action: string, job: 
     summary,
     targetUserId: job.member_id,
   });
+}
+
+function videoDurationChunks(video: VideoRecapRow, chunkSeconds: number) {
+  const durationSeconds = Number.isFinite(video.duration) && video.duration > 0
+    ? Math.min(Math.ceil(video.duration), MAX_MEDIA_AUDIO_TOTAL_SECONDS)
+    : chunkSeconds;
+  return {
+    chunkCount: Math.max(1, Math.ceil(durationSeconds / chunkSeconds)),
+    durationSeconds,
+  };
+}
+
+async function deleteTemporaryPaths(env: RecapEnv, paths: string[]) {
+  if (!paths.length) return;
+  await Promise.all(paths.map((path) => env.VIDEO_STORAGE.delete(path).catch(() => undefined)));
 }
 
 async function loadCurrentTranscript(database: D1Database, video: VideoRecapRow) {
@@ -700,10 +718,7 @@ async function extractAudio(env: RecapEnv, database: D1Database, job: Processing
   if (!object?.body) throw new RecapProcessingError("video_missing_from_r2", "The source video could not be found in private R2.");
   const audioStoragePaths: string[] = [];
   try {
-    const durationSeconds = Number.isFinite(video.duration) && video.duration > 0
-      ? Math.min(Math.ceil(video.duration), MAX_MEDIA_AUDIO_TOTAL_SECONDS)
-      : MAX_MEDIA_AUDIO_CHUNK_SECONDS;
-    const chunkCount = Math.max(1, Math.ceil(durationSeconds / MAX_MEDIA_AUDIO_CHUNK_SECONDS));
+    const { chunkCount, durationSeconds } = videoDurationChunks(video, MAX_MEDIA_AUDIO_CHUNK_SECONDS);
     for (let index = 0; index < chunkCount; index += 1) {
       await assertWorkflowCanContinue(database, job.id, video);
       const chunkSource = index === 0 ? object : await env.VIDEO_STORAGE.get(video.storage_path);
@@ -740,9 +755,7 @@ async function extractAudio(env: RecapEnv, database: D1Database, job: Processing
     await recordProcessingEvent(database, "audio_extraction_completed", job, "MAI Coach extracted temporary coach voiceover audio.", { chunks: audioStoragePaths.length });
     return { paths: audioStoragePaths, source: "media_chunks" } satisfies AudioExtractionResult;
   } catch (error) {
-    if (audioStoragePaths.length) {
-      await Promise.all(audioStoragePaths.map((path) => env.VIDEO_STORAGE.delete(path).catch(() => undefined)));
-    }
+    await deleteTemporaryPaths(env, audioStoragePaths);
     if (object.size <= MAX_TRANSCRIPTION_BYTES) {
       await markJob(database, job.id, { status: "extracting_audio", step: "using_original_media_for_transcription" });
       await recordProcessingEvent(
@@ -752,6 +765,75 @@ async function extractAudio(env: RecapEnv, database: D1Database, job: Processing
         "Media audio extraction failed, so MAI Coach will transcribe the original uploaded video directly.",
       );
       return { paths: [video.storage_path], source: "original_media" } satisfies AudioExtractionResult;
+    }
+    const normalizedVideoPaths: string[] = [];
+    let fallbackError: unknown = null;
+    try {
+      const { chunkCount, durationSeconds } = videoDurationChunks(video, MAX_MEDIA_VIDEO_CHUNK_SECONDS);
+      await recordProcessingEvent(
+        database,
+        "audio_extraction_fallback_video_chunks",
+        job,
+        "Media audio extraction failed, so MAI Coach will normalize short private video clips for transcription.",
+        {
+          chunks: chunkCount,
+          sourceMimeType: text(video.mime_type, 100) || "unknown",
+          sourceSize: object.size,
+        },
+      );
+      for (let index = 0; index < chunkCount; index += 1) {
+        await assertWorkflowCanContinue(database, job.id, video);
+        const chunkSource = await env.VIDEO_STORAGE.get(video.storage_path);
+        if (!chunkSource?.body) throw new RecapProcessingError("video_missing_from_r2", "The source video could not be found in private R2.");
+        const startSeconds = index * MAX_MEDIA_VIDEO_CHUNK_SECONDS;
+        const chunkDuration = Math.max(1, Math.min(MAX_MEDIA_VIDEO_CHUNK_SECONDS, durationSeconds - startSeconds));
+        await markJob(database, job.id, {
+          status: "extracting_audio",
+          step: `normalizing_video_chunk_${index + 1}_of_${chunkCount}`,
+        });
+        const videoResponse = await env.MEDIA.input(chunkSource.body).output({
+          audio: true,
+          duration: `${chunkDuration}s`,
+          mode: "video",
+          time: `${startSeconds}s`,
+        }).response();
+        if (!videoResponse.ok || !videoResponse.body) {
+          throw new RecapProcessingError("mp4_fallback_failed", "Cloudflare Media could not normalize this video for transcription.");
+        }
+        const normalizedVideoPath = `video-processing/${video.id}/media/${job.id}-part-${index + 1}.mp4`;
+        await env.VIDEO_STORAGE.put(normalizedVideoPath, videoResponse.body, {
+          httpMetadata: { contentType: videoResponse.headers.get("content-type") || "video/mp4" },
+          customMetadata: {
+            coachId: job.coach_id,
+            fallback: "video_chunk",
+            jobId: job.id,
+            memberId: video.member_id,
+            part: String(index + 1),
+            videoId: video.id,
+          },
+        });
+        normalizedVideoPaths.push(normalizedVideoPath);
+      }
+      await markJob(database, job.id, {
+        audioStoragePath: normalizedVideoPaths.join("\n"),
+        status: "extracting_audio",
+        step: "video_chunk_normalization_completed",
+      });
+      await recordProcessingEvent(
+        database,
+        "audio_extraction_fallback_video_completed",
+        job,
+        "MAI Coach created temporary MP4 clips for transcription after audio extraction failed.",
+        { chunks: normalizedVideoPaths.length },
+      );
+      return { paths: normalizedVideoPaths, source: "normalized_video_chunks" } satisfies AudioExtractionResult;
+    } catch (normalizationError) {
+      fallbackError = normalizationError;
+      await deleteTemporaryPaths(env, normalizedVideoPaths);
+    }
+    if (fallbackError instanceof RecapProcessingError) throw fallbackError;
+    if (fallbackError instanceof Error) {
+      throw new RecapProcessingError("mp4_fallback_failed", "Cloudflare Media could not normalize this video for transcription.");
     }
     if (error instanceof RecapProcessingError) throw error;
     throw new RecapProcessingError("audio_extraction_failed", "Audio extraction failed for this video.");
