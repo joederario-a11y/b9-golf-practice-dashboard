@@ -670,7 +670,15 @@ async function extractAudio(env: RecapEnv, database: D1Database, job: Processing
   const object = await env.VIDEO_STORAGE.get(video.storage_path);
   if (!object?.body) throw new RecapProcessingError("video_missing_from_r2", "The source video could not be found in private R2.");
   try {
-    const audioResponse = await env.MEDIA.input(object.body).output({ mode: "audio", time: "0s" }).response();
+    const durationSeconds = Number.isFinite(video.duration) && video.duration > 0
+      ? Math.min(Math.ceil(video.duration), 60 * 30)
+      : 60 * 30;
+    const audioResponse = await env.MEDIA.input(object.body).output({
+      mode: "audio",
+      time: "0s",
+      duration: `${durationSeconds}s`,
+      format: "m4a",
+    }).response();
     if (!audioResponse.ok || !audioResponse.body) {
       throw new RecapProcessingError("audio_extraction_failed", "No usable audio track could be extracted from this video.", "no_usable_audio");
     }
