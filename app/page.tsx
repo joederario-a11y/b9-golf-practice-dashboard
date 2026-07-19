@@ -10516,10 +10516,11 @@ function AiLessonRecapReviewModal({
     }
   }
 
-  async function submit(action: "approveAndPublish" | "cancelProcessing" | "editTranscript" | "markIncorrect" | "regenerateRecapFromTranscript" | "retranscribeVideo" | "saveDraft") {
+  async function submit(action: "approveAndPublish" | "cancelProcessing" | "editTranscript" | "markIncorrect" | "regenerateRecapFromTranscript" | "retry" | "retranscribeVideo" | "saveDraft") {
     if (action === "approveAndPublish" && !window.confirm("Publish this coach-approved recap and transcript to the member?")) return;
     if (action === "markIncorrect" && !window.confirm("Mark this AI recap as incorrect? It will stay hidden from the member.")) return;
     if (action === "cancelProcessing" && !window.confirm("Cancel the active MAI Coach processing job? Published recaps will remain available.")) return;
+    if (action === "retry" && !window.confirm("Retry MAI Coach processing for this video? The existing video will be preserved.")) return;
     if (action === "retranscribeVideo" && !window.confirm("Retranscribe the original video and create a new draft revision?")) return;
     setSaving("saving");
     try {
@@ -10547,6 +10548,8 @@ function AiLessonRecapReviewModal({
           workedOn: fields.mainFocus,
         });
         setMessage("Recap approved and published to the member.");
+      } else if (action === "retry") {
+        setMessage("Retry Processing was queued.");
       } else if (action === "retranscribeVideo") {
         setMessage("Generate Notes From Video Audio was queued.");
       } else if (action === "regenerateRecapFromTranscript") {
@@ -10592,6 +10595,7 @@ function AiLessonRecapReviewModal({
   const canPublish = hasDraft && (draftStatus === "ready_for_review" || draftStatus === "needs_coach_input");
   const evidence = state?.draft?.transcriptEvidence ?? [];
   const noUsableAudio = jobStatus === "no_usable_audio";
+  const canRetryProcessing = !isProcessingActive && (jobStatus === "failed" || noUsableAudio || !state?.job);
   const statusLabel = videoRecapProcessingStatusText(draftStatus === "published" ? "published" : jobStatus);
 
   return (
@@ -10666,6 +10670,7 @@ function AiLessonRecapReviewModal({
             <button className="secondary-action" disabled={saving === "saving" || !hasDraft || draftLocked} onClick={() => void submit("saveDraft")} type="button">Save Draft</button>
             <button className="secondary-action" disabled={saving === "saving"} onClick={() => void refreshNow()} type="button">Refresh</button>
             <button className="secondary-action" disabled={saving === "saving" || !hasDraft || draftLocked} onClick={() => void submit("editTranscript")} type="button">Save Transcript</button>
+            {canRetryProcessing && <button className="secondary-action" disabled={saving === "saving"} onClick={() => void submit("retry")} type="button">Retry Processing</button>}
             <button className="secondary-action" disabled={saving === "saving" || isProcessingActive} onClick={() => void submit("retranscribeVideo")} type="button">Regenerate From Video Audio</button>
             <button className="secondary-action" disabled={saving === "saving"} onClick={() => void publishVideoWithoutRecap()} type="button">Publish Video Without Recap</button>
             {isProcessingActive && <button className="text-button danger-text-button" disabled={saving === "saving"} onClick={() => void submit("cancelProcessing")} type="button">Cancel Processing</button>}

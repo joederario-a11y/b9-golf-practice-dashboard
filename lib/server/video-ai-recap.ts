@@ -177,7 +177,7 @@ type RecapEnv = {
   VIDEO_STORAGE: R2Bucket;
 };
 
-const MAX_TRANSCRIPTION_BYTES = 25 * 1024 * 1024;
+const MAX_TRANSCRIPTION_BYTES = 100 * 1024 * 1024;
 const ACTIVE_VIDEO_RECAP_JOB_STATUS_LIST = Array.from(ACTIVE_VIDEO_RECAP_JOB_STATUSES);
 
 function text(value: unknown, maxLength = 4000) {
@@ -732,7 +732,7 @@ async function transcribeAudio(env: RecapEnv, database: D1Database, job: Process
   const audioObject = await env.VIDEO_STORAGE.get(audioStoragePath);
   if (!audioObject) throw new RecapProcessingError("audio_missing_from_r2", "Extracted audio could not be loaded.");
   if (audioObject.size > MAX_TRANSCRIPTION_BYTES) {
-    throw new RecapProcessingError("audio_too_large", "The extracted audio is too large for the transcription endpoint.");
+    throw new RecapProcessingError("audio_too_large", "The lesson media is too large for the transcription endpoint.");
   }
   const model = env.OPENAI_TRANSCRIPTION_MODEL || DEFAULT_TRANSCRIPTION_MODEL;
   const form = new FormData();
