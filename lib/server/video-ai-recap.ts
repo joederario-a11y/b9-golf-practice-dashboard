@@ -441,6 +441,14 @@ function shouldPreferVideoChunkFallback(video: VideoRecapRow, sourceSize: number
   return text(video.mime_type, 100).includes("quicktime") && sourceSize > MAX_TRANSCRIPTION_BYTES;
 }
 
+function assertTemporaryAudioPath(video: VideoRecapRow, audioStoragePath: string) {
+  const normalizedPath = text(audioStoragePath, 600);
+  if (!normalizedPath.startsWith(`video-processing/${video.id}/audio/`)) {
+    throw new Response("Audio repair path must point to private temporary audio for this video.", { status: 400 });
+  }
+  return normalizedPath;
+}
+
 async function loadCurrentTranscript(database: D1Database, video: VideoRecapRow) {
   return database
     .prepare(
@@ -512,6 +520,54 @@ async function regenerateRecapFromCurrentTranscript(database: D1Database, identi
   await generateRecapDraft(getPlatformEnvironment() as RecapEnv, database, job, video, {
     text: transcript.transcript_text,
     transcriptId: transcript.id,
+  });
+}
+
+async function processExistingAudioForRecap(database: D1Database, identity: AuthIdentity, video: VideoRecapRow, language: string, audioStoragePath: string) {
+  const runtime = getPlatformEnvironment() as RecapEnv;
+  const normalizedAudioPath = assertTemporaryAudioPath(video, audioStoragePath);
+  const activeJob = await loadActiveJob(database, video.id);
+  if (activeJob) throw new Response("MAI Coach processing is already active for this video.", { status: 409 });
+  const audioObject = await runtime.VIDEO_STORAGE.head(normalizedAudioPath);
+  if (!audioObject) throw new Response("The extracted repair audio was not found in private storage.", { status: 404 });
+  if (audioObject.size > MAX_TRANSCRIPTION_BYTES) {
+    throw new Response("The extracted repair audio is too large for transcription.", { status: 413 });
+  }
+  const jobId = await createVideoRecapProcessingJob(database, identity, video.id, true, language);
+  if (!jobId) throw new Response("MAI Coach processing could not be requested for this video.", { status: 409 });
+  const job = await loadJob(database, jobId);
+  if (!job) throw new Response("MAI Coach processing job could not be loaded.", { status: 500 });
+  await markJob(database, job.id, {
+    audioStoragePath: normalizedAudioPath,
+    status: "transcribing",
+    step: "using_preextracted_audio_for_retry",
+  });
+  await recordActivity({
+    action: "processing_retried",
+    actor: identity,
+    database,
+    entityId: job.id,
+    entityType: "video_ai_processing_job",
+    memberId: video.member_id,
+    metadata: { retryType: "preextracted_audio", videoId: video.id },
+    summary: `${identity.displayName} requested MAI Coach processing from pre-extracted private lesson audio.`,
+    targetUserId: video.member_id,
+  });
+  const transcript = await transcribeAudio(runtime, database, job, video, {
+    paths: [normalizedAudioPath],
+    source: "media_chunks",
+  });
+  const draftId = await generateRecapDraft(runtime, database, job, video, transcript);
+  await recordActivity({
+    action: "recap_revision_created",
+    actor: systemActor(job.coach_id),
+    database,
+    entityId: draftId,
+    entityType: "video_lesson_recap_draft",
+    memberId: video.member_id,
+    metadata: { processingJobId: job.id, transcriptId: transcript.transcriptId, videoId: video.id },
+    summary: "MAI Coach created a coach-review lesson recap draft.",
+    targetUserId: video.member_id,
   });
 }
 
@@ -1259,7 +1315,7 @@ export async function updateVideoRecapState(identity: AuthIdentity, payload: Rec
     .prepare("SELECT * FROM video_lesson_recap_drafts WHERE video_id = ? AND is_current = 1 ORDER BY created_at DESC LIMIT 1")
     .bind(video.id)
     .first<DraftRow>();
-  if (!draft && !["cancelProcessing", "regenerateRecapFromTranscript", "retry", "retranscribeVideo"].includes(action)) {
+  if (!draft && !["cancelProcessing", "processExistingAudio", "regenerateRecapFromTranscript", "retry", "retranscribeVideo"].includes(action)) {
     throw new Response("No AI recap draft exists yet.", { status: 404 });
   }
   const transcript = draft
@@ -1434,6 +1490,16 @@ export async function updateVideoRecapState(identity: AuthIdentity, payload: Rec
 
   if (action === "regenerateRecapFromTranscript") {
     await regenerateRecapFromCurrentTranscript(database, identity, video, text(payload.language, 12) || "en");
+  }
+
+  if (action === "processExistingAudio") {
+    await processExistingAudioForRecap(
+      database,
+      identity,
+      video,
+      text(payload.language, 12) || "en",
+      text(payload.audioStoragePath, 600),
+    );
   }
 
   if (action === "retry" || action === "retranscribeVideo") {
