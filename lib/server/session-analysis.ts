@@ -960,6 +960,87 @@ function deterministicSessionAnalysis(
   return analysis;
 }
 
+function compactMeasuredFallbackAnalysis(context: ReturnType<typeof buildAnalysisContext>): MaiCaddyAnalysisOutput {
+  const metrics = context.calculatedMetrics;
+  const available = availableMetrics(metrics);
+  const carry = metricText(metrics.averageCarry, "yd");
+  const total = metricText(metrics.averageTotalDistance, "yd");
+  const smash = metricText(metrics.averageSmashFactor, "", 2);
+  const launch = metricText(metrics.averageLaunchAngle, "deg");
+  const findings = available.slice(0, 6).map((metric) => ({
+    metric: metric.label,
+    value: metricSummaryText(metric, unitForMetricKey(metric.key), digitsForMetricKey(metric.key)),
+    meaning: "Calculated from saved shot measurements only.",
+  }));
+  const analysis: MaiCaddyAnalysisOutput = {
+    headline: "MAI Coach generated a measured-data session review.",
+    dataQuality: {
+      confidence: context.dataQuality.usableShotCount >= 8 ? "medium" : "low",
+      usableShotCount: context.dataQuality.usableShotCount,
+      limitations: [
+        "Live model generation did not complete, so this report uses saved shot measurements only.",
+        "No professional-player matching or Tour Twin comparison was used.",
+      ],
+    },
+    sessionSummary: `Saved measurements show average carry of ${carry}, total distance of ${total}, smash factor of ${smash}, and launch of ${launch}.`,
+    measuredFindings: findings.length
+      ? findings
+      : [{
+          metric: "Shot data",
+          value: "NA",
+          meaning: "No measured metric averages were available in the saved session data.",
+        }],
+    strengths: [{
+      title: "Session data was preserved",
+      evidence: `${context.dataQuality.usableShotCount} usable shots were available for measured review.`,
+    }],
+    primaryPriority: {
+      title: "Build a reliable baseline",
+      whyItMatters: "A measured baseline lets future practice plans compare only against saved user data.",
+      evidence: `MAI Coach found ${available.length} metric group${available.length === 1 ? "" : "s"} available for review.`,
+    },
+    issues: [],
+    practicePlan: [
+      {
+        drill: "Measured baseline block",
+        problemAddressed: "Reliable session comparison",
+        whyThisFits: "Repeating the same setup creates a cleaner comparison for the next analysis.",
+        setup: "Hit 10 to 15 normal shots with one club, one target, and the same pre-shot routine.",
+        feel: "Balanced finish and centered contact.",
+        metricToMonitor: metrics.averageSmashFactor !== null ? "Smash factor" : "Carry distance",
+        measurableTarget: metrics.averageSmashFactor !== null
+          ? "Keep smash factor within 0.03 across the block."
+          : "Keep carry distance inside a 10-yard window.",
+        durationOrSwingCount: "10-15 swings",
+        progressionRule: "Rerun analysis after the block and compare the same metric set.",
+      },
+    ],
+    nextSessionGoal: "Upload one same-club practice block with a consistent target line.",
+    progressComparison: {
+      available: false,
+      summary: "Previous-session comparison is not included in this fallback report.",
+    },
+    courseRelevance: "Use the saved carry and dispersion windows as conservative planning numbers until live analysis is available.",
+    followUpQuestion: "Were these shots aimed at one consistent target?",
+    confidence: context.dataQuality.usableShotCount >= 8 ? 0.62 : 0.45,
+  };
+
+  assertNoDisallowedAnalysisContent(analysis);
+  return analysis;
+}
+
+function measuredFallbackAnalysis(context: ReturnType<typeof buildAnalysisContext>) {
+  try {
+    return deterministicSessionAnalysis(context);
+  } catch (error) {
+    console.warn("MAI Coach measured fallback diagnostic", {
+      category: error instanceof AnalysisError ? error.code : "measured_fallback_generation_failed",
+      errorType: error instanceof Error ? error.name : "unknown",
+    });
+    return compactMeasuredFallbackAnalysis(context);
+  }
+}
+
 function getString(record: Record<string, unknown>, key: string) {
   const value = record[key];
   if (typeof value !== "string" || !value.trim()) {
@@ -1381,7 +1462,7 @@ export async function analyzeStoredSession(identity: AuthIdentity, sessionId: st
           throw error;
         }
 
-        analysis = deterministicSessionAnalysis(context);
+        analysis = measuredFallbackAnalysis(context);
         status = "completed";
         analysisSource = "measured_fallback";
         savedModel = `fallback:${model}`;
@@ -1440,7 +1521,7 @@ export async function analyzeStoredSession(identity: AuthIdentity, sessionId: st
               metrics: metricsForFallback,
               playerContext,
             });
-          const analysis = deterministicSessionAnalysis(context);
+          const analysis = measuredFallbackAnalysis(context);
           await updateAnalysisRecord({
             database,
             analysisId,
