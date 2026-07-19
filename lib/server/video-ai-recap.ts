@@ -339,6 +339,16 @@ function assertRowsMatch(video: VideoRecapRow, draft?: DraftRow | null, transcri
   }
 }
 
+function transcriptionFileInfo(video: VideoRecapRow, storagePath: string) {
+  if (storagePath !== video.storage_path) return { name: "coach-voiceover.m4a", type: "audio/mp4" };
+  const mimeType = text(video.mime_type, 100) || "video/mp4";
+  const extension = mimeType.includes("quicktime") ? "mov" : mimeType.includes("webm") ? "webm" : "mp4";
+  return {
+    name: text(video.file_name, 180) || `coach-video.${extension}`,
+    type: mimeType,
+  };
+}
+
 async function cleanupTemporaryAudio(env: RecapEnv, database: D1Database, jobOrId: ProcessingJobRow | string, actor?: AuthIdentity) {
   const job = typeof jobOrId === "string" ? await loadJob(database, jobOrId) : jobOrId;
   if (!job?.audio_storage_path) return false;
@@ -696,6 +706,16 @@ async function extractAudio(env: RecapEnv, database: D1Database, job: Processing
     await recordProcessingEvent(database, "audio_extraction_completed", job, "MAI Coach extracted temporary coach voiceover audio.");
     return audioStoragePath;
   } catch (error) {
+    if (object.size <= MAX_TRANSCRIPTION_BYTES) {
+      await markJob(database, job.id, { status: "extracting_audio", step: "using_original_media_for_transcription" });
+      await recordProcessingEvent(
+        database,
+        "audio_extraction_fallback_original_media",
+        job,
+        "Media audio extraction failed, so MAI Coach will transcribe the original uploaded video directly.",
+      );
+      return video.storage_path;
+    }
     if (error instanceof RecapProcessingError) throw error;
     throw new RecapProcessingError("audio_extraction_failed", "Audio extraction failed for this video.");
   }
@@ -717,7 +737,8 @@ async function transcribeAudio(env: RecapEnv, database: D1Database, job: Process
   const model = env.OPENAI_TRANSCRIPTION_MODEL || DEFAULT_TRANSCRIPTION_MODEL;
   const form = new FormData();
   const audioBytes = await audioObject.arrayBuffer();
-  form.append("file", new File([audioBytes], "coach-voiceover.m4a", { type: "audio/mp4" }));
+  const fileInfo = transcriptionFileInfo(video, audioStoragePath);
+  form.append("file", new File([audioBytes], fileInfo.name, { type: fileInfo.type }));
   form.append("model", model);
   form.append("language", job.requested_language || "en");
   form.append("prompt", buildTranscriptionPrompt());
@@ -774,7 +795,7 @@ async function transcribeAudio(env: RecapEnv, database: D1Database, job: Process
     .run();
   await markJob(database, job.id, { status: "transcribing", step: "transcription_completed" });
   await recordProcessingEvent(database, "transcription_completed", job, "MAI Coach stored the coach voiceover transcript.", { transcriptId });
-  await cleanupTemporaryAudio(env, database, job);
+  await cleanupTemporaryAudio(env, database, job.id);
   return { model, text: transcriptText, transcriptId };
 }
 
