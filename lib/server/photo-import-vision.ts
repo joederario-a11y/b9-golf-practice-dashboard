@@ -1,7 +1,12 @@
 import OpenAI from "openai";
 
 import { PHOTO_IMPORT_METRIC_ORDER, normalizeVisionPhotoImportResult } from "@/lib/photo-import-policy.mjs";
-import { getPlatformEnvironment, sanitizeOpenAIError } from "@/lib/server/platform";
+import {
+  getOpenAIConfigurationIssue,
+  getPlatformEnvironment,
+  openAIConfigurationDiagnostic,
+  sanitizeOpenAIError,
+} from "@/lib/server/platform";
 
 type UploadedVisionImage = {
   base64: string;
@@ -161,11 +166,20 @@ export async function extractPhotoImportWithVision(images: UploadedVisionImage[]
   const runtime = getPlatformEnvironment();
   const apiKey = runtime.OPENAI_API_KEY;
   const model = runtime.OPENAI_VISION_MODEL || runtime.OPENAI_ANALYSIS_MODEL || runtime.OPENAI_MODEL;
-  if (!apiKey || !model) {
+  const configurationIssue = getOpenAIConfigurationIssue(runtime);
+  if (configurationIssue || !model) {
+    const diagnostic = configurationIssue
+      ? openAIConfigurationDiagnostic(configurationIssue, {
+          endpoint: "responses.create",
+          model,
+          operation: "photo_import_vision",
+        })
+      : null;
     return {
       ok: false as const,
-      reason: "missing_openai_configuration",
-      message: "Photo vision extraction is not connected in this environment.",
+      reason: configurationIssue?.code ?? "missing_openai_configuration",
+      message: configurationIssue?.publicMessage ?? "Photo vision extraction is not connected in this environment.",
+      ...(diagnostic ? { diagnostic } : {}),
     };
   }
 

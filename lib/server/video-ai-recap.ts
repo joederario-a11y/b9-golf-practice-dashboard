@@ -23,9 +23,11 @@ import {
   ensureUserDataOwnershipSchema,
   ensureVideoAiProcessingSchema,
   getAssignedMemberIds,
+  getOpenAIConfigurationIssue,
   getPlatformEnvironment,
   getRequiredDatabase,
   recordActivity,
+  sanitizeOpenAIError,
   type AuthIdentity,
 } from "@/lib/server/platform";
 
@@ -695,8 +697,9 @@ async function transcribeAudio(env: RecapEnv, database: D1Database, job: Process
   await assertWorkflowCanContinue(database, job.id, video);
   await markJob(database, job.id, { status: "transcribing", step: "transcribing_coach_feedback" });
   await recordProcessingEvent(database, "transcription_started", job, "MAI Coach started transcribing coach voiceover audio.");
-  if (!env.OPENAI_API_KEY) {
-    throw new RecapProcessingError("openai_api_key_missing", "OPENAI_API_KEY is not configured for transcription.");
+  const configurationIssue = getOpenAIConfigurationIssue(env);
+  if (configurationIssue) {
+    throw new RecapProcessingError(configurationIssue.code, configurationIssue.publicMessage);
   }
   const audioObject = await env.VIDEO_STORAGE.get(audioStoragePath);
   if (!audioObject) throw new RecapProcessingError("audio_missing_from_r2", "Extracted audio could not be loaded.");
@@ -712,12 +715,25 @@ async function transcribeAudio(env: RecapEnv, database: D1Database, job: Process
   form.append("prompt", buildTranscriptionPrompt());
   const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
     body: form,
-    headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}` },
+    headers: { Authorization: `Bearer ${env.OPENAI_API_KEY?.trim()}` },
     method: "POST",
   });
   const payload = await response.json().catch(() => ({})) as { text?: string; duration?: number; segments?: unknown; error?: { message?: string } };
   if (!response.ok) {
-    throw new RecapProcessingError("transcription_failed", payload.error?.message || "OpenAI transcription failed.");
+    const diagnostic = sanitizeOpenAIError({ status: response.status, error: payload.error ?? payload }, {
+      endpoint: "audio/transcriptions",
+      model,
+      operation: "video_lesson_transcription",
+    });
+    console.warn("MAI Coach transcription diagnostic", {
+      category: diagnostic.category,
+      httpStatus: diagnostic.httpStatus,
+      errorType: diagnostic.errorType,
+      errorCode: diagnostic.errorCode,
+      requestId: diagnostic.requestId,
+      model: diagnostic.model,
+    });
+    throw new RecapProcessingError(diagnostic.category || "transcription_failed", "MAI Coach transcription is temporarily unavailable.");
   }
   const transcriptText = text(payload.text, 120_000);
   const transcriptId = crypto.randomUUID();
@@ -808,10 +824,11 @@ async function generateRecapDraft(env: RecapEnv, database: D1Database, job: Proc
   const model = env.OPENAI_ANALYSIS_MODEL || env.OPENAI_MODEL || DEFAULT_VIDEO_RECAP_MODEL;
   const normalizedDraft = transcriptLooksUsable(transcript.text)
     ? await (async () => {
-      if (!env.OPENAI_API_KEY) {
-        throw new RecapProcessingError("openai_api_key_missing", "OPENAI_API_KEY is not configured for MAI Coach recap generation.");
+      const configurationIssue = getOpenAIConfigurationIssue(env);
+      if (configurationIssue) {
+        throw new RecapProcessingError(configurationIssue.code, configurationIssue.publicMessage);
       }
-      const client = new OpenAI({ apiKey: env.OPENAI_API_KEY, timeout: 45000 });
+      const client = new OpenAI({ apiKey: env.OPENAI_API_KEY?.trim(), timeout: 45000 });
       const context = await buildRecapContext(database, video, transcript.text);
       const response = await client.responses.create({
         input: buildLessonRecapInput(context),

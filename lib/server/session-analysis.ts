@@ -16,8 +16,10 @@ import {
   ensureMaiCaddyAnalysisSchema,
   ensurePlatformSchema,
   ensureUserDataOwnershipSchema,
+  getOpenAIConfigurationIssue,
   getPlatformEnvironment,
   getRequiredDatabase,
+  OPENAI_CONFIGURATION_ERROR_CODES,
   sanitizeOpenAIError,
   type AuthIdentity,
 } from "@/lib/server/platform";
@@ -27,6 +29,7 @@ const DEFAULT_MODEL = "gpt-4.1-mini";
 const MIN_USABLE_SHOTS = 3;
 const OPENAI_MEMBER_UNAVAILABLE_MESSAGE = "MAI analysis is temporarily unavailable. Your session data is saved.";
 const OPENAI_ANALYSIS_ERROR_CODES = new Set([
+  ...OPENAI_CONFIGURATION_ERROR_CODES,
   "empty_openai_response",
   "empty_response",
   "insufficient_quota",
@@ -1090,12 +1093,13 @@ function parseOpenAIOutput(outputText: string) {
 
 async function callOpenAI(context: ReturnType<typeof buildAnalysisContext>, model: string) {
   const runtime = getPlatformEnvironment();
-  if (!runtime.OPENAI_API_KEY) {
-    throw new AnalysisError(503, "openai_api_key_missing", "MAI Coach is not connected yet. Add OPENAI_API_KEY to the Worker environment and retry.");
+  const configurationIssue = getOpenAIConfigurationIssue(runtime);
+  if (configurationIssue) {
+    throw new AnalysisError(configurationIssue.statusCode, configurationIssue.code, configurationIssue.publicMessage);
   }
 
   const client = new OpenAI({
-    apiKey: runtime.OPENAI_API_KEY,
+    apiKey: runtime.OPENAI_API_KEY?.trim(),
     timeout: 45000,
   });
   const prompt = [
@@ -1371,20 +1375,7 @@ export async function analyzeStoredSession(identity: AuthIdentity, sessionId: st
         status = "completed";
       } catch (error) {
         const safe = analysisError(error);
-        const canUseMeasuredFallback = [
-          "invalid_api_key",
-          "insufficient_quota",
-          "model_not_found",
-          "model_access_denied",
-          "openai_request_failed",
-          "openai_rate_limited",
-          "rate_limit",
-          "openai_timeout",
-          "timeout",
-          "empty_openai_response",
-          "empty_response",
-          "payload_too_large",
-        ].includes(safe.code);
+        const canUseMeasuredFallback = OPENAI_ANALYSIS_ERROR_CODES.has(safe.code);
 
         if (!canUseMeasuredFallback) {
           throw error;

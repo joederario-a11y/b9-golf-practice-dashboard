@@ -5,6 +5,10 @@ import {
   buildAuthSessionCookie,
   buildClearAuthSessionCookie,
 } from "@/lib/auth-session-policy.mjs";
+import {
+  OPENAI_CONFIGURATION_ERROR_CODES,
+  getOpenAIConfigurationIssue as getOpenAIConfigurationIssueForRuntime,
+} from "@/lib/openai-config-policy.mjs";
 
 export type UserRole = "admin" | "coach" | "member";
 
@@ -86,6 +90,8 @@ export function getPlatformEnvironment() {
   return env as unknown as PlatformEnvironment;
 }
 
+export { OPENAI_CONFIGURATION_ERROR_CODES };
+
 export type SafeOpenAIDiagnostic = {
   category: string;
   publicMessage: string;
@@ -109,8 +115,36 @@ function numberField(value: unknown) {
 
 function redactSensitiveText(value: string) {
   return value
+    .replace(/Incorrect API key provided:\s*[^\s.]+/gi, "Incorrect API key provided: [redacted_key]")
     .replace(/sk-[A-Za-z0-9_-]+/g, "[redacted_api_key]")
+    .replace(/re_[A-Za-z0-9_-]+/g, "[redacted_provider_key]")
     .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [redacted_token]");
+}
+
+export function getOpenAIConfigurationIssue(runtime: PlatformEnvironment = getPlatformEnvironment()) {
+  return getOpenAIConfigurationIssueForRuntime(runtime);
+}
+
+export function openAIConfigurationDiagnostic(
+  issue: ReturnType<typeof getOpenAIConfigurationIssueForRuntime>,
+  context: {
+    endpoint: string;
+    model?: string | null;
+    operation?: string;
+  },
+): SafeOpenAIDiagnostic {
+  return {
+    category: issue?.category ?? "missing_api_key",
+    publicMessage: issue?.publicMessage ?? "MAI Coach OpenAI features are temporarily unavailable.",
+    httpStatus: issue?.statusCode ?? 503,
+    errorType: "configuration_error",
+    errorCode: issue?.code ?? "openai_configuration_error",
+    providerMessage: issue?.technicalMessage ?? "OpenAI configuration is incomplete.",
+    requestId: null,
+    model: stringField(context.model) ?? null,
+    endpoint: context.endpoint,
+    operation: context.operation ?? "openai_request",
+  };
 }
 
 export function sanitizeOpenAIError(
@@ -136,7 +170,8 @@ export function sanitizeOpenAIError(
   ].join(" ");
   let category = "openai_request_failed";
 
-  if (/api.?key|unauthorized|authentication/i.test(message) || status === 401) category = "invalid_api_key";
+  if (/non-openai provider|wrong provider|another service|invalid.*format/i.test(message)) category = "wrong_provider_api_key";
+  else if (/api.?key|unauthorized|authentication/i.test(message) || status === 401) category = "invalid_api_key";
   else if (/quota|billing|insufficient_quota/i.test(message) || errorCode === "insufficient_quota") category = "insufficient_quota";
   else if (/model.*not.*found|does not exist|unknown model/i.test(message) || errorCode === "model_not_found") category = "model_not_found";
   else if (/access.*model|not have access|permission/i.test(message) || status === 403) category = "model_access_denied";

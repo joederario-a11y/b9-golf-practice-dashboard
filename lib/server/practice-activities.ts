@@ -21,6 +21,7 @@ import {
   ensurePracticeActivitySchema,
   ensureUserDataOwnershipSchema,
   getAssignedMemberIds,
+  getOpenAIConfigurationIssue,
   getPlatformEnvironment,
   getRequiredDatabase,
   recordActivity,
@@ -386,8 +387,16 @@ async function loadLatestResultScore(database: PlatformDatabase, userId: string,
 
 async function callOpenAIForPracticeActivity(context: Record<string, unknown>, activityType: ActivityType, model: string) {
   const runtime = getPlatformEnvironment();
-  if (!runtime.OPENAI_API_KEY) return null;
-  const client = new OpenAI({ apiKey: runtime.OPENAI_API_KEY, timeout: 45000 });
+  const configurationIssue = getOpenAIConfigurationIssue(runtime);
+  if (configurationIssue?.code === "openai_api_key_missing") return null;
+  if (configurationIssue) {
+    throw Object.assign(new Error(configurationIssue.technicalMessage), {
+      status: configurationIssue.statusCode,
+      code: configurationIssue.code,
+      type: "configuration_error",
+    });
+  }
+  const client = new OpenAI({ apiKey: runtime.OPENAI_API_KEY?.trim(), timeout: 45000 });
   const response = await client.responses.create({
     model,
     instructions: MAI_CADDY_CORE_INSTRUCTIONS,

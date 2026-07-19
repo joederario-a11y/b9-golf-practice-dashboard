@@ -1,5 +1,7 @@
 import {
   getPlatformEnvironment,
+  getOpenAIConfigurationIssue,
+  openAIConfigurationDiagnostic,
   requireIdentity,
   responseFromError,
   sanitizeOpenAIError,
@@ -16,8 +18,13 @@ function devDiagnosticsEnabled(request: Request) {
 
 async function openAIJson(path: string, init: RequestInit = {}) {
   const runtime = getPlatformEnvironment();
-  if (!runtime.OPENAI_API_KEY) {
-    throw Object.assign(new Error("OPENAI_API_KEY is not configured."), { status: 503, code: "missing_api_key" });
+  const configurationIssue = getOpenAIConfigurationIssue(runtime);
+  if (configurationIssue) {
+    throw Object.assign(new Error(configurationIssue.technicalMessage), {
+      status: configurationIssue.statusCode,
+      code: configurationIssue.code,
+      type: "configuration_error",
+    });
   }
   const response = await fetch(`${OPENAI_API_BASE}${path}`, {
     ...init,
@@ -109,18 +116,26 @@ export async function GET(request: Request) {
     const runtime = getPlatformEnvironment();
     const analysisModel = runtime.OPENAI_ANALYSIS_MODEL || runtime.OPENAI_MODEL;
     const visionModel = runtime.OPENAI_VISION_MODEL || runtime.OPENAI_ANALYSIS_MODEL || runtime.OPENAI_MODEL;
+    const configurationIssue = getOpenAIConfigurationIssue(runtime);
     const list = await openAIJson("/models").catch((error) => ({
-      error: sanitizeOpenAIError(error, {
-        endpoint: "models",
-        model: null,
-        operation: "models_list",
-      }),
+      error: configurationIssue
+        ? openAIConfigurationDiagnostic(configurationIssue, {
+            endpoint: "models",
+            model: null,
+            operation: "models_list",
+          })
+        : sanitizeOpenAIError(error, {
+            endpoint: "models",
+            model: null,
+            operation: "models_list",
+          }),
     }));
     if ("error" in list) {
       return Response.json({
         ok: false,
         endpoint: "/v1/models",
         configured: {
+          apiKeyStatus: configurationIssue?.keyStatus ?? "configured",
           analysisModel,
           visionModel,
           transcriptionModel: runtime.OPENAI_TRANSCRIPTION_MODEL || null,
@@ -178,6 +193,7 @@ export async function GET(request: Request) {
       endpoint: "/v1/models",
       requestId: list.requestId,
       configured: {
+        apiKeyStatus: configurationIssue?.keyStatus ?? "configured",
         analysisModel,
         visionModel,
         transcriptionModel: runtime.OPENAI_TRANSCRIPTION_MODEL || null,

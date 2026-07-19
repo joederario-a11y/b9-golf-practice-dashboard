@@ -1,4 +1,6 @@
 import { env } from "cloudflare:workers";
+import { getOpenAIConfigurationIssue } from "@/lib/openai-config-policy.mjs";
+import { sanitizeOpenAIError } from "@/lib/server/platform";
 
 type CoachMessage = {
   role?: unknown;
@@ -137,12 +139,15 @@ export async function POST(request: Request) {
       return Response.json({ error: "Ask MAI Coach a question first." }, { status: 400 });
     }
 
-    if (!runtimeEnv.OPENAI_API_KEY) {
+    const configurationIssue = getOpenAIConfigurationIssue(runtimeEnv);
+    if (configurationIssue) {
       return Response.json({
         mode: "setup",
         answer:
-          "The MAI Coach assistant is ready for the selected club/session data. Add OPENAI_API_KEY as a Cloudflare Worker secret to turn on live coaching responses.",
-      });
+          configurationIssue.code === "openai_api_key_missing"
+            ? "The MAI Coach assistant is ready for the selected club/session data. Add OPENAI_API_KEY as a Cloudflare Worker secret to turn on live coaching responses."
+            : "The MAI Coach assistant is temporarily unavailable while OpenAI is reconfigured.",
+      }, { status: configurationIssue.code === "openai_api_key_missing" ? 200 : configurationIssue.statusCode });
     }
 
     const messages = normalizeMessages(payload.messages);
@@ -158,7 +163,7 @@ export async function POST(request: Request) {
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${runtimeEnv.OPENAI_API_KEY}`,
+        Authorization: `Bearer ${runtimeEnv.OPENAI_API_KEY?.trim()}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -172,18 +177,22 @@ export async function POST(request: Request) {
     const responsePayload = await response.json();
 
     if (!response.ok) {
-      const message =
-        typeof responsePayload === "object" &&
-        responsePayload !== null &&
-        "error" in responsePayload &&
-        typeof responsePayload.error === "object" &&
-        responsePayload.error !== null &&
-        "message" in responsePayload.error &&
-        typeof responsePayload.error.message === "string"
-          ? responsePayload.error.message
-          : "MAI Coach could not complete the request.";
-
-      return Response.json({ error: message }, { status: response.status });
+      const diagnostic = sanitizeOpenAIError({ status: response.status, error: responsePayload }, {
+        endpoint: "responses",
+        model: runtimeEnv.OPENAI_ANALYSIS_MODEL || runtimeEnv.OPENAI_MODEL || "gpt-4.1-mini",
+        operation: "coach_chat",
+      });
+      console.warn("MAI Coach assistant diagnostic", {
+        category: diagnostic.category,
+        httpStatus: diagnostic.httpStatus,
+        errorType: diagnostic.errorType,
+        errorCode: diagnostic.errorCode,
+        requestId: diagnostic.requestId,
+        model: diagnostic.model,
+      });
+      return Response.json({
+        error: "MAI Coach is temporarily unavailable. Your session data is saved.",
+      }, { status: response.status });
     }
 
     const answer = extractOutputText(responsePayload);
