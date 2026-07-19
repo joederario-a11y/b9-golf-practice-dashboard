@@ -305,6 +305,13 @@ function text(value: unknown, fallback = "") {
   return typeof value === "string" ? value.trim() || fallback : fallback;
 }
 
+function numericValue(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return null;
+  const parsed = Number(value.trim());
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -452,7 +459,7 @@ function metricSourceFor(shot: ShotRecord, metricKey: keyof typeof metricFields)
   if (!["measured", "manual", "derived", "estimated"].includes(kind)) return null;
   return {
     kind,
-    confidence: numberFromValue(source.confidence),
+    confidence: numericValue(source.confidence),
     method: text(source.method, ""),
   };
 }
