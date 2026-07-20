@@ -4426,8 +4426,8 @@ function apiErrorMessage(payload: unknown, fallback: string, status?: number) {
   if (!payload || typeof payload !== "object") return fallback;
   const record = payload as Record<string, unknown>;
   const nestedError = record.error && typeof record.error === "object" ? record.error as Record<string, unknown> : null;
-  if (typeof nestedError?.message === "string" && nestedError.message.trim()) return nestedError.message.trim();
   if (typeof record.publicMessage === "string" && record.publicMessage.trim()) return record.publicMessage.trim();
+  if (typeof nestedError?.message === "string" && nestedError.message.trim()) return nestedError.message.trim();
   if (typeof record.error === "string" && record.error.trim()) return record.error.trim();
   if (typeof record.message === "string" && record.message.trim()) return record.message.trim();
   return fallback;
@@ -9876,7 +9876,7 @@ function PracticeView({
     let active = true;
     setLoadingAction("load");
     fetch("/api/practice")
-      .then((response) => response.ok ? response.json() : response.json().then((body) => Promise.reject(new Error(body.error || "Practice data is unavailable."))))
+      .then((response) => readApiJson<{ activities?: PracticeActivity[]; currentActivity?: PracticeActivity | null }>(response, "Practice data is unavailable."))
       .then((payload: { activities?: PracticeActivity[]; currentActivity?: PracticeActivity | null }) => {
         if (!active) return;
         setActivities(payload.activities ?? []);
@@ -9910,8 +9910,16 @@ function PracticeView({
           replaceReason: options.replace ? replaceReason : undefined,
         }),
       });
-      const payload = await response.json() as { activity?: PracticeActivity | null; activities?: PracticeActivity[]; error?: string; message?: string; reused?: boolean };
-      if (!response.ok) throw new Error(payload.error || "MAI Coach could not generate that activity.");
+      const payload = await readApiJson<{
+        activity?: PracticeActivity | null;
+        activities?: PracticeActivity[];
+        error?: string;
+        message?: string;
+        reused?: boolean;
+      }>(response, "MAI Coach could not generate that activity.");
+      if (!payload.activity) {
+        throw new Error(payload.message || "MAI Coach could not generate that activity.");
+      }
       if (payload.activity) {
         setCurrentActivity(payload.activity);
         setActivities((current) => {
@@ -9946,8 +9954,11 @@ function PracticeView({
           submissionType: resultForm.score ? "score" : resultForm.reflection ? "reflection" : "manual",
         }),
       });
-      const payload = await response.json() as { activities?: PracticeActivity[]; currentActivity?: PracticeActivity | null; error?: string };
-      if (!response.ok) throw new Error(payload.error || "Practice activity could not be updated.");
+      const payload = await readApiJson<{
+        activities?: PracticeActivity[];
+        currentActivity?: PracticeActivity | null;
+        error?: string;
+      }>(response, "Practice activity could not be updated.");
       setActivities(payload.activities ?? activities);
       setCurrentActivity(payload.currentActivity ?? payload.activities?.find((activity) => activity.id === currentActivity.id) ?? currentActivity);
       if (action === "start") setPracticeMessage("Activity started.");
