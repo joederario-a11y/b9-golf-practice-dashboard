@@ -471,6 +471,18 @@ function shouldPreferVideoChunkFallback(video: VideoRecapRow, sourceSize: number
   return isQuickTimeVideo(video) || sourceSize > MAX_TRANSCRIPTION_BYTES;
 }
 
+async function useOriginalMediaForTranscription(database: D1Database, job: ProcessingJobRow, video: VideoRecapRow, source: string) {
+  await markJob(database, job.id, { status: "extracting_audio", step: "using_original_media_for_transcription" });
+  await recordProcessingEvent(
+    database,
+    "audio_extraction_fallback_original_media",
+    job,
+    "Media audio extraction failed, so MAI Coach will transcribe the original uploaded video directly.",
+    { source },
+  );
+  return { paths: [video.storage_path], source: "original_media" } satisfies AudioExtractionResult;
+}
+
 function assertTemporaryAudioPath(video: VideoRecapRow, audioStoragePath: string) {
   const normalizedPath = text(audioStoragePath, 600);
   if (!normalizedPath.startsWith(`video-processing/${video.id}/audio/`)) {
@@ -889,6 +901,17 @@ async function extractAudio(env: RecapEnv, database: D1Database, job: Processing
   }
   const audioStoragePaths: string[] = [];
   try {
+    if (shouldPreferVideoChunkFallback(video, object.size)) {
+      try {
+        await markJob(database, job.id, { status: "extracting_audio", step: "using_video_chunk_fallback_for_quicktime" });
+        return await normalizeVideoChunksForTranscription(env, database, job, video, object.size);
+      } catch (error) {
+        if (object.size <= MAX_TRANSCRIPTION_BYTES) {
+          return useOriginalMediaForTranscription(database, job, video, error instanceof RecapProcessingError ? error.code : "media_normalization_failed");
+        }
+        throw error;
+      }
+    }
     const { chunkCount, durationSeconds } = videoDurationChunks(video, MAX_MEDIA_AUDIO_CHUNK_SECONDS);
     for (let index = 0; index < chunkCount; index += 1) {
       await assertWorkflowCanContinue(database, job.id, video);
@@ -931,17 +954,17 @@ async function extractAudio(env: RecapEnv, database: D1Database, job: Processing
   } catch (error) {
     await deleteTemporaryPaths(env, audioStoragePaths);
     if (isQuickTimeVideo(video)) {
-      return normalizeVideoChunksForTranscription(env, database, job, video, object.size);
+      try {
+        return await normalizeVideoChunksForTranscription(env, database, job, video, object.size);
+      } catch (fallbackError) {
+        if (object.size <= MAX_TRANSCRIPTION_BYTES) {
+          return useOriginalMediaForTranscription(database, job, video, fallbackError instanceof RecapProcessingError ? fallbackError.code : "media_normalization_failed");
+        }
+        throw fallbackError;
+      }
     }
     if (object.size <= MAX_TRANSCRIPTION_BYTES) {
-      await markJob(database, job.id, { status: "extracting_audio", step: "using_original_media_for_transcription" });
-      await recordProcessingEvent(
-        database,
-        "audio_extraction_fallback_original_media",
-        job,
-        "Media audio extraction failed, so MAI Coach will transcribe the original uploaded video directly.",
-      );
-      return { paths: [video.storage_path], source: "original_media" } satisfies AudioExtractionResult;
+      return useOriginalMediaForTranscription(database, job, video, error instanceof RecapProcessingError ? error.code : "audio_extraction_failed");
     }
     return normalizeVideoChunksForTranscription(env, database, job, video, object.size);
   }
