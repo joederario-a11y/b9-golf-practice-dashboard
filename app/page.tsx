@@ -7688,7 +7688,6 @@ function AdminView({
   onOpenMemberVideos: (memberId: string, memberName: string) => void;
 }) {
   const [dashboard, setDashboard] = useState<StaffDashboardPayload | null>(null);
-  const [detail, setDetail] = useState<StaffMemberDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("Loading admin workspace...");
   const [search, setSearch] = useState("");
@@ -7750,18 +7749,14 @@ function AdminView({
     if (statusFilter !== "all" && user.accountStatus !== statusFilter) return false;
     return true;
   });
-  const selectedMember = members.find((member) => member.id === selectedMemberId) ?? (detail?.member.role === "member" ? detail.member : undefined) ?? members[0];
+  const selectedMember = members.find((member) => member.id === selectedMemberId) ?? members[0];
 
   async function refreshWorkspace(nextMemberId?: string) {
     setLoading(true);
     try {
       const payload = await readStaffDashboard();
       setDashboard(payload);
-      const memberId = nextMemberId || selectedMemberId;
-      if (memberId) {
-        const nextDetail = await readStaffMember(memberId);
-        setDetail(nextDetail);
-      }
+      if (nextMemberId !== undefined) setSelectedMemberId(nextMemberId);
       setMessage("Admin workspace ready.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Admin workspace could not be loaded.");
@@ -7937,41 +7932,25 @@ function AdminView({
     }
   }
 
-  async function handleAdminCoachPhoto(user: StaffUserRecord, file: File | null) {
-    if (!file) return;
-    if (user.profileImageUrl) {
-      const confirmed = window.confirm(`Replace ${user.name}'s profile photo? Their account, roster, videos, sessions, and relationships will remain unchanged.`);
-      if (!confirmed) return;
-    }
-    try {
-      await uploadCoachPhoto(user.id, file);
-      setMessage(`${user.name}'s profile photo was saved.`);
-      await refreshWorkspace(detail?.member.id ?? selectedMemberId);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Profile photo could not be saved.");
-    }
+  function selectMember(memberId: string) {
+    setSelectedMemberId(memberId);
   }
 
-  async function removeAdminCoachPhoto(user: StaffUserRecord) {
-    const confirmed = window.confirm(`Delete ${user.name}'s profile photo? This removes only the photo, not the account, roster, videos, sessions, or assignments.`);
+  async function deleteUserAccount(user: StaffUserRecord) {
+    if (user.id === accountUser?.id) {
+      setMessage("You cannot delete your own signed-in admin account.");
+      return;
+    }
+    const confirmed = window.confirm(
+      `Permanently delete ${user.name}?\n\nThis removes the user account, login sessions, password setup, invitations, and coach assignments. Users with videos or sessions are protected and must be deactivated instead.`,
+    );
     if (!confirmed) return;
     try {
-      await deleteCoachPhoto(user.id);
-      setMessage(`${user.name}'s profile photo was removed.`);
-      await refreshWorkspace(detail?.member.id ?? selectedMemberId);
+      await postStaffAction({ action: "deleteUser", userId: user.id });
+      setMessage(`${user.name} was deleted.`);
+      await refreshWorkspace(selectedMemberId === user.id ? "" : selectedMemberId);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Profile photo could not be removed.");
-    }
-  }
-
-  async function openMember(memberId: string) {
-    setSelectedMemberId(memberId);
-    try {
-      const payload = await readStaffMember(memberId);
-      setDetail(payload);
-      setMessage(`${payload.member.name} loaded.`);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Member detail could not be loaded.");
+      setMessage(error instanceof Error ? error.message : "The user could not be deleted.");
     }
   }
 
@@ -8210,123 +8189,18 @@ function AdminView({
                   <small>Created {formatDate(user.createdAt)}</small>
                 </div>
                 <div className="admin-row-actions">
-                  <button className="icon-button" onClick={() => void openMember(user.id)} title="Open user detail">◫</button>
+                  {user.role === "member" && <button className="icon-button" onClick={() => selectMember(user.id)} title="Select member">◫</button>}
                   {user.role === "member" && <button className="icon-button" onClick={() => onOpenMemberVideos(user.id, user.name)} title="Open videos">▶</button>}
                   {user.role === "member" && <button className="icon-button" onClick={() => onOpenCoachTools(user.id, user.name)} title="Open coach tools">✦</button>}
                   <button className="icon-button" onClick={() => openEditUser(user)} title="Edit user">✎</button>
                   <button className="icon-button" onClick={() => openPasswordReset(user)} title="Set or reset password">⚿</button>
                   <button className="icon-button" onClick={() => void resendInvitation(user)} title="Resend invitation">↻</button>
+                  <button className="icon-button danger-text-button" disabled={user.id === accountUser?.id} onClick={() => void deleteUserAccount(user)} title={user.id === accountUser?.id ? "You cannot delete your own account" : "Delete user"}>×</button>
                 </div>
               </div>
             ))}
           </div>
         </article>
-
-        <aside className="panel admin-member-panel">
-          <PanelHeader
-            kicker="User detail"
-            title={detail?.member.name ?? selectedMember?.name ?? "Select a member"}
-            meta={detail ? `${detail.videos.length} videos · ${detail.sessions.length} sessions` : "Overview, content, activity"}
-          />
-          {detail ? (
-            <div className="admin-member-detail">
-              <div className="admin-member-overview">
-                <div><span>User ID</span><strong>{detail.member.id}</strong></div>
-                <div><span>Name</span><strong>{detail.member.name}</strong></div>
-                <div><span>Email</span><strong>{detail.member.email}</strong></div>
-                <div><span>Role</span><strong>{detail.member.role}</strong></div>
-                <div><span>Coach</span><strong>{detail.assignedCoaches.map((coach) => coach.name).join(", ") || detail.member.assignedCoachName || "Unassigned"}</strong></div>
-                <div><span>Account</span><strong>{detail.member.accountStatus}</strong><small>{detail.member.inviteStatus}</small></div>
-                <div><span>Password</span><strong>{detail.member.passwordConfigured ? "Configured" : "Not configured"}</strong><small>{detail.member.passwordResetRequired ? "Change required" : "No forced change"}</small></div>
-                <div><span>Login</span><strong>{detail.member.lastLoginAt ? formatDate(detail.member.lastLoginAt) : "Never logged in"}</strong></div>
-                <div><span>Skill</span><strong>{detail.member.skillLevel || "NA"}</strong></div>
-                <div><span>Videos</span><strong>{detail.member.videoCount}</strong></div>
-                <div><span>Sessions</span><strong>{detail.member.sessionCount}</strong></div>
-                <div><span>Created</span><strong>{formatDate(detail.member.createdAt)}</strong></div>
-                <div><span>Updated</span><strong>{formatDate(detail.member.updatedAt)}</strong></div>
-              </div>
-              <section className="coach-photo-admin-card">
-                <div>
-                  <CoachAvatar coach={detail.member} size="large" />
-                  <span><strong>{detail.member.name}</strong><small>{detail.member.role} profile photo</small></span>
-                </div>
-                <div className="button-row">
-                  <label className="secondary-action coach-photo-picker">
-                    Upload / replace
-                    <input
-                      accept="image/jpeg,image/png,image/webp"
-                      onChange={(event) => {
-                        const file = event.currentTarget.files?.[0] ?? null;
-                        void handleAdminCoachPhoto(detail.member, file);
-                        event.currentTarget.value = "";
-                      }}
-                      type="file"
-                    />
-                  </label>
-                  <button className="secondary-action danger-text-button" disabled={!detail.member.profileImageUrl} onClick={() => void removeAdminCoachPhoto(detail.member)} type="button">Remove photo</button>
-                </div>
-              </section>
-              {detail.assignedCoaches.length > 0 && (
-                <section className="assigned-coach-strip">
-                  {detail.assignedCoaches.map((coach) => (
-                    <article key={coach.id}>
-                      <CoachAvatar coach={coach} />
-                      <span><strong>{coach.name}</strong><small>{coach.title}</small></span>
-                    </article>
-                  ))}
-                </section>
-              )}
-              <div className="admin-detail-tabs">
-                <section>
-                  <h3>Recent videos</h3>
-                  {detail.videos.slice(0, 4).map((video) => (
-                    <article key={video.id}>
-                      <strong>{video.title}</strong>
-                      <span>{video.publicationStatus} · {video.uploadStatus} · {video.reviewStatus}</span>
-                      <span>{video.coachName ? `Coach: ${video.coachName}` : video.uploadedByRole ? `Uploaded by ${video.uploadedByRole}` : ""}</span>
-                    </article>
-                  ))}
-                  {!detail.videos.length && <p>No videos yet.</p>}
-                </section>
-                <section>
-                  <h3>Sessions</h3>
-                  {detail.sessions.slice(0, 4).map((session) => (
-                    <article key={session.id}>
-                      <strong>{session.title}</strong>
-                      <span>{formatDate(session.date)} · {session.shots.length} shots</span>
-                    </article>
-                  ))}
-                  {!detail.sessions.length && <p>No sessions yet.</p>}
-                </section>
-                <section>
-                  <h3>Coach feedback and plans</h3>
-                  {detail.content.slice(0, 4).map((item) => (
-                    <article key={item.id}>
-                      <strong>{item.title}</strong>
-                      <span>{item.contentType.replaceAll("_", " ")} · {item.visibility}</span>
-                    </article>
-                  ))}
-                  {!detail.content.length && <p>No notes, drills, or plans yet.</p>}
-                </section>
-                <section>
-                  <h3>Activity history</h3>
-                  {detail.activity.slice(0, 6).map((item) => (
-                    <article key={item.id}>
-                      <strong>{item.summary}</strong>
-                      <span>{formatDate(item.createdAt)} · {item.action.replaceAll("_", " ")}</span>
-                    </article>
-                  ))}
-                  {!detail.activity.length && <p>No activity yet.</p>}
-                </section>
-              </div>
-            </div>
-          ) : (
-            <div className="admin-empty-detail">
-              <strong>Choose a member row</strong>
-              <p>Open a member to review their sessions, videos, notes, plans, settings, and activity timeline.</p>
-            </div>
-          )}
-        </aside>
       </section>
 
       {dashboard?.recentActivity.length ? (

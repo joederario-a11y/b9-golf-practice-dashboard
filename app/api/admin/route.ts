@@ -141,6 +141,14 @@ function parseJsonObject(value: string) {
   }
 }
 
+async function countRows(database: D1Database, query: string, ...bindings: unknown[]) {
+  const statement = database.prepare(query);
+  const row = bindings.length
+    ? await statement.bind(...bindings).first<{ count: number }>()
+    : await statement.first<{ count: number }>();
+  return Number(row?.count ?? 0);
+}
+
 function serializeUser(row: UserRow) {
   const coachIds = row.assigned_coach_ids?.split(",").filter(Boolean) ?? [];
   const coachNames = row.assigned_coach_names?.split(",").filter(Boolean) ?? [];
@@ -1135,9 +1143,74 @@ async function reconcileCoachAssignments(database: D1Database, identity: AuthIde
 
 async function deleteUser(database: D1Database, identity: AuthIdentity, payload: Record<string, unknown>) {
   if (identity.role !== "admin") throw new Response("Only admins can delete users.", { status: 403 });
-  void database;
-  void payload;
-  throw new Response("Hard user deletion is disabled for Monday. Set the account status to inactive instead.", { status: 409 });
+  const userId = text(payload.userId, 80);
+  if (!userId) throw new Response("userId is required.", { status: 400 });
+  if (userId === identity.id) {
+    throw new Response("You cannot delete your own admin account while signed in.", { status: 409 });
+  }
+
+  const target = await getUser(database, userId);
+  if (!target) throw new Response("User not found.", { status: 404 });
+
+  const activeAdmins = await countRows(
+    database,
+    "SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND COALESCE(account_status, 'active') <> 'inactive'",
+  );
+  const finalAdminGuard = finalActiveAdminChangeGuard({
+    activeAdminCount: activeAdmins,
+    existingAccountStatus: target.account_status,
+    existingRole: target.role,
+    nextAccountStatus: "inactive",
+    nextRole: "member",
+  });
+  if (finalAdminGuard) throw new Response(finalAdminGuard.message, { status: finalAdminGuard.status });
+
+  const videoCount = await countRows(
+    database,
+    "SELECT COUNT(*) AS count FROM lesson_videos WHERE member_id = ? OR coach_id = ?",
+    userId,
+    userId,
+  );
+  const sessionRow = await database
+    .prepare("SELECT sessions_json FROM golf_session_snapshots WHERE user_id = ? OR LOWER(user_email) = ?")
+    .bind(userId, target.email.toLowerCase())
+    .first<{ sessions_json: string }>();
+  const sessionCount = parseJsonArray(sessionRow?.sessions_json ?? null).length;
+
+  if (videoCount > 0 || sessionCount > 0) {
+    throw new Response(
+      `This user has ${videoCount} video${videoCount === 1 ? "" : "s"} and ${sessionCount} session${sessionCount === 1 ? "" : "s"}. Deactivate the account instead, or remove the user's content first.`,
+      { status: 409 },
+    );
+  }
+
+  await recordActivity({
+    action: "user_deleted",
+    actor: identity,
+    database,
+    entityId: userId,
+    entityType: "user",
+    memberId: target.role === "member" ? userId : null,
+    metadata: { deletedRole: target.role, deletedEmail: target.email },
+    summary: `${identity.displayName} deleted ${displayName(target)} from user management.`,
+    targetUserId: userId,
+  });
+
+  await database.batch([
+    database.prepare("DELETE FROM auth_sessions WHERE user_id = ?").bind(userId),
+    database.prepare("DELETE FROM auth_login_tokens WHERE user_id = ? OR LOWER(email) = ?").bind(userId, target.email.toLowerCase()),
+    database.prepare("DELETE FROM user_passwords WHERE user_id = ?").bind(userId),
+    database.prepare("DELETE FROM coach_members WHERE coach_id = ? OR member_id = ?").bind(userId, userId),
+    database.prepare("DELETE FROM member_invitations WHERE member_id = ? OR coach_id = ?").bind(userId, userId),
+    database.prepare("DELETE FROM member_content_items WHERE member_id = ? OR created_by = ?").bind(userId, userId),
+    database.prepare("DELETE FROM video_email_notifications WHERE member_id = ? OR requested_by = ?").bind(userId, userId),
+    database.prepare("DELETE FROM video_views WHERE member_id = ?").bind(userId),
+    database.prepare("DELETE FROM golf_practice_profiles WHERE user_id = ? OR LOWER(user_email) = ?").bind(userId, target.email.toLowerCase()),
+    database.prepare("DELETE FROM golf_session_snapshots WHERE user_id = ? OR LOWER(user_email) = ?").bind(userId, target.email.toLowerCase()),
+    database.prepare("DELETE FROM user_profile_images WHERE user_id = ?").bind(userId),
+    database.prepare("DELETE FROM coach_profile_images WHERE coach_user_id = ?").bind(userId),
+    database.prepare("DELETE FROM users WHERE id = ?").bind(userId),
+  ]);
 }
 
 export async function GET(request: Request) {
