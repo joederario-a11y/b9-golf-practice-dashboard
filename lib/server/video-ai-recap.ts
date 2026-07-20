@@ -196,6 +196,14 @@ const MAX_MEDIA_AUDIO_TOTAL_SECONDS = 60 * 30;
 const MEDIA_TRANSFORMATION_TIMEOUT_MS = 120_000;
 const STALE_ACTIVE_JOB_MS = 15 * 60 * 1000;
 const ACTIVE_VIDEO_RECAP_JOB_STATUS_LIST = Array.from(ACTIVE_VIDEO_RECAP_JOB_STATUSES);
+const SINGLE_ATTEMPT_WORKFLOW_STEP = {
+  retries: {
+    backoff: "constant" as const,
+    delay: "1 second",
+    limit: 1,
+  },
+  timeout: "3 minutes",
+};
 
 function text(value: unknown, maxLength = 4000) {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
@@ -1192,11 +1200,11 @@ export async function runVideoLessonRecapWorkflow(env: RecapEnv, event: Workflow
   await prepareDatabase(database);
   try {
     const { job, video } = await step.do("Validate video and authorization", () => validateWorkflowInputs(database, params));
-    const audioPath = await step.do("Extract coach audio", () => extractAudio(env, database, job, video));
+    const audioPath = await step.do("Extract coach audio", SINGLE_ATTEMPT_WORKFLOW_STEP, () => extractAudio(env, database, job, video));
     await step.do("Recheck processing authorization before transcription", () => assertWorkflowCanContinue(database, job.id, video));
-    const transcript = await step.do("Transcribe coach feedback", () => transcribeAudio(env, database, job, video, audioPath));
+    const transcript = await step.do("Transcribe coach feedback", SINGLE_ATTEMPT_WORKFLOW_STEP, () => transcribeAudio(env, database, job, video, audioPath));
     await step.do("Recheck processing authorization before recap generation", () => assertWorkflowCanContinue(database, job.id, video));
-    const draftId = await step.do("Create MAI Coach recap draft", () => generateRecapDraft(env, database, job, video, transcript));
+    const draftId = await step.do("Create MAI Coach recap draft", SINGLE_ATTEMPT_WORKFLOW_STEP, () => generateRecapDraft(env, database, job, video, transcript));
     await step.do("Record recap generation completed", async () => {
       await recordActivity({
             action: "recap_revision_created",
