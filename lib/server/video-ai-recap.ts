@@ -895,10 +895,6 @@ async function extractAudio(env: RecapEnv, database: D1Database, job: Processing
   if (!env.MEDIA) throw new RecapProcessingError("media_binding_missing", "Cloudflare Media binding MEDIA is not configured.");
   const object = await env.VIDEO_STORAGE.get(video.storage_path);
   if (!object?.body) throw new RecapProcessingError("video_missing_from_r2", "The source video could not be found in private R2.");
-  if (shouldPreferVideoChunkFallback(video, object.size)) {
-    await markJob(database, job.id, { status: "extracting_audio", step: "using_video_chunk_fallback_for_quicktime" });
-    return normalizeVideoChunksForTranscription(env, database, job, video, object.size);
-  }
   const audioStoragePaths: string[] = [];
   try {
     if (shouldPreferVideoChunkFallback(video, object.size)) {
