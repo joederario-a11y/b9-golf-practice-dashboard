@@ -572,6 +572,7 @@ export async function generatePracticeActivity(
   const focusArea = text(values.focusArea, 80) || "Better contact";
   const targetUserId = await resolveTargetUser(identity, database, text(values.memberId, 120));
   const replaceReason = text(values.replaceReason, 180);
+  const runtime = getPlatformEnvironment();
 
   const existingActive = await database
     .prepare(
@@ -583,8 +584,11 @@ export async function generatePracticeActivity(
     )
     .bind(targetUserId, activityType, focusArea)
     .first<PracticeActivityRow>();
+  const shouldRefreshFallbackActivity = Boolean(runtime.OPENAI_API_KEY?.trim())
+    && !replaceReason
+    && existingActive?.model?.startsWith("fallback:");
 
-  if (existingActive && !replaceReason) {
+  if (existingActive && !replaceReason && !shouldRefreshFallbackActivity) {
     return Response.json({
       activity: serializePracticeActivity(existingActive),
       reused: true,
@@ -592,11 +596,12 @@ export async function generatePracticeActivity(
     });
   }
 
-  if (existingActive && replaceReason) {
+  if (existingActive && (replaceReason || shouldRefreshFallbackActivity)) {
     await database
       .prepare("UPDATE practice_activities SET status = 'superseded', updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .bind(existingActive.id)
       .run();
+    const supersedeReason = replaceReason || "Refreshing a prior fallback activity now that MAI Coach AI is available.";
     await recordActivity({
       action: "practice_activity_superseded",
       actor: identity,
@@ -604,7 +609,7 @@ export async function generatePracticeActivity(
       entityId: existingActive.id,
       entityType: "practice_activity",
       memberId: targetUserId,
-      metadata: { activityType, focusArea, replaceReason },
+      metadata: { activityType, focusArea, replaceReason: supersedeReason },
       summary: `Superseded ${existingActive.title}.`,
       targetUserId,
     });
@@ -612,7 +617,6 @@ export async function generatePracticeActivity(
 
   const context = await loadPracticeContext(database, targetUserId, focusArea);
   const previousScore = await loadLatestResultScore(database, targetUserId, focusArea, activityType);
-  const runtime = getPlatformEnvironment();
   const model = runtime.OPENAI_ANALYSIS_MODEL || runtime.OPENAI_MODEL || "gpt-4.1-mini";
   const profileSeed =
     context.profile && typeof context.profile === "object" && "completedAt" in context.profile
