@@ -193,6 +193,7 @@ const MAX_TRANSCRIPTION_BYTES = 25 * 1024 * 1024;
 const MAX_MEDIA_AUDIO_CHUNK_SECONDS = 60;
 const MAX_MEDIA_VIDEO_CHUNK_SECONDS = 10;
 const MAX_MEDIA_AUDIO_TOTAL_SECONDS = 60 * 30;
+const MEDIA_TRANSFORMATION_TIMEOUT_MS = 120_000;
 const STALE_ACTIVE_JOB_MS = 15 * 60 * 1000;
 const ACTIVE_VIDEO_RECAP_JOB_STATUS_LIST = Array.from(ACTIVE_VIDEO_RECAP_JOB_STATUSES);
 
@@ -440,6 +441,22 @@ function isQuickTimeVideo(video: VideoRecapRow) {
 async function deleteTemporaryPaths(env: RecapEnv, paths: string[]) {
   if (!paths.length) return;
   await Promise.all(paths.map((path) => env.VIDEO_STORAGE.delete(path).catch(() => undefined)));
+}
+
+async function mediaResponseWithTimeout(promise: Promise<Response>, code: string) {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<Response>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new RecapProcessingError(code, "Cloudflare Media could not process this lesson video."));
+        }, MEDIA_TRANSFORMATION_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
 }
 
 function shouldPreferVideoChunkFallback(video: VideoRecapRow, sourceSize: number) {
@@ -805,12 +822,15 @@ async function normalizeVideoChunksForTranscription(
         status: "extracting_audio",
         step: `normalizing_video_chunk_${index + 1}_of_${chunkCount}`,
       });
-      const videoResponse = await env.MEDIA!.input(chunkSource.body).output({
-        audio: true,
-        duration: `${chunkDuration}s`,
-        mode: "video",
-        time: `${startSeconds}s`,
-      }).response();
+      const videoResponse = await mediaResponseWithTimeout(
+        env.MEDIA!.input(chunkSource.body).output({
+          audio: true,
+          duration: `${chunkDuration}s`,
+          mode: "video",
+          time: `${startSeconds}s`,
+        }).response(),
+        "mp4_fallback_timeout",
+      );
       if (!videoResponse.ok || !videoResponse.body) {
         throw new RecapProcessingError("mp4_fallback_failed", "Cloudflare Media could not normalize this video for transcription.");
       }
@@ -872,12 +892,15 @@ async function extractAudio(env: RecapEnv, database: D1Database, job: Processing
         status: "extracting_audio",
         step: `extracting_audio_chunk_${index + 1}_of_${chunkCount}`,
       });
-      const audioResponse = await env.MEDIA.input(chunkSource.body).output({
-        mode: "audio",
-        time: `${startSeconds}s`,
-        duration: `${chunkDuration}s`,
-        format: "m4a",
-      }).response();
+      const audioResponse = await mediaResponseWithTimeout(
+        env.MEDIA.input(chunkSource.body).output({
+          mode: "audio",
+          time: `${startSeconds}s`,
+          duration: `${chunkDuration}s`,
+          format: "m4a",
+        }).response(),
+        "audio_extraction_timeout",
+      );
       if (!audioResponse.ok || !audioResponse.body) {
         throw new RecapProcessingError("audio_extraction_failed", "Cloudflare Media audio extraction failed for this video.");
       }
