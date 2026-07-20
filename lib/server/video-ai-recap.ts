@@ -433,13 +433,17 @@ function videoDurationChunks(video: VideoRecapRow, chunkSeconds: number) {
   };
 }
 
+function isQuickTimeVideo(video: VideoRecapRow) {
+  return text(video.mime_type, 100).includes("quicktime");
+}
+
 async function deleteTemporaryPaths(env: RecapEnv, paths: string[]) {
   if (!paths.length) return;
   await Promise.all(paths.map((path) => env.VIDEO_STORAGE.delete(path).catch(() => undefined)));
 }
 
 function shouldPreferVideoChunkFallback(video: VideoRecapRow, sourceSize: number) {
-  return text(video.mime_type, 100).includes("quicktime") && sourceSize > MAX_TRANSCRIPTION_BYTES;
+  return isQuickTimeVideo(video) || sourceSize > MAX_TRANSCRIPTION_BYTES;
 }
 
 function assertTemporaryAudioPath(video: VideoRecapRow, audioStoragePath: string) {
@@ -895,6 +899,9 @@ async function extractAudio(env: RecapEnv, database: D1Database, job: Processing
     return { paths: audioStoragePaths, source: "media_chunks" } satisfies AudioExtractionResult;
   } catch (error) {
     await deleteTemporaryPaths(env, audioStoragePaths);
+    if (isQuickTimeVideo(video)) {
+      return normalizeVideoChunksForTranscription(env, database, job, video, object.size);
+    }
     if (object.size <= MAX_TRANSCRIPTION_BYTES) {
       await markJob(database, job.id, { status: "extracting_audio", step: "using_original_media_for_transcription" });
       await recordProcessingEvent(
@@ -932,11 +939,21 @@ async function transcribeAudioSegment(
   form.append("model", model);
   form.append("language", job.requested_language || "en");
   form.append("prompt", buildTranscriptionPrompt());
-  const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-    body: form,
-    headers: { Authorization: `Bearer ${env.OPENAI_API_KEY?.trim()}` },
-    method: "POST",
-  });
+  let response: Response;
+  try {
+    response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      body: form,
+      headers: { Authorization: `Bearer ${env.OPENAI_API_KEY?.trim()}` },
+      method: "POST",
+      signal: AbortSignal.timeout(120_000),
+    });
+  } catch (error) {
+    const timedOut = error instanceof DOMException && error.name === "TimeoutError";
+    throw new RecapProcessingError(
+      timedOut ? "transcription_timeout" : "transcription_request_failed",
+      "MAI Coach transcription is temporarily unavailable.",
+    );
+  }
   const payload = await response.json().catch(() => ({})) as { text?: string; duration?: number; segments?: unknown; error?: { message?: string } };
   if (!response.ok) {
     const diagnostic = sanitizeOpenAIError({ status: response.status, error: payload.error ?? payload }, {
