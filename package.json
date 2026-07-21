@@ -13,6 +13,7 @@
     "deploy:dry-run": "npm run build:worker && cd dist/server && wrangler deploy --config wrangler.json --dry-run --outdir ../../.wrangler/dry-run",
     "deploy:dev": "npm run build:worker && wrangler deploy --config wrangler.dev.jsonc",
     "migrate:dev": "wrangler d1 migrations apply DB --remote --config wrangler.dev.jsonc",
+    "reset:dev-data": "node scripts/reset-dev-data.mjs",
     "deploy": "npm run build:worker && cd dist/server && wrangler deploy --config wrangler.json",
     "start": "vinext start",
     "lint": "node scripts/lint-source.mjs",
