@@ -1,10 +1,10 @@
 import {
   type AuthIdentity,
   createLoginToken,
-  getEmailFromAddress,
   getPlatformEnvironment,
   getRequiredDatabase,
 } from "./platform";
+import { sendEmailMessage } from "./email-service";
 
 type EmailVideo = {
   id: string;
@@ -76,14 +76,6 @@ export async function sendVideoNotification(
     userId: video.memberId,
   });
   const videoLink = `${appBaseUrl}/?tab=videos&video=${encodeURIComponent(video.id)}&login=${encodeURIComponent(loginToken)}`;
-  const emailFrom = getEmailFromAddress();
-  const failureReason = "Email delivery is not configured. Add RESEND_API_KEY and VIDEO_EMAIL_FROM or RESEND_FROM.";
-
-  if (!runtime.RESEND_API_KEY || !emailFrom) {
-    await logNotification({ identity, member, status: "failed", video, failureReason });
-    return { status: "Failed" as const, failureReason };
-  }
-
   const noteBlock = notePreview
     ? `<p style="margin:16px 0;padding:14px;border-left:3px solid #96cb39;background:#edfdf2;">${escapeHtml(notePreview)}</p>`
     : "";
@@ -100,29 +92,16 @@ export async function sendVideoNotification(
     </div>
   `;
 
-  try {
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${runtime.RESEND_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from: emailFrom,
-        to: [member.email],
-        subject: "Your new lesson video is ready",
-        html,
-      }),
-    });
-    const result = await response.json() as { id?: string; message?: string };
-    if (!response.ok || !result.id) {
-      throw new Error(result.message || "The email provider did not accept the notification.");
-    }
-    await logNotification({ identity, member, status: "sent", video, providerId: result.id });
-    return { status: "Sent" as const, providerId: result.id };
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : "Email delivery failed.";
-    await logNotification({ identity, member, status: "failed", video, failureReason: reason });
-    return { status: "Failed" as const, failureReason: reason };
+  const result = await sendEmailMessage({
+    html,
+    subject: "Your new lesson video is ready",
+    toEmail: member.email,
+  });
+  if (result.success) {
+    await logNotification({ identity, member, status: "sent", video, providerId: result.providerMessageId });
+    return { status: "Sent" as const, providerId: result.providerMessageId };
   }
+  const failureReason = result.errorCode ?? "email_failed";
+  await logNotification({ identity, member, status: "failed", video, failureReason });
+  return { status: "Failed" as const, failureReason };
 }

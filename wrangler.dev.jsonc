@@ -58,6 +58,7 @@
     "OPENAI_VISION_MODEL": "gpt-4.1-mini",
     "OPENAI_MODEL": "gpt-4.1-mini",
     "OPENAI_TRANSCRIPTION_MODEL": "gpt-4o-transcribe",
+    "EMAIL_FROM": "MAI Coach <notifications@n3xconsulting.com>",
     "RESEND_FROM": "notifications@n3xconsulting.com",
     "VIDEO_EMAIL_FROM": "notifications@n3xconsulting.com"
   }

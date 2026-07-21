@@ -6,6 +6,7 @@ import {
   roleForEmail,
   upsertUserForEmail,
 } from "./platform";
+import { sendPasswordResetEmail } from "./email-service";
 
 type AuthEmailOptions = {
   accountType?: "coach" | "player";
@@ -102,7 +103,7 @@ export async function requestLoginEmail(
       debugLoginUrl: localLoginAvailable ? loginUrl : undefined,
       emailSubject,
       emailTo: normalizedEmail,
-      failureReason: "Email delivery is not configured. Add RESEND_API_KEY and VIDEO_EMAIL_FROM or RESEND_FROM.",
+      failureReason: "Email delivery is not configured. Add RESEND_API_KEY, EMAIL_FROM, and APP_BASE_URL.",
       publicMessage: isRegistration
         ? localLoginAvailable
           ? "Account created. Email is not configured locally, so use the secure link below."
@@ -123,17 +124,7 @@ export async function requestLoginEmail(
       ? "Use this secure link to open your account and set a new password."
     : "Use this secure link to open your MAI Coach video library.";
   const buttonText = isRegistration ? "Open your new account" : isPasswordReset ? "Reset password" : "Open MAI Coach";
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${runtime.RESEND_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from: emailFrom,
-      to: [normalizedEmail],
-      subject: emailSubject,
-      html: `
+  const html = `
         <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;color:#10171F;line-height:1.6;">
           <p>Hi ${escapeHtml(user.first_name || "there")},</p>
           <p>${escapeHtml(introCopy)}</p>
@@ -142,16 +133,18 @@ export async function requestLoginEmail(
           </p>
           <p>This link expires soon and can only be used once.</p>
         </div>
-      `,
-    }),
+      `;
+  const result = await sendPasswordResetEmail({
+    html,
+    subject: emailSubject,
+    toEmail: normalizedEmail,
   });
-  const result = await response.json() as { id?: string; message?: string };
-  if (!response.ok || !result.id) {
+  if (!result.success) {
     return {
       status: "Failed" as const,
       emailSubject,
       emailTo: normalizedEmail,
-      failureReason: result.message || "The email provider did not accept the login email.",
+      failureReason: result.errorCode || "provider_rejected",
       publicMessage: isRegistration
         ? "Account created, but the registration email could not be sent."
         : isPasswordReset
@@ -164,7 +157,7 @@ export async function requestLoginEmail(
     status: "Sent" as const,
     emailSubject,
     emailTo: normalizedEmail,
-    providerId: result.id,
+    providerId: result.providerMessageId,
     publicMessage: isRegistration
       ? `Account created. We sent a secure login link to ${normalizedEmail}.`
       : isPasswordReset

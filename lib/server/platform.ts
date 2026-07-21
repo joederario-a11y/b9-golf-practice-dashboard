@@ -34,6 +34,7 @@ export type PlatformEnvironment = {
   OPENAI_MODEL?: string;
   OPENAI_TRANSCRIPTION_MODEL?: string;
   OPENAI_VISION_MODEL?: string;
+  EMAIL_FROM?: string;
   RESEND_API_KEY?: string;
   RESEND_FROM?: string;
   MEDIA?: {
@@ -199,7 +200,7 @@ export function sanitizeOpenAIError(
 
 export function getEmailFromAddress() {
   const runtime = getPlatformEnvironment();
-  return runtime.VIDEO_EMAIL_FROM || runtime.RESEND_FROM || "";
+  return runtime.EMAIL_FROM || runtime.VIDEO_EMAIL_FROM || runtime.RESEND_FROM || "";
 }
 
 export function getRequiredDatabase() {
@@ -253,7 +254,7 @@ function randomToken() {
     .replaceAll("=", "");
 }
 
-async function hashToken(token: string) {
+export async function hashToken(token: string) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
   return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, "0"))
@@ -952,6 +953,21 @@ export async function ensurePlatformSchema(database = getRequiredDatabase()) {
   ]);
   await ensureUsersAccountStatusColumn(database);
   await ensureColumn(database, "users", "password_reset_required", "INTEGER NOT NULL DEFAULT 0");
+  await ensureColumn(database, "member_invitations", "user_id", "TEXT");
+  await ensureColumn(database, "member_invitations", "token_hash", "TEXT");
+  await ensureColumn(database, "member_invitations", "created_by_user_id", "TEXT");
+  await ensureColumn(database, "member_invitations", "email_type", "TEXT NOT NULL DEFAULT 'welcome'");
+  await ensureColumn(database, "member_invitations", "email_status", "TEXT NOT NULL DEFAULT 'pending'");
+  await ensureColumn(database, "member_invitations", "provider_message_id", "TEXT");
+  await ensureColumn(database, "member_invitations", "last_sent_at", "TEXT");
+  await ensureColumn(database, "member_invitations", "send_attempts", "INTEGER NOT NULL DEFAULT 0");
+  await ensureColumn(database, "member_invitations", "opened_at", "TEXT");
+  await ensureColumn(database, "member_invitations", "used_at", "TEXT");
+  await ensureColumn(database, "member_invitations", "cancelled_at", "TEXT");
+  await database.batch([
+    database.prepare("CREATE INDEX IF NOT EXISTS member_invitations_token_hash_idx ON member_invitations(token_hash)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS member_invitations_user_status_idx ON member_invitations(member_id, status, created_at)"),
+  ]);
   await ensureVideoAiProcessingSchema(database);
   await ensurePracticeActivitySchema(database);
 }
@@ -1103,7 +1119,7 @@ export async function verifyUserPassword(email: string, password: string) {
 export async function createLoginToken(values: {
   email: string;
   userId?: string | null;
-  purpose: "login" | "password_reset" | "video";
+  purpose: "login" | "password_reset" | "video" | "account_setup";
   redirectPath?: string;
   ttlSeconds?: number;
 }) {

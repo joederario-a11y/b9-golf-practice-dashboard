@@ -47,6 +47,8 @@ type PerformanceTimeframe = {
   endDate: string;
 };
 
+type PasswordModalMode = "reset" | "setup" | "temporary";
+
 type SessionViewSelection = {
   club: string | "all";
   shotId?: string | null;
@@ -2039,6 +2041,17 @@ function formatDate(value: string) {
 function formatFullDate(value: string) {
   const date = parseDisplayDate(value);
   return date ? new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric" }).format(date) : "NA";
+}
+
+function inviteStatusLabel(status: string) {
+  const normalized = status.trim().toLowerCase();
+  if (normalized === "delivered" || normalized === "sent") return "Email Sent";
+  if (normalized === "opened") return "Invite Opened";
+  if (normalized === "completed" || normalized === "accepted" || normalized === "active") return "Account Active";
+  if (normalized === "failed") return "Email Failed";
+  if (normalized === "expired") return "Invite Expired";
+  if (normalized === "cancelled") return "Invite Cancelled";
+  return "Invite Pending";
 }
 
 function startOfLocalDay(date: Date) {
@@ -4755,6 +4768,7 @@ export default function Home() {
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [showPasswordResetModal, setShowPasswordResetModal] = useState(false);
   const [forcePasswordReset, setForcePasswordReset] = useState(false);
+  const [passwordModalMode, setPasswordModalMode] = useState<PasswordModalMode>("reset");
   const [showAccountGate, setShowAccountGate] = useState(false);
   const [loginModalMode, setLoginModalMode] = useState<LoginModalMode>("login");
   const [registrationDraft, setRegistrationDraft] = useState<RegistrationDraft | null>(null);
@@ -5213,7 +5227,8 @@ export default function Home() {
 
   async function consumeLoginFromUrl() {
     const url = new URL(window.location.href);
-    const token = url.searchParams.get("login");
+    const isSetupRoute = url.pathname === "/setup-account";
+    const token = isSetupRoute ? url.searchParams.get("token") : url.searchParams.get("login");
     if (!token) return false;
 
     try {
@@ -5225,21 +5240,24 @@ export default function Home() {
         body: JSON.stringify({ token }),
       });
       const payload = await response.json().catch(() => ({})) as { error?: string; purpose?: string; redirectPath?: string };
-      const shouldResetPassword = url.searchParams.get("resetPassword") === "1" || payload.purpose === "password_reset";
+      const shouldResetPassword = isSetupRoute || url.searchParams.get("resetPassword") === "1" || payload.purpose === "password_reset" || payload.purpose === "account_setup";
       url.searchParams.delete("login");
+      url.searchParams.delete("token");
       url.searchParams.delete("resetPassword");
-      window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+      window.history.replaceState(null, "", `${isSetupRoute ? "/" : url.pathname}${url.search}${url.hash}`);
       if (!response.ok) {
         setSyncStatus(payload.error ?? "This login link could not be used.");
         return false;
       }
       if (shouldResetPassword) {
+        setPasswordModalMode(isSetupRoute || payload.purpose === "account_setup" ? "setup" : "reset");
+        setForcePasswordReset(false);
         setShowPasswordResetModal(true);
-        setSyncStatus("Signed in. Choose a new password to finish reset.");
-        return true;
+        setSyncStatus(isSetupRoute || payload.purpose === "account_setup" ? "Welcome to MAI Coach. Create your password to finish setting up your account." : "Signed in. Choose a new password to finish reset.");
+        return isSetupRoute || payload.purpose === "account_setup" ? "setup" : "reset";
       }
       setSyncStatus("Signed in from your secure email link.");
-      return true;
+      return "login";
     } catch {
       setSyncStatus("This login link could not be used right now.");
       return false;
@@ -5280,7 +5298,7 @@ export default function Home() {
     const isCurrentRequest = () => accountConnectRequestRef.current === requestId;
     setSyncStatus("Checking your account...");
     try {
-      await consumeLoginFromUrl();
+      const consumedLoginMode = await consumeLoginFromUrl();
       await acceptInvitationFromUrl();
       const accountResponse = await fetch("/api/account", {
         cache: "no-store",
@@ -5342,6 +5360,7 @@ export default function Home() {
       setImportConfirmation(null);
       setPendingImportReview(null);
       setForcePasswordReset(requiresPasswordReset);
+      setPasswordModalMode(consumedLoginMode === "setup" ? "setup" : requiresPasswordReset ? "temporary" : "reset");
       if (requiresPasswordReset) setShowPasswordResetModal(true);
       const requestedTab =
         tabFromValue(new URLSearchParams(window.location.search).get("tab")) ??
@@ -5526,6 +5545,7 @@ export default function Home() {
     setShowLoginModal(false);
     setShowPasswordResetModal(false);
     setForcePasswordReset(false);
+    setPasswordModalMode("reset");
     setSyncStatus("Create an account, sign in, or continue as guest.");
   }
 
@@ -5965,11 +5985,13 @@ export default function Home() {
       {showPasswordResetModal && (
         <PasswordResetModal
           force={forcePasswordReset}
+          mode={passwordModalMode}
           onClose={() => {
             if (!forcePasswordReset) setShowPasswordResetModal(false);
           }}
           onPasswordUpdated={() => {
             setForcePasswordReset(false);
+            setPasswordModalMode("reset");
             setShowPasswordResetModal(false);
             setAccountUser((current) => current ? { ...current, passwordResetRequired: false } : current);
           }}
@@ -7831,9 +7853,10 @@ function AdminView({
       const payload = editingUserId
         ? { action: "updateUser", userId: editingUserId, ...userForm }
         : { action: "createUser", ...userForm };
-      await postStaffAction(payload);
+      const result = await postStaffAction(payload);
       setShowUserModal(false);
-      setMessage(editingUserId ? "User updated." : "User created with a temporary password.");
+      const invite = result.invite as { publicMessage?: string } | undefined;
+      setMessage(editingUserId ? "User updated." : invite?.publicMessage ?? "Account created and welcome email sent.");
       await refreshWorkspace(selectedMemberId);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "The user could not be saved.");
@@ -8014,6 +8037,31 @@ function AdminView({
     }
   }
 
+  async function copySetupLink(user: StaffUserRecord) {
+    try {
+      const payload = await postStaffAction<{ invite?: { setupUrl?: string; publicMessage?: string } }>({ action: "copySetupLink", userId: user.id });
+      const setupUrl = payload.invite?.setupUrl ?? "";
+      if (!setupUrl) throw new Error("A setup link could not be created.");
+      await navigator.clipboard.writeText(setupUrl);
+      setMessage(payload.invite?.publicMessage ?? `Fresh setup link copied for ${user.email}.`);
+      await refreshWorkspace(selectedMemberId);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Setup link could not be copied.");
+    }
+  }
+
+  async function cancelInvitation(user: StaffUserRecord) {
+    const confirmed = window.confirm(`Cancel the current setup invitation for ${user.name}? Any unused setup link for this account will stop working.`);
+    if (!confirmed) return;
+    try {
+      await postStaffAction({ action: "cancelInvitation", userId: user.id });
+      setMessage(`Invitation cancelled for ${user.name}.`);
+      await refreshWorkspace(selectedMemberId);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Invitation could not be cancelled.");
+    }
+  }
+
   if (!isAdmin) {
     return (
       <section className="panel admin-access-panel">
@@ -8180,7 +8228,7 @@ function AdminView({
                     <option value="active">Active</option>
                     <option value="inactive">Inactive</option>
                   </select>
-                  <small>{user.inviteStatus} · {user.passwordConfigured ? "Password set" : "No password"}</small>
+                  <small>{inviteStatusLabel(user.inviteStatus)} · {user.passwordConfigured ? "Password set" : "No password"}</small>
                   {user.passwordResetRequired && <small>Password change required</small>}
                 </div>
                 <div>
@@ -8194,7 +8242,9 @@ function AdminView({
                   {user.role === "member" && <button className="icon-button" onClick={() => onOpenCoachTools(user.id, user.name)} title="Open coach tools">✦</button>}
                   <button className="icon-button" onClick={() => openEditUser(user)} title="Edit user">✎</button>
                   <button className="icon-button" onClick={() => openPasswordReset(user)} title="Set or reset password">⚿</button>
-                  <button className="icon-button" onClick={() => void resendInvitation(user)} title="Resend invitation">↻</button>
+                  <button className="icon-button" onClick={() => void resendInvitation(user)} title="Resend welcome email">↻</button>
+                  <button className="icon-button" onClick={() => void copySetupLink(user)} title="Copy fresh setup link">⛓</button>
+                  <button className="icon-button" onClick={() => void cancelInvitation(user)} title="Cancel setup invitation">⊘</button>
                   <button className="icon-button danger-text-button" disabled={user.id === accountUser?.id} onClick={() => void deleteUserAccount(user)} title={user.id === accountUser?.id ? "You cannot delete your own account" : "Delete user"}>×</button>
                 </div>
               </div>
@@ -8230,13 +8280,10 @@ function AdminView({
             <div className="video-form-grid">
               <label><span>Role</span><select value={userForm.role} onChange={(event) => setUserForm((current) => ({ ...current, role: event.target.value as StaffUserRecord["role"] }))}><option value="member">Member</option><option value="coach">Coach</option><option value="admin">Admin</option></select></label>
               <label><span>Status</span><select value={userForm.accountStatus} onChange={(event) => setUserForm((current) => ({ ...current, accountStatus: event.target.value as StaffUserRecord["accountStatus"] }))}><option value="active">Active</option><option value="inactive">Inactive</option></select></label>
-              <label><span>Invite / setup</span><select value={userForm.inviteStatus} onChange={(event) => setUserForm((current) => ({ ...current, inviteStatus: event.target.value }))}><option value="pending">Pending setup</option><option value="sent">Invite sent</option><option value="accepted">Accepted</option><option value="active">Active</option></select></label>
+              <label><span>Invite / setup</span><select value={userForm.inviteStatus} onChange={(event) => setUserForm((current) => ({ ...current, inviteStatus: event.target.value }))}><option value="pending">Invite Pending</option><option value="delivered">Email Sent</option><option value="opened">Invite Opened</option><option value="failed">Email Failed</option><option value="expired">Invite Expired</option><option value="completed">Account Active</option><option value="accepted">Accepted</option><option value="active">Active</option></select></label>
               <label><span>First name</span><input required value={userForm.firstName} onChange={(event) => setUserForm((current) => ({ ...current, firstName: event.target.value }))} /></label>
               <label><span>Last name</span><input required value={userForm.lastName} onChange={(event) => setUserForm((current) => ({ ...current, lastName: event.target.value }))} /></label>
               <label className="video-form-wide"><span>Email</span><input required type="email" value={userForm.email} onChange={(event) => setUserForm((current) => ({ ...current, email: event.target.value }))} /></label>
-              {!editingUserId && userForm.role === "member" && (
-                <label className="video-form-wide"><span>Temporary password</span><input autoComplete="new-password" minLength={8} required type="password" value={userForm.temporaryPassword} onChange={(event) => setUserForm((current) => ({ ...current, temporaryPassword: event.target.value }))} /></label>
-              )}
               <label><span>Phone</span><input value={userForm.phone} onChange={(event) => setUserForm((current) => ({ ...current, phone: event.target.value }))} /></label>
               <label><span>Skill / title</span><input value={userForm.skillLevel} onChange={(event) => setUserForm((current) => ({ ...current, skillLevel: event.target.value }))} /></label>
               {userForm.role === "member" && (
@@ -8245,7 +8292,7 @@ function AdminView({
               <label className="video-form-wide"><span>Notes</span><textarea value={userForm.notes} onChange={(event) => setUserForm((current) => ({ ...current, notes: event.target.value }))} /></label>
             </div>
             <div className="video-modal-actions">
-              <span>{editingUserId ? "Profile, role, coach assignment, and account status will update immediately." : "The member can log in immediately with the temporary password. Email is best-effort when configured."}</span>
+              <span>{editingUserId ? "Profile, role, coach assignment, and account status will update immediately." : "A secure setup link will be emailed so the user can create their own password."}</span>
               <div className="button-row">
                 <button className="secondary-action" onClick={() => setShowUserModal(false)} type="button">Cancel</button>
                 <button className="primary-action" type="submit">{editingUserId ? "Save user" : "Create user"}</button>
@@ -8787,6 +8834,52 @@ function CoachVideoWorkspace({
     }
   }
 
+  async function refreshCoachMembers(nextSelectedMemberId = selectedMemberId) {
+    const response = await fetch("/api/members", { cache: "no-store" });
+    const payload = await response.json().catch(() => ({})) as { error?: string; members?: CoachMember[] };
+    if (!response.ok) throw new Error(payload.error ?? "Members could not be loaded.");
+    const loadedMembers = payload.members ?? [];
+    setMembers(loadedMembers);
+    if (nextSelectedMemberId && loadedMembers.some((member) => member.id === nextSelectedMemberId)) {
+      setSelectedMemberId(nextSelectedMemberId);
+    }
+  }
+
+  async function resendMemberInvite(member: CoachMember) {
+    try {
+      const payload = await postStaffAction<{ invite?: { publicMessage?: string } }>({ action: "resendInvitation", userId: member.id });
+      setWorkspaceMessage(payload.invite?.publicMessage ?? `Welcome email resent to ${member.email}.`);
+      await refreshCoachMembers(member.id);
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "Welcome email could not be resent.");
+    }
+  }
+
+  async function copyMemberSetupLink(member: CoachMember) {
+    try {
+      const payload = await postStaffAction<{ invite?: { setupUrl?: string; publicMessage?: string } }>({ action: "copySetupLink", userId: member.id });
+      const setupUrl = payload.invite?.setupUrl ?? "";
+      if (!setupUrl) throw new Error("A setup link could not be created.");
+      await navigator.clipboard.writeText(setupUrl);
+      setWorkspaceMessage(payload.invite?.publicMessage ?? `Fresh setup link copied for ${member.email}.`);
+      await refreshCoachMembers(member.id);
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "Setup link could not be copied.");
+    }
+  }
+
+  async function cancelMemberInvite(member: CoachMember) {
+    const confirmed = window.confirm(`Cancel the current setup invitation for ${member.name}? Any unused setup link for this account will stop working.`);
+    if (!confirmed) return;
+    try {
+      await postStaffAction({ action: "cancelInvitation", userId: member.id });
+      setWorkspaceMessage(`Invitation cancelled for ${member.name}.`);
+      await refreshCoachMembers(member.id);
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "Invitation could not be cancelled.");
+    }
+  }
+
   async function addMember(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setMemberSaveState("saving");
@@ -8809,17 +8902,16 @@ function CoachVideoWorkspace({
         firstName: "",
         lastName: "",
         email: "",
-        temporaryPassword: "",
         phone: "",
         skillLevel: "",
         notes: "",
       });
       setWorkspaceMessage(
-        payload.passwordConfigured
-          ? `${member.name} was added with a temporary password and can log in now.`
-          : payload.invite?.status === "sent"
-          ? `${member.name} was added and invited by email.`
-          : `${member.name} was added. The login invitation is pending email configuration.`,
+        payload.invite?.status === "delivered"
+          ? `${member.name} was added and the welcome email was sent.`
+          : payload.invite?.status === "not_sent"
+          ? `${member.name} is already connected.`
+          : `${member.name} was added, but the welcome email could not be sent. You can resend it from Admin.`,
       );
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : "The member could not be added.");
@@ -9330,7 +9422,7 @@ function CoachVideoWorkspace({
                       <small>{member.email} · {member.phone}</small>
                     </span>
                     <span>
-                      <strong>{member.inviteStatus === "accepted" ? "Active" : "Invited"}</strong>
+                      <strong>{inviteStatusLabel(member.inviteStatus ?? "pending")}</strong>
                       <small>{member.skillLevel || "Skill level not set"}</small>
                     </span>
                     <span>
@@ -9346,7 +9438,7 @@ function CoachVideoWorkspace({
 	                  <div className="selected-member-confirmation">
 	                    <CoachAvatar coach={selectedMember} />
                     <div><span>Selected member</span><strong>{selectedMember.name}</strong><small>{selectedMember.email}</small></div>
-                    <div><span>Contact</span><strong>{selectedMember.phone || "No phone"}</strong><small>{selectedMember.inviteStatus === "accepted" ? "Login active" : "Invitation pending"}</small></div>
+                    <div><span>Contact</span><strong>{selectedMember.phone || "No phone"}</strong><small>{inviteStatusLabel(selectedMember.inviteStatus ?? "pending")}</small></div>
                     <div><span>Lesson archive</span><strong>{selectedMember.videoCount ?? 0} videos</strong><small>{selectedMember.lastVideoAt ? formatVideoUploadDate(selectedMember.lastVideoAt) : "No lesson videos yet"}</small></div>
                   </div>
                   <div className="coach-member-profile">
@@ -9359,6 +9451,9 @@ function CoachVideoWorkspace({
                       <p>{selectedMember.notes || "No member notes yet."}</p>
                     </div>
                     <div className="button-row">
+                      <button className="secondary-action" onClick={() => void resendMemberInvite(selectedMember)}>Resend Welcome Email</button>
+                      <button className="secondary-action" onClick={() => void copyMemberSetupLink(selectedMember)}>Copy Setup Link</button>
+                      <button className="secondary-action danger-text-button" onClick={() => void cancelMemberInvite(selectedMember)}>Cancel Invitation</button>
                       <button className="secondary-action" onClick={() => onOpenMemberVideos(selectedMember.id, selectedMember.name)}>View Lesson Videos</button>
                       <button className="secondary-action" onClick={() => setCoachQuickMode("session")}>Add Session</button>
                       <button className="secondary-action" onClick={() => setCoachQuickMode("content")}>Assign Drill</button>
@@ -9688,12 +9783,11 @@ function CoachVideoWorkspace({
               </div>
               <button aria-label="Close add member dialog" className="icon-button" onClick={() => setShowAddMember(false)} type="button">×</button>
             </div>
-            <p className="muted-copy">The member record is saved in D1 and tied to their login email. Set a temporary password so they can log in immediately; email delivery remains optional.</p>
+            <p className="muted-copy">The member record is saved in D1 and tied to their login email. MAI Coach will email a secure setup link so they can create their own password.</p>
             <div className="video-form-grid">
               <label><span>First name</span><input required value={newMember.firstName} onChange={(event) => setNewMember((current) => ({ ...current, firstName: event.target.value }))} /></label>
               <label><span>Last name</span><input required value={newMember.lastName} onChange={(event) => setNewMember((current) => ({ ...current, lastName: event.target.value }))} /></label>
               <label className="video-form-wide"><span>Email</span><input required type="email" value={newMember.email} onChange={(event) => setNewMember((current) => ({ ...current, email: event.target.value }))} /></label>
-              <label className="video-form-wide"><span>Temporary password</span><input autoComplete="new-password" minLength={8} required type="password" value={newMember.temporaryPassword} onChange={(event) => setNewMember((current) => ({ ...current, temporaryPassword: event.target.value }))} /></label>
               <label><span>Phone optional</span><input type="tel" value={newMember.phone} onChange={(event) => setNewMember((current) => ({ ...current, phone: event.target.value }))} /></label>
               <label><span>Skill level optional</span><input placeholder="Beginner, 12 handicap, competitive..." value={newMember.skillLevel} onChange={(event) => setNewMember((current) => ({ ...current, skillLevel: event.target.value }))} /></label>
               <label className="video-form-wide"><span>Coach notes optional</span><textarea placeholder="Goals, tendencies, or lesson context..." value={newMember.notes} onChange={(event) => setNewMember((current) => ({ ...current, notes: event.target.value }))} /></label>
@@ -13666,11 +13760,13 @@ function LoginRequestModal({
 
 function PasswordResetModal({
   force = false,
+  mode = force ? "temporary" : "reset",
   onClose,
   onPasswordUpdated,
   onStatus,
 }: {
   force?: boolean;
+  mode?: PasswordModalMode;
   onClose: () => void;
   onPasswordUpdated?: () => void;
   onStatus: (message: string) => void;
@@ -13679,10 +13775,14 @@ function PasswordResetModal({
   const [confirmPassword, setConfirmPassword] = useState("");
   const [state, setState] = useState<"idle" | "saving">("idle");
   const [message, setMessage] = useState(
-    force
+    mode === "setup"
+      ? "Create your password to finish setting up your account."
+      : force
       ? "You are signed in with a temporary password. Choose a new password before continuing."
       : "Choose a new password for your MAI Coach account.",
   );
+  const eyebrow = mode === "setup" ? "Welcome to MAI Coach" : force ? "Temporary password" : "Password reset";
+  const title = mode === "setup" ? "Create your password" : "Set a new password";
 
   async function savePassword(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -13724,8 +13824,8 @@ function PasswordResetModal({
         <div className="video-modal-header">
           <div>
             <MaiCoachLogoMark className="auth-modal-mark" />
-            <p className="eyebrow">{force ? "Temporary password" : "Password reset"}</p>
-            <h2>Set a new password</h2>
+            <p className="eyebrow">{eyebrow}</p>
+            <h2>{title}</h2>
           </div>
           {!force && (
             <button aria-label="Close password reset dialog" className="icon-button" onClick={onClose} type="button">×</button>

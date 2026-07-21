@@ -5,6 +5,7 @@ import {
   setUserPassword,
   verifyUserPassword,
 } from "@/lib/server/platform";
+import { completeAccountSetupForUser } from "@/lib/server/email-service";
 
 function text(value: unknown, maxLength: number) {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
@@ -59,10 +60,11 @@ export async function PUT(request: Request) {
     }
 
     await setUserPassword(identity.id, password);
+    await completeAccountSetupForUser(identity.id);
     return Response.json({
       ok: true,
       user: { ...identity, passwordResetRequired: false },
-      publicMessage: "Your password has been updated.",
+      publicMessage: "Your MAI Coach account is ready.",
     });
   } catch (error) {
     return responseFromError(error);

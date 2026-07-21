@@ -11,6 +11,7 @@ import {
   deriveSetupStatus,
   finalActiveAdminChangeGuard,
   normalizeEmail,
+  safeInviteStatus,
   singleCoachAssignmentGuard,
   sniffImageMimeType,
   splitDisplayNameForRegistration,
@@ -38,6 +39,23 @@ test("account setup status does not call an unusable account simply active", () 
   });
 
   assert.deepEqual(status, ["Pending setup", "Password not configured", "Never logged in"]);
+});
+
+test("invitation setup states support email delivery lifecycle", () => {
+  assert.equal(safeInviteStatus("delivered"), "delivered");
+  assert.equal(safeInviteStatus("opened"), "opened");
+  assert.equal(safeInviteStatus("completed"), "completed");
+  assert.equal(safeInviteStatus("failed"), "failed");
+  assert.equal(safeInviteStatus("expired"), "expired");
+  assert.equal(safeInviteStatus("cancelled"), "cancelled");
+  assert.equal(safeInviteStatus("unknown", "pending"), "pending");
+  assert.deepEqual(deriveSetupStatus({
+    accountStatus: "active",
+    inviteStatus: "completed",
+    passwordConfigured: true,
+    passwordResetRequired: false,
+    lastLoginAt: "2026-07-21",
+  }), ["Password configured", "Last login 2026-07-21"]);
 });
 
 test("coach headshot validation accepts bounded supported images", () => {

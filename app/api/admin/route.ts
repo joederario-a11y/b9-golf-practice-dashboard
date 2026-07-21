@@ -1,4 +1,4 @@
-import { requestLoginEmail } from "@/lib/server/auth-email";
+import { cancelAccountSetupInvitations, createAccountSetupInvitation } from "@/lib/server/email-service";
 import {
   adminCreateUserGuard,
   buildCoachReconciliationCandidates,
@@ -529,15 +529,6 @@ async function createUser(request: Request, database: D1Database, identity: Auth
   const notes = nullableText(payload.notes, 2000);
   const accountStatus = safeAccountStatus(text(payload.accountStatus, 20), "active");
   const inviteStatus = safeInviteStatus(text(payload.inviteStatus, 20), "pending");
-  const temporaryPassword = typeof payload.temporaryPassword === "string"
-    ? payload.temporaryPassword
-    : typeof payload.password === "string"
-      ? payload.password
-      : "";
-  if (role === "member") {
-    const passwordError = validatePasswordConfirmation(temporaryPassword, temporaryPassword);
-    if (passwordError) throw new Response(passwordError, { status: 400 });
-  }
   const existing = await database
     .prepare("SELECT id, email, role FROM users WHERE LOWER(email) = ?")
     .bind(email)
@@ -553,12 +544,8 @@ async function createUser(request: Request, database: D1Database, identity: Auth
         account_status, invite_status, invited_at, created_by, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
     )
-    .bind(userId, role, firstName, lastName, email, phone, skillLevel, notes, accountStatus, temporaryPassword ? "accepted" : inviteStatus, identity.id)
+    .bind(userId, role, firstName, lastName, email, phone, skillLevel, notes, accountStatus, inviteStatus, identity.id)
     .run();
-
-  if (temporaryPassword) {
-    await setUserPassword(userId, temporaryPassword, { temporary: role === "member" });
-  }
 
   if (role === "member") {
     const coachId = identity.role === "coach" ? identity.id : text(payload.coachId, 80);
@@ -578,9 +565,18 @@ async function createUser(request: Request, database: D1Database, identity: Auth
     }
   }
 
-  const invite = await requestLoginEmail(request, email, "/?tab=videos", {
-    accountType: role === "coach" ? "coach" : "player",
-    purpose: "registration",
+  const invite = await createAccountSetupInvitation({
+    actor: identity,
+    coachId: role === "member" ? (identity.role === "coach" ? identity.id : text(payload.coachId, 80)) : null,
+    request,
+    user: {
+      id: userId,
+      email,
+      first_name: firstName,
+      last_name: lastName,
+      role,
+      invite_status: inviteStatus,
+    },
   });
   await recordActivity({
     action: "user_created",
@@ -1285,9 +1281,24 @@ export async function POST(request: Request) {
       if (identity.role !== "admin" && !(user.role === "member" && await memberIsVisible(identity, user.id, database))) {
         throw new Response("You do not have access to that user.", { status: 403 });
       }
-      const invite = await requestLoginEmail(request, user.email, "/?tab=videos", {
-        accountType: user.role === "coach" ? "coach" : "player",
-        purpose: "registration",
+      const assignedCoach = user.role === "member"
+        ? await database
+            .prepare("SELECT coach_id FROM coach_members WHERE member_id = ? ORDER BY created_at DESC LIMIT 1")
+            .bind(user.id)
+            .first<{ coach_id: string }>()
+        : null;
+      const invite = await createAccountSetupInvitation({
+        actor: identity,
+        coachId: assignedCoach?.coach_id ?? null,
+        request,
+        user: {
+          id: user.id,
+          email: user.email,
+          first_name: user.first_name,
+          last_name: user.last_name,
+          role: user.role,
+          invite_status: user.invite_status,
+        },
       });
       await recordActivity({
         action: "invitation_resent",
@@ -1300,6 +1311,63 @@ export async function POST(request: Request) {
         targetUserId: user.id,
       });
       return Response.json({ ok: true, invite });
+    }
+    if (action === "copySetupLink") {
+      const user = await getUser(database, text(payload.userId, 80));
+      if (!user) throw new Response("User not found.", { status: 404 });
+      if (identity.role !== "admin" && !(user.role === "member" && await memberIsVisible(identity, user.id, database))) {
+        throw new Response("You do not have access to that user.", { status: 403 });
+      }
+      const assignedCoach = user.role === "member"
+        ? await database
+            .prepare("SELECT coach_id FROM coach_members WHERE member_id = ? ORDER BY created_at DESC LIMIT 1")
+            .bind(user.id)
+            .first<{ coach_id: string }>()
+        : null;
+      const invite = await createAccountSetupInvitation({
+        actor: identity,
+        coachId: assignedCoach?.coach_id ?? null,
+        delivery: "link",
+        request,
+        user: {
+          id: user.id,
+          email: user.email,
+          first_name: user.first_name,
+          last_name: user.last_name,
+          role: user.role,
+          invite_status: user.invite_status,
+        },
+      });
+      await recordActivity({
+        action: "setup_link_created",
+        actor: identity,
+        database,
+        entityId: user.id,
+        entityType: "invitation",
+        memberId: user.role === "member" ? user.id : null,
+        summary: `${identity.displayName} created a fresh setup link for ${displayName(user)}.`,
+        targetUserId: user.id,
+      });
+      return Response.json({ ok: true, invite });
+    }
+    if (action === "cancelInvitation") {
+      const user = await getUser(database, text(payload.userId, 80));
+      if (!user) throw new Response("User not found.", { status: 404 });
+      if (identity.role !== "admin" && !(user.role === "member" && await memberIsVisible(identity, user.id, database))) {
+        throw new Response("You do not have access to that user.", { status: 403 });
+      }
+      await cancelAccountSetupInvitations(user.id);
+      await recordActivity({
+        action: "invitation_cancelled",
+        actor: identity,
+        database,
+        entityId: user.id,
+        entityType: "invitation",
+        memberId: user.role === "member" ? user.id : null,
+        summary: `${identity.displayName} cancelled the setup invitation for ${displayName(user)}.`,
+        targetUserId: user.id,
+      });
+      return Response.json({ ok: true, ...(await dashboard(database, identity)) });
     }
     if (action === "deleteUser") {
       await deleteUser(database, identity, payload);

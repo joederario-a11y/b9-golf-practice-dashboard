@@ -61,13 +61,30 @@ Configure these values before publishing from the coach workspace:
 
 ```bash
 RESEND_API_KEY=re_...
-VIDEO_EMAIL_FROM=MAI Coach <lessons@example.com>
+EMAIL_FROM=MAI Coach <welcome@your-verified-domain.example>
 APP_BASE_URL=https://your-site.example
 ```
 
-`APP_BASE_URL` must be the deployed production URL. Registration, invitation,
-login, and video email links use it to build one-time login URLs that set an
-HTTP-only session cookie before opening the member video library.
+`APP_BASE_URL` must be the deployed site URL. Coach/admin-created accounts use
+it to build `/setup-account?token=...` links. The raw setup token is sent only in
+the email link; D1 stores a token hash and invitation status metadata.
+
+For Dev:
+
+```bash
+npx wrangler secret put RESEND_API_KEY --config wrangler.dev.jsonc
+```
+
+Set non-secret Dev variables in `wrangler.dev.jsonc`:
+
+```text
+EMAIL_FROM=MAI Coach <welcome@your-verified-domain.example>
+APP_BASE_URL=https://mai-coach-dev.b9-golf-practice-dashboard.workers.dev
+```
+
+The sender in `EMAIL_FROM` must use a domain verified in Resend. Login,
+password-reset, welcome/setup, and video emails all use this server-side sender
+configuration. The Resend API key is never exposed to the browser.
 
 Cloudflare bindings are declared in `wrangler.jsonc`:
 
@@ -81,9 +98,10 @@ Apply the D1 migrations, including `drizzle/0002_useful_nomad.sql` and
 API also creates missing tables during local development so a fresh local
 binding can start cleanly.
 
-If email delivery fails or is not configured, the stored video remains
-published, the coach sees a delivery warning, and the failed attempt is logged
-in `video_email_notifications`.
+If welcome email delivery fails or is not configured, the user account remains
+created and the admin/coach can resend the setup email after configuration is
+fixed. Lesson-video email attempts remain logged in `video_email_notifications`;
+account setup status is logged in `member_invitations`.
 
 ## Supabase Signup Email Notifications
 

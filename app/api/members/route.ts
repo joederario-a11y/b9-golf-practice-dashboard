@@ -1,15 +1,13 @@
 import {
   ensurePlatformSchema,
   getAssignedMemberIds,
-  getEmailFromAddress,
-  getPlatformEnvironment,
   getRequiredDatabase,
   recordActivity,
   requireIdentity,
   responseFromError,
-  setUserPassword,
 } from "@/lib/server/platform";
-import { normalizeEmail, singleCoachAssignmentGuard, validatePasswordConfirmation } from "@/lib/admin-user-policy.mjs";
+import { createAccountSetupInvitation } from "@/lib/server/email-service";
+import { normalizeEmail, singleCoachAssignmentGuard } from "@/lib/admin-user-policy.mjs";
 
 type MemberPayload = {
   coachId?: unknown;
@@ -17,7 +15,6 @@ type MemberPayload = {
   firstName?: unknown;
   lastName?: unknown;
   notes?: unknown;
-  temporaryPassword?: unknown;
   phone?: unknown;
   skillLevel?: unknown;
 };
@@ -40,15 +37,6 @@ type MemberRow = {
 
 function text(value: unknown, maxLength: number) {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
-}
-
-function escapeHtml(value: string) {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
 }
 
 function serializeMember(row: MemberRow) {
@@ -74,57 +62,6 @@ function serializeMember(row: MemberRow) {
     lastVideoAt: row.last_video_at,
     profileImageUrl,
   };
-}
-
-async function sendMemberInvite(
-  request: Request,
-  member: { email: string; firstName: string },
-  coachName: string,
-  inviteUrl: string,
-) {
-  const runtime = getPlatformEnvironment();
-  const emailFrom = getEmailFromAddress();
-  if (!runtime.RESEND_API_KEY || !emailFrom) {
-    return { status: "pending", reason: "Email delivery is not configured." };
-  }
-  try {
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${runtime.RESEND_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from: emailFrom,
-        to: [member.email],
-        subject: "Your MAI Coach video library is ready",
-        html: `
-          <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;color:#10171F;line-height:1.6;">
-            <p>Hi ${escapeHtml(member.firstName)},</p>
-            <p>${escapeHtml(coachName)} added you to MAI Coach so lesson videos and coach notes can be shared with you.</p>
-            <p><a href="${escapeHtml(inviteUrl)}" style="display:inline-block;background:#10171F;color:#96cb39;text-decoration:none;padding:12px 18px;border-radius:6px;font-weight:700;">Create your login</a></p>
-            <p>Use the same email address this invitation was sent to when you log in.</p>
-          </div>
-        `,
-      }),
-    });
-    const result = await response.json() as { id?: string; message?: string };
-    if (!response.ok || !result.id) {
-      throw new Error(result.message || "The email provider did not accept the invitation.");
-    }
-    return { status: "sent", providerId: result.id };
-  } catch (error) {
-    return {
-      status: "failed",
-      reason: error instanceof Error ? error.message : "Invitation email failed.",
-    };
-  }
-}
-
-function createInviteUrl(request: Request, token: string) {
-  const runtime = getPlatformEnvironment();
-  const baseUrl = runtime.APP_BASE_URL?.replace(/\/$/, "") || new URL(request.url).origin;
-  return `${baseUrl}/?tab=videos&invite=${encodeURIComponent(token)}`;
 }
 
 export async function GET() {
@@ -191,7 +128,6 @@ export async function POST(request: Request) {
     const phone = text(payload.phone, 40);
     const skillLevel = text(payload.skillLevel, 80);
     const notes = text(payload.notes, 2000);
-    const temporaryPassword = typeof payload.temporaryPassword === "string" ? payload.temporaryPassword : "";
     const requestedCoachId = text(payload.coachId, 80);
     if (!firstName || !lastName || !email) {
       return Response.json({ error: "First name, last name, and email are required." }, { status: 400 });
@@ -224,10 +160,6 @@ export async function POST(request: Request) {
       return Response.json({ error: "That email belongs to a coach or administrator." }, { status: 409 });
     }
     const memberId = existing?.id ?? crypto.randomUUID();
-    if (!existing) {
-      const passwordError = validatePasswordConfirmation(temporaryPassword, temporaryPassword);
-      if (passwordError) return Response.json({ error: passwordError }, { status: 400 });
-    }
     const coachId = identity.role === "coach" ? identity.id : requestedCoachId || null;
     if (coachId) {
       const coach = await database
@@ -274,7 +206,7 @@ export async function POST(request: Request) {
             `INSERT INTO users (
               id, role, first_name, last_name, email, phone, skill_level, notes,
               invite_status, invited_at, created_by, created_at, updated_at
-            ) VALUES (?, 'member', ?, ?, ?, ?, ?, ?, 'accepted', CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+            ) VALUES (?, 'member', ?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
           )
           .bind(memberId, firstName, lastName, email, phone || null, skillLevel || null, notes || null, identity.id),
         coachId
@@ -287,7 +219,6 @@ export async function POST(request: Request) {
               .bind(crypto.randomUUID(), coachId, memberId)
           : database.prepare("SELECT 1"),
       ]);
-      await setUserPassword(memberId, temporaryPassword, { temporary: true });
     }
     if (coachId) {
       await recordActivity({
@@ -303,39 +234,19 @@ export async function POST(request: Request) {
       });
     }
 
-    const invite = existing
-      ? { reason: "Existing member connected without changing account setup or invite status.", status: "not_sent" }
-      : await (async () => {
-        const inviteToken = crypto.randomUUID();
-        const inviteUrl = createInviteUrl(request, inviteToken);
-        const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30).toISOString();
-        const sentInvite = await sendMemberInvite(request, { email, firstName }, identity.displayName, inviteUrl);
-        await database.batch([
-          database
-            .prepare(
-              `INSERT INTO member_invitations (
-                id, member_id, coach_id, email_to, invite_token, invite_url,
-                status, provider_id, failure_reason, expires_at, created_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-            )
-            .bind(
-              crypto.randomUUID(),
-              memberId,
-              coachId,
-              email,
-              inviteToken,
-              inviteUrl,
-              sentInvite.status,
-              "providerId" in sentInvite ? sentInvite.providerId : null,
-              "reason" in sentInvite ? sentInvite.reason : null,
-              expiresAt,
-            ),
-          database
-            .prepare("UPDATE users SET invite_status = ?, invited_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-            .bind(temporaryPassword ? "accepted" : sentInvite.status, memberId),
-        ]);
-        return sentInvite;
-      })();
+    const invite = await createAccountSetupInvitation({
+      actor: identity,
+      coachId,
+      request,
+      user: {
+        id: memberId,
+        email,
+        first_name: existing?.first_name ?? firstName,
+        last_name: existing?.last_name ?? lastName,
+        role: "member",
+        invite_status: existing?.invite_status ?? "pending",
+      },
+    });
     const row = await database
       .prepare(
         `SELECT
@@ -359,7 +270,7 @@ export async function POST(request: Request) {
     return Response.json({
       member: row ? serializeMember(row) : null,
       invite,
-      passwordConfigured: Boolean(!existing && temporaryPassword),
+      passwordConfigured: false,
     }, { status: existing ? 200 : 201 });
   } catch (error) {
     return responseFromError(error);
