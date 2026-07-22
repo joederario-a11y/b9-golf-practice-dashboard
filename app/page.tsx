@@ -42,6 +42,7 @@ import {
   canStartCoachLessonUpload,
   coachLessonUploadStatusLabel,
   filterCoachUploadMembers,
+  getCoachDashboardActionState,
 } from "@/lib/coach-video-upload-policy.mjs";
 
 type Tab = "dashboard" | "sessions" | "clubs" | "videos" | "coach" | "admin" | "practice" | "import";
@@ -8734,8 +8735,7 @@ function CoachVideoWorkspace({
   const [saveState, setSaveState] = useState<"idle" | "saving">("idle");
   const [uploadProgress, setUploadProgress] = useState(0);
   const [workspaceMessage, setWorkspaceMessage] = useState("Select a member to begin.");
-  const [coachPhotoVersion, setCoachPhotoVersion] = useState(() => Date.now());
-  const [coachPhotoMissing, setCoachPhotoMissing] = useState(false);
+  const [showUploadPanel, setShowUploadPanel] = useState(false);
   const [coachContentForm, setCoachContentForm] = useState({
     contentType: "coach_note",
     title: "",
@@ -8772,9 +8772,21 @@ function CoachVideoWorkspace({
   const managedVideos = [...videos]
     .sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
   const editingVideo = videos.find((video) => video.id === editingVideoId);
-  const coachProfileImageUrl = accountUser?.role === "coach"
-    ? `/api/coach-photo?coachId=${encodeURIComponent(accountUser.id)}&v=${coachPhotoVersion}`
-    : "";
+  const hasUploadableMembers = uploadableMembers.length > 0;
+  const coachDashboardActions = getCoachDashboardActionState({
+    authenticated,
+    devAuthEnabled,
+    hasMembers: hasUploadableMembers,
+    selectedMemberId,
+  });
+  const shouldRenderUploadPanel = loadingMembers || (
+    hasUploadableMembers &&
+    (showUploadPanel || Boolean(editingVideoId) || Boolean(uploadResult) || saveState === "saving")
+  );
+  const hasDashboardHeaderActions = coachDashboardActions.showCompactAddMember ||
+    coachDashboardActions.showMemberTools ||
+    coachDashboardActions.showUploadLessonVideo;
+  const shouldShowCoachAttentionStatus = !editingVideoId && /\b(could not|failed|unavailable|needs attention)\b/i.test(workspaceMessage);
 
   function applyCoachMembersPayload(payload: MembersResponsePayload) {
     const loadedMembers = payload.members ?? [];
@@ -8930,6 +8942,7 @@ function CoachVideoWorkspace({
     setUploadProgress(0);
     setShowLessonDetails(false);
     setUploadResult(null);
+    setShowUploadPanel(false);
   }
 
   function chooseMember(member: CoachMember) {
@@ -9048,6 +9061,7 @@ function CoachVideoWorkspace({
       });
       setSelectedMemberId(member.id);
       setUploadResult(null);
+      if (addMemberMode === "first-member") setShowUploadPanel(true);
       void loadCoachMemberDetail(member.id);
 
       if (addMemberMode === "first-member" && !inviteCompleted) {
@@ -9112,6 +9126,7 @@ function CoachVideoWorkspace({
       });
       setSelectedMemberId(member.id);
       setUploadResult(null);
+      setShowUploadPanel(true);
       setWorkspaceMessage(payload.publicMessage ?? `${member.name} is ready for a demo upload.`);
       void loadCoachMemberDetail(member.id);
     } catch (error) {
@@ -9165,36 +9180,6 @@ function CoachVideoWorkspace({
       return;
     }
     setThumbnailFile(file);
-  }
-
-  async function handleOwnCoachPhoto(file: File | null) {
-    if (!file || !accountUser || accountUser.role !== "coach") return;
-    if (!coachPhotoMissing) {
-      const confirmed = window.confirm("Replace your coach headshot? Your roster, videos, sessions, and login stay unchanged.");
-      if (!confirmed) return;
-    }
-    try {
-      await uploadCoachPhoto(accountUser.id, file);
-      setCoachPhotoMissing(false);
-      setCoachPhotoVersion(Date.now());
-      setWorkspaceMessage("Coach headshot updated.");
-    } catch (error) {
-      setWorkspaceMessage(error instanceof Error ? error.message : "Coach headshot could not be saved.");
-    }
-  }
-
-  async function removeOwnCoachPhoto() {
-    if (!accountUser || accountUser.role !== "coach") return;
-    const confirmed = window.confirm("Remove your coach headshot? Your account, roster, videos, and coach/member assignments will remain unchanged.");
-    if (!confirmed) return;
-    try {
-      await deleteCoachPhoto(accountUser.id);
-      setCoachPhotoMissing(true);
-      setCoachPhotoVersion(Date.now());
-      setWorkspaceMessage("Coach headshot removed.");
-    } catch (error) {
-      setWorkspaceMessage(error instanceof Error ? error.message : "Coach headshot could not be removed.");
-    }
   }
 
   function replaceItem(record: VideoLibraryRecord) {
@@ -9390,6 +9375,7 @@ function CoachVideoWorkspace({
     setGenerateAiRecap(false);
     setShowLessonDetails(true);
     setUploadResult(null);
+    setShowUploadPanel(true);
     setWorkspaceMessage(`Editing ${video.title}. Choose a replacement file only if the video changed.`);
   }
 
@@ -9496,69 +9482,81 @@ function CoachVideoWorkspace({
           <article><span>Recent uploads</span><strong>{loadingVideos ? "..." : managedVideos.length}</strong></article>
           <article><span>Waiting to watch</span><strong>{managedVideos.filter((video) => getVideoPublicationStatus(video) === "Published" && !video.isViewedByMember).length}</strong></article>
         </div>
-        <div className="button-row">
-          <button className="secondary-action" disabled={!authenticated || demoSeedState === "saving"} onClick={() => void addDemoPlayer()}>
-            {demoSeedState === "saving" ? "Adding Demo..." : "Add Demo Player"}
-          </button>
-          <button className="secondary-action" disabled={!authenticated} onClick={() => openAddMemberDialog("manual")}>＋ Add Member</button>
-          <button className="secondary-action" disabled={!selectedMember} onClick={() => setCoachQuickMode("session")}>Add Session</button>
-          <button className="secondary-action" disabled={!selectedMember} onClick={() => setCoachQuickMode("content")}>Assign Drill/Note</button>
-          <button
-            className="primary-action"
-            disabled={!authenticated}
-            onClick={() => {
-              resetWorkflow();
-              setWorkspaceMessage(uploadableMembers.length ? "Choose a member and video, then upload." : "Add your first member before uploading a lesson video.");
-              queueMicrotask(() => uploadPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
-            }}
-          >
-            Upload Lesson Video
-          </button>
-        </div>
+        {hasDashboardHeaderActions && (
+          <div className="button-row">
+            {coachDashboardActions.showCompactAddMember && (
+              <button className="secondary-action" disabled={!coachDashboardActions.canAddMember} onClick={() => openAddMemberDialog("manual")}>＋ Add Member</button>
+            )}
+            {coachDashboardActions.showMemberTools && (
+              <>
+                <button className="secondary-action" disabled={!coachDashboardActions.canUseMemberTools} onClick={() => setCoachQuickMode("session")}>Add Session</button>
+                <button className="secondary-action" disabled={!coachDashboardActions.canUseMemberTools} onClick={() => setCoachQuickMode("content")}>Assign Drill/Note</button>
+              </>
+            )}
+            {coachDashboardActions.showUploadLessonVideo && (
+              <button
+                className="primary-action"
+                disabled={!coachDashboardActions.canOpenUpload}
+                onClick={() => {
+                  resetWorkflow();
+                  setShowUploadPanel(true);
+                  setWorkspaceMessage("Choose a member and video, then upload.");
+                  window.setTimeout(() => uploadPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+                }}
+              >
+                Upload Lesson Video
+              </button>
+            )}
+          </div>
+        )}
       </section>
 
-      {accountUser?.role === "coach" && (
-        <section className="coach-profile-photo-card">
-          <div>
-            {coachProfileImageUrl && !coachPhotoMissing ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                alt={`${coachName} headshot`}
-                className="coach-avatar large"
-                onError={() => setCoachPhotoMissing(true)}
-                src={coachProfileImageUrl}
-              />
-            ) : (
-              <span className="member-initials coach-avatar-fallback large">{initialsForName(coachName)}</span>
+      {!loadingMembers && coachDashboardActions.showPrimaryAddMember && (
+        <section className="coach-first-member-card">
+          <div className="coach-first-member-copy">
+            <p className="eyebrow">Start here</p>
+            <h3>Add your first member</h3>
+            <p>Create your roster so you can upload lesson videos, review sessions, and assign practice.</p>
+            <button className="primary-action" disabled={!coachDashboardActions.canAddMember} onClick={() => openAddMemberDialog("first-member")} type="button">
+              Add Member
+            </button>
+            {coachDashboardActions.showDevDemoPlayer && (
+              <button className="text-button" disabled={!authenticated || demoSeedState === "saving"} onClick={() => void addDemoPlayer()} type="button">
+                {demoSeedState === "saving" ? "Adding demo player..." : "Use demo player for testing"}
+              </button>
             )}
-            <span><strong>{coachName}</strong><small>Coach profile photo</small></span>
           </div>
-          <div className="button-row">
-            <label className="secondary-action coach-photo-picker">
-              Upload / replace
-              <input
-                accept="image/jpeg,image/png,image/webp"
-                onChange={(event) => {
-                  const file = event.currentTarget.files?.[0] ?? null;
-                  void handleOwnCoachPhoto(file);
-                  event.currentTarget.value = "";
-                }}
-                type="file"
-              />
-            </label>
-            <button className="secondary-action danger-text-button" disabled={coachPhotoMissing} onClick={() => void removeOwnCoachPhoto()} type="button">Remove photo</button>
+          <div className="coach-first-member-next" aria-label="What you can do next">
+            <span>What you can do next</span>
+            <ul>
+              <li>Upload lesson videos</li>
+              <li>Review player sessions</li>
+              <li>Assign practice</li>
+            </ul>
           </div>
         </section>
       )}
 
-      <section className="coach-tool-status" role="status">
-        <div>
-          <span>{viewerRole === "admin" ? "Admin tools" : `${coachName}'s coach tools`}</span>
-          <strong>{workspaceMessage}</strong>
-        </div>
-        {editingVideoId && <button className="text-button" onClick={resetWorkflow}>Cancel editing</button>}
-      </section>
+      {editingVideoId && (
+        <section className="coach-tool-status" role="status">
+          <div>
+            <span>Editing video</span>
+            <strong>{workspaceMessage}</strong>
+          </div>
+          <button className="text-button" onClick={resetWorkflow}>Cancel editing</button>
+        </section>
+      )}
 
+      {shouldShowCoachAttentionStatus && (
+        <section className="coach-tool-status" role="status">
+          <div>
+            <span>Needs attention</span>
+            <strong>{workspaceMessage}</strong>
+          </div>
+        </section>
+      )}
+
+      {shouldRenderUploadPanel && (
       <section className="coach-simple-upload-panel" ref={uploadPanelRef}>
         <div className="coach-simple-upload-heading">
           <div>
@@ -9573,12 +9571,6 @@ function CoachVideoWorkspace({
           <div className="coach-simple-empty">
             <strong>Loading members...</strong>
             <p>Your roster will appear here in a moment.</p>
-          </div>
-        ) : uploadableMembers.length === 0 ? (
-          <div className="coach-simple-empty">
-            <strong>Add your first member</strong>
-            <p>You need a member before you can upload a lesson video.</p>
-            <button className="primary-action" disabled={!authenticated} onClick={() => openAddMemberDialog("first-member")} type="button">Add Member</button>
           </div>
         ) : (
           <>
@@ -9696,6 +9688,7 @@ function CoachVideoWorkspace({
                       setUploadResult(null);
                       setVideoFile(null);
                       setUploadProgress(0);
+                      setShowUploadPanel(true);
                       setWorkspaceMessage("Choose another video when ready.");
                     }}
                     type="button"
@@ -9720,6 +9713,7 @@ function CoachVideoWorkspace({
           </>
         )}
       </section>
+      )}
 
       <section className="coach-video-management">
         <div className="coach-management-heading">
