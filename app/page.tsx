@@ -33,6 +33,11 @@ import {
   makeSessionAnalysisKey,
   resolveSessionViewSelection,
 } from "@/lib/session-view-selection-policy.mjs";
+import {
+  normalizeFirstMemberOnboardingStatus,
+  shouldCompleteFirstMemberOnboardingAfterInvite,
+  shouldOpenFirstMemberOnboarding,
+} from "@/lib/coach-first-member-onboarding-policy.mjs";
 
 type Tab = "dashboard" | "sessions" | "clubs" | "videos" | "coach" | "admin" | "practice" | "import";
 type AccountMode = "pending" | "user" | "guest";
@@ -48,6 +53,7 @@ type PerformanceTimeframe = {
 };
 
 type PasswordModalMode = "reset" | "setup" | "temporary";
+type FirstMemberOnboardingStatus = "pending" | "dismissed" | "completed";
 
 type SessionViewSelection = {
   club: string | "all";
@@ -574,6 +580,7 @@ type CoachMember = {
   lastName?: string;
   email: string;
   phone: string;
+  accountStatus?: string;
   skillLevel?: string;
   notes?: string;
   inviteStatus?: string;
@@ -586,6 +593,17 @@ type CoachMember = {
   coachIds?: string[];
   profileImageUrl?: string;
 };
+
+type MembersResponsePayload = {
+  activeMemberCount?: number;
+  error?: string;
+  firstMemberOnboardingStatus?: FirstMemberOnboardingStatus | string;
+  members?: CoachMember[];
+};
+
+function memberCountsAsActive(member: CoachMember) {
+  return (member.accountStatus ?? "active") !== "inactive";
+}
 
 type StaffUserRecord = {
   id: string;
@@ -8659,7 +8677,12 @@ function CoachVideoWorkspace({
   const [loadingMembers, setLoadingMembers] = useState(true);
   const [loadingVideos, setLoadingVideos] = useState(true);
   const [showAddMember, setShowAddMember] = useState(false);
+  const [addMemberMode, setAddMemberMode] = useState<"manual" | "first-member">("manual");
   const [memberSaveState, setMemberSaveState] = useState<"idle" | "saving">("idle");
+  const [firstMemberOnboardingStatus, setFirstMemberOnboardingStatus] = useState<FirstMemberOnboardingStatus>("pending");
+  const [activeMemberCount, setActiveMemberCount] = useState(0);
+  const [memberInviteRecovery, setMemberInviteRecovery] = useState<CoachMember | null>(null);
+  const firstMemberOnboardingOpenedRef = useRef(false);
   const [demoSeedState, setDemoSeedState] = useState<"idle" | "saving">("idle");
   const [newMember, setNewMember] = useState({
     firstName: "",
@@ -8740,6 +8763,64 @@ function CoachVideoWorkspace({
     ? `/api/coach-photo?coachId=${encodeURIComponent(accountUser.id)}&v=${coachPhotoVersion}`
     : "";
 
+  function applyCoachMembersPayload(payload: MembersResponsePayload) {
+    const loadedMembers = payload.members ?? [];
+    setMembers(loadedMembers);
+    setActiveMemberCount(
+      typeof payload.activeMemberCount === "number"
+        ? payload.activeMemberCount
+        : loadedMembers.filter(memberCountsAsActive).length,
+    );
+    setFirstMemberOnboardingStatus(
+      normalizeFirstMemberOnboardingStatus(payload.firstMemberOnboardingStatus) as FirstMemberOnboardingStatus,
+    );
+    return loadedMembers;
+  }
+
+  function openAddMemberDialog(mode: "manual" | "first-member" = "manual") {
+    setAddMemberMode(mode);
+    setMemberInviteRecovery(null);
+    setShowAddMember(true);
+  }
+
+  async function saveFirstMemberOnboardingStatus(status: FirstMemberOnboardingStatus) {
+    const response = await fetch("/api/members", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ firstMemberOnboardingStatus: status }),
+    });
+    const payload = await readApiJson<{ firstMemberOnboardingStatus?: FirstMemberOnboardingStatus | string }>(
+      response,
+      "First-member onboarding could not be updated.",
+    );
+    const normalizedStatus = normalizeFirstMemberOnboardingStatus(payload.firstMemberOnboardingStatus) as FirstMemberOnboardingStatus;
+    setFirstMemberOnboardingStatus(normalizedStatus);
+    return normalizedStatus;
+  }
+
+  async function dismissFirstMemberOnboarding() {
+    setMemberSaveState("saving");
+    try {
+      await saveFirstMemberOnboardingStatus("dismissed");
+      setShowAddMember(false);
+      setMemberInviteRecovery(null);
+      setWorkspaceMessage("You can add your first member anytime from the Coach Dashboard.");
+    } catch (error) {
+      setWorkspaceMessage(error instanceof Error ? error.message : "First-member onboarding could not be dismissed.");
+    } finally {
+      setMemberSaveState("idle");
+    }
+  }
+
+  function closeAddMemberDialog() {
+    if (addMemberMode === "first-member") {
+      void dismissFirstMemberOnboarding();
+      return;
+    }
+    setShowAddMember(false);
+    setMemberInviteRecovery(null);
+  }
+
   useEffect(() => {
     let cancelled = false;
     if (!authenticated) {
@@ -8747,6 +8828,8 @@ function CoachVideoWorkspace({
         setWorkspaceMessage("Log in with a coach or admin account to manage lesson videos.");
         setLoadingMembers(false);
         setLoadingVideos(false);
+        setActiveMemberCount(0);
+        setFirstMemberOnboardingStatus("pending");
       });
       return () => {
         cancelled = true;
@@ -8756,16 +8839,16 @@ function CoachVideoWorkspace({
     Promise.all([
       readVideoLibrary(),
       fetch("/api/members", { cache: "no-store" }).then(async (response) => {
-        const payload = await response.json();
+        const payload = await response.json() as MembersResponsePayload;
         if (!response.ok) throw new Error(payload.error ?? "Members could not be loaded.");
-        return (payload.members ?? []) as CoachMember[];
+        return payload;
       }),
     ])
-      .then(([records, loadedMembers]) => {
+      .then(([records, membersPayload]) => {
         if (cancelled) return;
         const items = records.map((record) => createVideoLibraryItem(record));
+        const loadedMembers = applyCoachMembersPayload(membersPayload);
         setVideos(items);
-        setMembers(loadedMembers);
         setWorkspaceMessage(
           loadedMembers.length
             ? `${loadedMembers.length} ${loadedMembers.length === 1 ? "member" : "members"} ready.`
@@ -8786,6 +8869,25 @@ function CoachVideoWorkspace({
       cancelled = true;
     };
   }, [authenticated]);
+
+  useEffect(() => {
+    if (firstMemberOnboardingOpenedRef.current) return;
+    if (!shouldOpenFirstMemberOnboarding({
+      accountRole: accountUser?.role,
+      activeMemberCount,
+      authenticated,
+      loadingMembers,
+      status: firstMemberOnboardingStatus,
+      viewerRole,
+    })) {
+      return;
+    }
+    firstMemberOnboardingOpenedRef.current = true;
+    setAddMemberMode("first-member");
+    setMemberInviteRecovery(null);
+    setShowAddMember(true);
+    setWorkspaceMessage("Start building your roster by inviting your first golfer to MAI Coach.");
+  }, [accountUser?.role, activeMemberCount, authenticated, firstMemberOnboardingStatus, loadingMembers, viewerRole]);
 
   function resetWorkflow() {
     setStep(1);
@@ -8836,10 +8938,9 @@ function CoachVideoWorkspace({
 
   async function refreshCoachMembers(nextSelectedMemberId = selectedMemberId) {
     const response = await fetch("/api/members", { cache: "no-store" });
-    const payload = await response.json().catch(() => ({})) as { error?: string; members?: CoachMember[] };
+    const payload = await response.json().catch(() => ({})) as MembersResponsePayload;
     if (!response.ok) throw new Error(payload.error ?? "Members could not be loaded.");
-    const loadedMembers = payload.members ?? [];
-    setMembers(loadedMembers);
+    const loadedMembers = applyCoachMembersPayload(payload);
     if (nextSelectedMemberId && loadedMembers.some((member) => member.id === nextSelectedMemberId)) {
       setSelectedMemberId(nextSelectedMemberId);
     }
@@ -8847,12 +8948,30 @@ function CoachVideoWorkspace({
 
   async function resendMemberInvite(member: CoachMember) {
     try {
-      const payload = await postStaffAction<{ invite?: { publicMessage?: string } }>({ action: "resendInvitation", userId: member.id });
+      const payload = await postStaffAction<{ invite?: { publicMessage?: string; status?: string } }>({ action: "resendInvitation", userId: member.id });
       setWorkspaceMessage(payload.invite?.publicMessage ?? `Welcome email resent to ${member.email}.`);
       await refreshCoachMembers(member.id);
+      return payload.invite ?? null;
     } catch (error) {
       setWorkspaceMessage(error instanceof Error ? error.message : "Welcome email could not be resent.");
+      return null;
     }
+  }
+
+  async function retryFirstMemberInvite(member: CoachMember) {
+    const invite = await resendMemberInvite(member);
+    if (!invite || !shouldCompleteFirstMemberOnboardingAfterInvite(invite.status ?? "")) return;
+    await saveFirstMemberOnboardingStatus("completed");
+    setShowAddMember(false);
+    setMemberInviteRecovery(null);
+    setNewMember({
+      firstName: "",
+      lastName: "",
+      email: "",
+      phone: "",
+      skillLevel: "",
+      notes: "",
+    });
   }
 
   async function copyMemberSetupLink(member: CoachMember) {
@@ -8889,15 +9008,45 @@ function CoachVideoWorkspace({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(newMember),
       });
-      const payload = await readApiJson<{ member?: CoachMember; invite?: { status?: string }; passwordConfigured?: boolean }>(response, "The member could not be added.");
+      const payload = await readApiJson<{
+        firstMemberOnboardingStatus?: FirstMemberOnboardingStatus | string;
+        invite?: { status?: string };
+        member?: CoachMember;
+        passwordConfigured?: boolean;
+      }>(response, "The member could not be added.");
       if (!payload.member) throw new Error("The member could not be added.");
       const member = payload.member as CoachMember;
+      const inviteStatus = payload.invite?.status ?? "";
+      const inviteCompleted = shouldCompleteFirstMemberOnboardingAfterInvite(inviteStatus);
+      if (payload.firstMemberOnboardingStatus) {
+        setFirstMemberOnboardingStatus(
+          normalizeFirstMemberOnboardingStatus(payload.firstMemberOnboardingStatus) as FirstMemberOnboardingStatus,
+        );
+      }
       setMembers((current) => [
         member,
         ...current.filter((item) => item.id !== member.id),
       ]);
+      setActiveMemberCount((current) => {
+        const wasAlreadyInRoster = members.some((item) => item.id === member.id);
+        return memberCountsAsActive(member) && !wasAlreadyInRoster ? current + 1 : current;
+      });
       setSelectedMemberId(member.id);
+      void loadCoachMemberDetail(member.id);
+
+      if (addMemberMode === "first-member" && !inviteCompleted) {
+        setMemberInviteRecovery(member);
+        setWorkspaceMessage(
+          `${member.name} was added to your roster, but the welcome email needs attention. Try resending it or copying a setup link before closing this step.`,
+        );
+        return;
+      }
+
+      if (addMemberMode === "first-member" && normalizeFirstMemberOnboardingStatus(payload.firstMemberOnboardingStatus) !== "completed") {
+        await saveFirstMemberOnboardingStatus("completed");
+      }
       setShowAddMember(false);
+      setMemberInviteRecovery(null);
       setNewMember({
         firstName: "",
         lastName: "",
@@ -8907,9 +9056,9 @@ function CoachVideoWorkspace({
         notes: "",
       });
       setWorkspaceMessage(
-        payload.invite?.status === "delivered"
+        inviteStatus === "delivered"
           ? `${member.name} was added and the welcome email was sent.`
-          : payload.invite?.status === "not_sent"
+          : inviteStatus === "not_sent"
           ? `${member.name} is already connected.`
           : `${member.name} was added, but the welcome email could not be sent. You can resend it from Admin.`,
       );
@@ -8941,6 +9090,10 @@ function CoachVideoWorkspace({
         member,
         ...current.filter((item) => item.id !== member.id),
       ]);
+      setActiveMemberCount((current) => {
+        const wasAlreadyInRoster = members.some((item) => item.id === member.id);
+        return memberCountsAsActive(member) && !wasAlreadyInRoster ? current + 1 : current;
+      });
       setSelectedMemberId(member.id);
       setStep(1);
       setWorkspaceMessage(payload.publicMessage ?? `${member.name} is ready for a demo upload.`);
@@ -9308,7 +9461,7 @@ function CoachVideoWorkspace({
           <button className="secondary-action" disabled={!authenticated || demoSeedState === "saving"} onClick={() => void addDemoPlayer()}>
             {demoSeedState === "saving" ? "Adding Demo..." : "Add Demo Player"}
           </button>
-          <button className="secondary-action" disabled={!authenticated} onClick={() => setShowAddMember(true)}>＋ Add Member</button>
+          <button className="secondary-action" disabled={!authenticated} onClick={() => openAddMemberDialog("manual")}>＋ Add Member</button>
           <button className="secondary-action" disabled={!selectedMember} onClick={() => setCoachQuickMode("session")}>Add Session</button>
           <button className="secondary-action" disabled={!selectedMember} onClick={() => setCoachQuickMode("content")}>Assign Drill/Note</button>
           <button
@@ -9778,12 +9931,26 @@ function CoachVideoWorkspace({
           <form className="video-upload-modal coach-member-modal" onSubmit={addMember}>
             <div className="video-modal-header">
               <div>
-                <p className="eyebrow">Member account</p>
-                <h2>Add Member</h2>
+                <p className="eyebrow">{addMemberMode === "first-member" ? "Coach onboarding" : "Member account"}</p>
+                <h2>{addMemberMode === "first-member" ? "Add your first member" : "Add Member"}</h2>
               </div>
-              <button aria-label="Close add member dialog" className="icon-button" onClick={() => setShowAddMember(false)} type="button">×</button>
+              <button aria-label="Close add member dialog" className="icon-button" onClick={closeAddMemberDialog} type="button">×</button>
             </div>
-            <p className="muted-copy">The member record is saved in D1 and tied to their login email. MAI Coach will email a secure setup link so they can create their own password.</p>
+            <p className="muted-copy">
+              {addMemberMode === "first-member"
+                ? "Start building your roster by inviting your first golfer to MAI Coach."
+                : "The member record is saved in D1 and tied to their login email. MAI Coach will email a secure setup link so they can create their own password."}
+            </p>
+            {memberInviteRecovery && (
+              <div className="coach-inline-warning first-member-email-warning">
+                <strong>Member added. Welcome email needs attention.</strong>
+                <p>Keep this step open while you resend the welcome email or copy a setup link for {memberInviteRecovery.email}.</p>
+                <div className="button-row">
+                  <button className="secondary-action" onClick={() => void retryFirstMemberInvite(memberInviteRecovery)} type="button">Resend Welcome Email</button>
+                  <button className="secondary-action" onClick={() => void copyMemberSetupLink(memberInviteRecovery)} type="button">Copy Setup Link</button>
+                </div>
+              </div>
+            )}
             <div className="video-form-grid">
               <label><span>First name</span><input required value={newMember.firstName} onChange={(event) => setNewMember((current) => ({ ...current, firstName: event.target.value }))} /></label>
               <label><span>Last name</span><input required value={newMember.lastName} onChange={(event) => setNewMember((current) => ({ ...current, lastName: event.target.value }))} /></label>
@@ -9795,7 +9962,9 @@ function CoachVideoWorkspace({
             <div className="video-modal-actions">
               <span>{workspaceMessage}</span>
               <div className="button-row">
-                <button className="secondary-action" onClick={() => setShowAddMember(false)} type="button">Cancel</button>
+                <button className="secondary-action" disabled={memberSaveState === "saving"} onClick={closeAddMemberDialog} type="button">
+                  {addMemberMode === "first-member" ? "I'll do this later" : "Cancel"}
+                </button>
                 <button className="primary-action" disabled={memberSaveState === "saving"} type="submit">
                   {memberSaveState === "saving" ? "Adding..." : "Add Member"}
                 </button>

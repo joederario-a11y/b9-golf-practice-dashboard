@@ -8,6 +8,10 @@ import {
 } from "@/lib/server/platform";
 import { createAccountSetupInvitation } from "@/lib/server/email-service";
 import { normalizeEmail, singleCoachAssignmentGuard } from "@/lib/admin-user-policy.mjs";
+import {
+  normalizeFirstMemberOnboardingStatus,
+  shouldCompleteFirstMemberOnboardingAfterInvite,
+} from "@/lib/coach-first-member-onboarding-policy.mjs";
 
 type MemberPayload = {
   coachId?: unknown;
@@ -19,6 +23,10 @@ type MemberPayload = {
   skillLevel?: unknown;
 };
 
+type FirstMemberOnboardingPayload = {
+  firstMemberOnboardingStatus?: unknown;
+};
+
 type MemberRow = {
   id: string;
   first_name: string;
@@ -27,6 +35,7 @@ type MemberRow = {
   phone: string | null;
   skill_level: string | null;
   notes: string | null;
+  account_status: string | null;
   invite_status: string;
   created_at: string;
   video_count: number;
@@ -56,12 +65,60 @@ function serializeMember(row: MemberRow) {
     phone: row.phone ?? "",
     skillLevel: row.skill_level ?? "",
     notes: row.notes ?? "",
+    accountStatus: row.account_status ?? "active",
     inviteStatus: row.invite_status,
     createdAt: row.created_at,
     videoCount: Number(row.video_count ?? 0),
     lastVideoAt: row.last_video_at,
     profileImageUrl,
   };
+}
+
+function parseJsonObject(value: string | null) {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+async function getFirstMemberOnboardingStatus(database: D1Database, userId: string) {
+  const row = await database
+    .prepare("SELECT profile_json FROM golf_practice_profiles WHERE user_id = ?")
+    .bind(userId)
+    .first<{ profile_json: string }>();
+  const profile = parseJsonObject(row?.profile_json ?? null);
+  return normalizeFirstMemberOnboardingStatus(
+    typeof profile.first_member_onboarding_status === "string"
+      ? profile.first_member_onboarding_status
+      : profile.firstMemberOnboardingStatus,
+  );
+}
+
+async function setFirstMemberOnboardingStatus(database: D1Database, identity: Awaited<ReturnType<typeof requireIdentity>>, status: string) {
+  const normalizedStatus = normalizeFirstMemberOnboardingStatus(status);
+  const row = await database
+    .prepare("SELECT profile_json FROM golf_practice_profiles WHERE user_id = ?")
+    .bind(identity.id)
+    .first<{ profile_json: string }>();
+  const profile = parseJsonObject(row?.profile_json ?? null);
+  profile.first_member_onboarding_status = normalizedStatus;
+  await database
+    .prepare(
+      `INSERT INTO golf_practice_profiles (
+        user_email, user_id, display_name, profile_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT(user_email) DO UPDATE SET
+        user_id = excluded.user_id,
+        display_name = excluded.display_name,
+        profile_json = excluded.profile_json,
+        updated_at = CURRENT_TIMESTAMP`,
+    )
+    .bind(identity.email, identity.id, identity.displayName, JSON.stringify(profile))
+    .run();
+  return normalizedStatus;
 }
 
 export async function GET() {
@@ -75,7 +132,7 @@ export async function GET() {
     const query = identity.role === "admin"
       ? `SELECT
 	          users.id, users.first_name, users.last_name, users.email, users.phone,
-	          users.skill_level, users.notes, users.invite_status, users.created_at,
+	          users.skill_level, users.notes, users.account_status, users.invite_status, users.created_at,
 	          profile_image.id AS profile_image_id,
 	          profile_image.updated_at AS profile_image_updated_at,
 	          COUNT(lesson_videos.id) AS video_count,
@@ -90,7 +147,7 @@ export async function GET() {
         ORDER BY users.last_name, users.first_name`
       : `SELECT
 	          users.id, users.first_name, users.last_name, users.email, users.phone,
-	          users.skill_level, users.notes, users.invite_status, users.created_at,
+	          users.skill_level, users.notes, users.account_status, users.invite_status, users.created_at,
 	          profile_image.id AS profile_image_id,
 	          profile_image.updated_at AS profile_image_updated_at,
 	          COUNT(lesson_videos.id) AS video_count,
@@ -108,8 +165,16 @@ export async function GET() {
     const result = identity.role === "admin"
       ? await statement.all<MemberRow>()
       : await statement.bind(identity.id).all<MemberRow>();
+    const members = result.results.map(serializeMember);
+    const activeMemberCount = members.filter((member) => member.accountStatus !== "inactive").length;
 
-    return Response.json({ members: result.results.map(serializeMember) });
+    return Response.json({
+      activeMemberCount,
+      firstMemberOnboardingStatus: identity.role === "coach"
+        ? await getFirstMemberOnboardingStatus(database, identity.id)
+        : "completed",
+      members,
+    });
   } catch (error) {
     return responseFromError(error);
   }
@@ -247,11 +312,17 @@ export async function POST(request: Request) {
         invite_status: existing?.invite_status ?? "pending",
       },
     });
+    const firstMemberOnboardingStatus =
+      identity.role === "coach" && shouldCompleteFirstMemberOnboardingAfterInvite(invite.status)
+        ? await setFirstMemberOnboardingStatus(database, identity, "completed")
+        : identity.role === "coach"
+          ? await getFirstMemberOnboardingStatus(database, identity.id)
+          : "completed";
     const row = await database
       .prepare(
         `SELECT
 	          users.id, users.first_name, users.last_name, users.email, users.phone,
-	          users.skill_level, users.notes, users.invite_status, users.created_at,
+	          users.skill_level, users.notes, users.account_status, users.invite_status, users.created_at,
 	          profile_image.id AS profile_image_id,
 	          profile_image.updated_at AS profile_image_updated_at,
 	          COUNT(lesson_videos.id) AS video_count,
@@ -268,10 +339,32 @@ export async function POST(request: Request) {
       .first<MemberRow>();
 
     return Response.json({
+      firstMemberOnboardingStatus,
       member: row ? serializeMember(row) : null,
       invite,
       passwordConfigured: false,
     }, { status: existing ? 200 : 201 });
+  } catch (error) {
+    return responseFromError(error);
+  }
+}
+
+export async function PUT(request: Request) {
+  try {
+    const identity = await requireIdentity();
+    if (identity.role !== "coach") {
+      return Response.json({ error: "Coach access is required." }, { status: 403 });
+    }
+    const payload = await request.json() as FirstMemberOnboardingPayload;
+    const status = normalizeFirstMemberOnboardingStatus(
+      typeof payload.firstMemberOnboardingStatus === "string"
+        ? payload.firstMemberOnboardingStatus
+        : undefined,
+    );
+    const database = getRequiredDatabase();
+    await ensurePlatformSchema(database);
+    const firstMemberOnboardingStatus = await setFirstMemberOnboardingStatus(database, identity, status);
+    return Response.json({ firstMemberOnboardingStatus });
   } catch (error) {
     return responseFromError(error);
   }
@@ -334,12 +427,16 @@ export async function PATCH(request: Request) {
       .prepare(
         `SELECT
           users.id, users.first_name, users.last_name, users.email, users.phone,
-          users.skill_level, users.notes, users.invite_status, users.created_at,
+          users.skill_level, users.notes, users.account_status, users.invite_status, users.created_at,
+          profile_image.id AS profile_image_id,
+          profile_image.updated_at AS profile_image_updated_at,
           COUNT(lesson_videos.id) AS video_count,
           MAX(lesson_videos.created_at) AS last_video_at
         FROM users
         LEFT JOIN lesson_videos ON lesson_videos.member_id = users.id
           AND LOWER(COALESCE(lesson_videos.video_type, '')) NOT IN ('system_test', 'system test')
+        LEFT JOIN user_profile_images AS profile_image
+          ON profile_image.user_id = users.id AND profile_image.is_current = 1
         WHERE users.id = ?
         GROUP BY users.id`,
       )
