@@ -38,6 +38,11 @@ import {
   shouldCompleteFirstMemberOnboardingAfterInvite,
   shouldOpenFirstMemberOnboarding,
 } from "@/lib/coach-first-member-onboarding-policy.mjs";
+import {
+  canStartCoachLessonUpload,
+  coachLessonUploadStatusLabel,
+  filterCoachUploadMembers,
+} from "@/lib/coach-video-upload-policy.mjs";
 
 type Tab = "dashboard" | "sessions" | "clubs" | "videos" | "coach" | "admin" | "practice" | "import";
 type AccountMode = "pending" | "user" | "guest";
@@ -8682,7 +8687,15 @@ function CoachVideoWorkspace({
   const [firstMemberOnboardingStatus, setFirstMemberOnboardingStatus] = useState<FirstMemberOnboardingStatus>("pending");
   const [activeMemberCount, setActiveMemberCount] = useState(0);
   const [memberInviteRecovery, setMemberInviteRecovery] = useState<CoachMember | null>(null);
+  const [showLessonDetails, setShowLessonDetails] = useState(false);
+  const [uploadResult, setUploadResult] = useState<{
+    memberId: string;
+    memberName: string;
+    title: string;
+    videoId: string;
+  } | null>(null);
   const firstMemberOnboardingOpenedRef = useRef(false);
+  const uploadPanelRef = useRef<HTMLElement | null>(null);
   const [demoSeedState, setDemoSeedState] = useState<"idle" | "saving">("idle");
   const [newMember, setNewMember] = useState({
     firstName: "",
@@ -8692,7 +8705,6 @@ function CoachVideoWorkspace({
     skillLevel: "",
     notes: "",
   });
-  const [step, setStep] = useState(1);
   const [memberSearch, setMemberSearch] = useState("");
   const [selectedMemberId, setSelectedMemberId] = useState("");
   const [videoFile, setVideoFile] = useState<File | null>(null);
@@ -8747,9 +8759,10 @@ function CoachVideoWorkspace({
   });
   const allowedMembers = members;
   const normalizedMemberSearch = memberSearch.trim().toLowerCase();
-  const memberResults = allowedMembers.filter((member) =>
-    !normalizedMemberSearch ||
-    [member.name, member.email, member.phone].some((value) => value.toLowerCase().includes(normalizedMemberSearch)),
+  const uploadableMembers = useMemo(() => filterCoachUploadMembers(allowedMembers, ""), [allowedMembers]);
+  const memberResults = useMemo(
+    () => filterCoachUploadMembers(allowedMembers, normalizedMemberSearch),
+    [allowedMembers, normalizedMemberSearch],
   );
   const selectedMember = allowedMembers.find((member) => member.id === selectedMemberId);
   const selectedMemberSessions = selectedMemberDetail?.member.id === selectedMemberId
@@ -8890,7 +8903,6 @@ function CoachVideoWorkspace({
   }, [accountUser?.role, activeMemberCount, authenticated, firstMemberOnboardingStatus, loadingMembers, viewerRole]);
 
   function resetWorkflow() {
-    setStep(1);
     setMemberSearch("");
     setSelectedMemberId("");
     setSelectedMemberDetail(null);
@@ -8916,11 +8928,14 @@ function CoachVideoWorkspace({
     setGenerateAiRecap(true);
     setEditingVideoId(null);
     setUploadProgress(0);
+    setShowLessonDetails(false);
+    setUploadResult(null);
   }
 
   function chooseMember(member: CoachMember) {
     setSelectedMemberId(member.id);
     setSelectedSessionId("");
+    setUploadResult(null);
     setWorkspaceMessage(`${member.name} selected. Add the lesson video when ready.`);
     void loadCoachMemberDetail(member.id);
   }
@@ -9032,6 +9047,7 @@ function CoachVideoWorkspace({
         return memberCountsAsActive(member) && !wasAlreadyInRoster ? current + 1 : current;
       });
       setSelectedMemberId(member.id);
+      setUploadResult(null);
       void loadCoachMemberDetail(member.id);
 
       if (addMemberMode === "first-member" && !inviteCompleted) {
@@ -9095,7 +9111,7 @@ function CoachVideoWorkspace({
         return memberCountsAsActive(member) && !wasAlreadyInRoster ? current + 1 : current;
       });
       setSelectedMemberId(member.id);
-      setStep(1);
+      setUploadResult(null);
       setWorkspaceMessage(payload.publicMessage ?? `${member.name} is ready for a demo upload.`);
       void loadCoachMemberDetail(member.id);
     } catch (error) {
@@ -9117,8 +9133,14 @@ function CoachVideoWorkspace({
       return;
     }
     setVideoFile(file);
+    setUploadResult(null);
     if (!videoTitle.trim()) setVideoTitle(videoDateTitleFromFile(file));
     setWorkspaceMessage(`${file.name} is ready to upload.`);
+  }
+
+  function dropLessonVideo(event: React.DragEvent<HTMLLabelElement>) {
+    event.preventDefault();
+    selectVideoFile(event.dataTransfer.files?.[0] ?? null);
   }
 
   async function loadDevelopmentTestVideo() {
@@ -9203,21 +9225,24 @@ function CoachVideoWorkspace({
     }
   }
 
-  async function saveCoachVideo(publicationStatus: VideoPublicationStatus, notifyMember: boolean) {
+  async function saveCoachVideo(
+    publicationStatus: VideoPublicationStatus,
+    notifyMember: boolean,
+    options: { simpleUpload?: boolean } = {},
+  ) {
     if (!selectedMember) {
       setWorkspaceMessage("Select a member before uploading a lesson video.");
-      setStep(1);
       return;
     }
     if (!videoFile && !editingVideo) {
       setWorkspaceMessage("Choose a video before continuing.");
-      setStep(2);
       return;
     }
 
     setSaveState("saving");
     setUploadProgress(4);
     let pendingVideoId = editingVideo?.id ?? "";
+    let videoStored = false;
     try {
       const duration = videoFile ? await readVideoDuration(videoFile) : editingVideo?.duration ?? 0;
       const lessonSummaryText = lessonSummary.trim();
@@ -9249,12 +9274,12 @@ function CoachVideoWorkspace({
         recommendedDrill: preserveLegacyRecommendedDrill ? editingVideo?.recommendedDrill ?? "" : "",
         memberFacingNotes: editingVideo?.memberFacingNotes ?? "",
         nextSessionGoal: nextSessionGoalText,
-	        coachPrivateNotes: coachPrivateNotes.trim(),
-	        coachNotes: lessonSummaryText || mainFocusText || practiceNextText,
-	        coachId: accountUser?.role === "coach" ? accountUser.id : undefined,
-	        generateAiRecap: Boolean(generateAiRecap && !editingVideo && videoFile && accountUser?.role === "coach"),
-	        processingLanguage: "en",
-	      };
+        coachPrivateNotes: coachPrivateNotes.trim(),
+        coachNotes: lessonSummaryText || mainFocusText || practiceNextText,
+        coachId: accountUser?.role === "coach" ? accountUser.id : undefined,
+        generateAiRecap: Boolean(generateAiRecap && !editingVideo && videoFile && accountUser?.role === "coach"),
+        processingLanguage: "en",
+      };
 
       if (!pendingVideoId) {
         const created = await createVideoRecord(metadata, videoFile!);
@@ -9264,6 +9289,7 @@ function CoachVideoWorkspace({
         await uploadVideoAsset(pendingVideoId, videoFile, "video", (progress) => {
           setUploadProgress(8 + Math.round(progress * 0.72));
         });
+        videoStored = true;
       }
       if (thumbnailFile) {
         await uploadVideoAsset(pendingVideoId, thumbnailFile, "thumbnail", (progress) => {
@@ -9283,6 +9309,34 @@ function CoachVideoWorkspace({
         ? " MAI Coach recap processing is queued for coach review."
         : "";
 
+      if (options.simpleUpload) {
+        setUploadResult({
+          memberId: selectedMember.id,
+          memberName: selectedMember.name,
+          title: record.title,
+          videoId: record.id,
+        });
+        setWorkspaceMessage(`Video uploaded to ${selectedMember.name}. MAI Coach is processing the lesson. You can leave this page and come back later.`);
+        setVideoFile(null);
+        setThumbnailFile(null);
+        setVideoTitle("");
+        setVideoDescription("");
+        setTags("");
+        setLessonSummary("");
+        setWorkedOn("");
+        setKeyIssue("");
+        setImprovement("");
+        setPracticeAssignment("");
+        setRecommendedDrill("");
+        setMemberFacingNotes("");
+        setNextSessionGoal("");
+        setCoachPrivateNotes("");
+        setUploadProgress(0);
+        setShowLessonDetails(false);
+        setEditingVideoId(null);
+        return;
+      }
+
       if (publicationStatus === "Draft") {
         setWorkspaceMessage(`Draft saved for ${selectedMember.name}. It is not visible to the member.${aiStatusNote}`);
       } else if (notifyMember && emailMember) {
@@ -9299,9 +9353,13 @@ function CoachVideoWorkspace({
       if (publicationStatus === "Published") {
         onOpenMemberVideos(completedMember.id, completedMember.name);
       }
-    } catch (error) {
+    } catch {
       setUploadProgress(0);
-      setWorkspaceMessage(error instanceof Error ? error.message : "The video could not be saved.");
+      setWorkspaceMessage(
+        pendingVideoId && videoStored
+          ? "The video was uploaded, but MAI Coach could not create the recap yet. You can retry from the video page."
+          : "We could not upload this video. Please try again.",
+      );
     } finally {
       setSaveState("idle");
     }
@@ -9330,7 +9388,8 @@ function CoachVideoWorkspace({
     setCoachPrivateNotes(video.coachPrivateNotes ?? "");
     setEmailMember(video.emailStatus !== "Sent");
     setGenerateAiRecap(false);
-    setStep(2);
+    setShowLessonDetails(true);
+    setUploadResult(null);
     setWorkspaceMessage(`Editing ${video.title}. Choose a replacement file only if the video changed.`);
   }
 
@@ -9410,39 +9469,19 @@ function CoachVideoWorkspace({
     }
   }
 
-  function moveToNextStep() {
-    if (step === 1 && !selectedMember) {
-      setWorkspaceMessage("Select a member before uploading a lesson video.");
-      return;
-    }
-    if (step === 2 && (!videoFile && !editingVideo)) {
-      setWorkspaceMessage("Choose a video before continuing.");
-      return;
-    }
-    setStep((current) => Math.min(5, current + 1));
-  }
-
-  function requestAudioRecapGeneration() {
-    if (editingVideo) {
-      setRecapReviewVideo(editingVideo);
-      return;
-    }
-    if (!videoFile) {
-      setWorkspaceMessage("Choose a video first. MAI Coach can generate notes after the upload is saved.");
-      setStep(2);
-      return;
-    }
-    setGenerateAiRecap(true);
-    setWorkspaceMessage("MAI Coach will generate lesson notes from the video audio after the upload finishes. The draft stays hidden until a coach approves it.");
-  }
-
-  function canOpenWorkflowStep(stepNumber: number) {
-    if (stepNumber <= step) return true;
-    if (stepNumber !== step + 1) return false;
-    if (step === 1) return Boolean(selectedMember);
-    if (step === 2) return Boolean(videoTitle.trim() && (videoFile || editingVideo));
-    return true;
-  }
+  const canUploadLessonVideo = canStartCoachLessonUpload({
+    authenticated,
+    hasVideo: Boolean(videoFile),
+    memberId: selectedMemberId,
+    saveState,
+  });
+  const uploadStatusText = saveState === "saving"
+    ? coachLessonUploadStatusLabel(uploadProgress >= 92 ? "generating_recap" : "uploading")
+    : uploadResult
+      ? coachLessonUploadStatusLabel("queued")
+      : videoFile
+        ? "Ready to upload"
+        : "Choose a member and video";
 
   return (
     <div className="coach-video-workspace">
@@ -9469,10 +9508,11 @@ function CoachVideoWorkspace({
             disabled={!authenticated}
             onClick={() => {
               resetWorkflow();
-              setWorkspaceMessage(members.length ? "Select a member to upload a lesson video." : "Add a member before uploading a lesson video.");
+              setWorkspaceMessage(uploadableMembers.length ? "Choose a member and video, then upload." : "Add your first member before uploading a lesson video.");
+              queueMicrotask(() => uploadPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
             }}
           >
-            ⇧ Upload Lesson Video
+            Upload Lesson Video
           </button>
         </div>
       </section>
@@ -9519,299 +9559,166 @@ function CoachVideoWorkspace({
         {editingVideoId && <button className="text-button" onClick={resetWorkflow}>Cancel editing</button>}
       </section>
 
-      <section className="coach-upload-shell">
-        <nav className="coach-upload-steps" aria-label="Coach video upload steps">
-          {["Member", "Video", "Session", "Recap", "Review"].map((label, index) => {
-            const stepNumber = index + 1;
-            const stepComplete =
-              stepNumber === 1
-                ? Boolean(selectedMember && step > 1)
-                : stepNumber === 2
-                  ? Boolean(videoTitle.trim() && (videoFile || editingVideo) && step > 2)
-                  : step > stepNumber;
-            return (
-              <button
-                className={cls(step === stepNumber && "active", stepComplete && "complete")}
-                key={label}
-                onClick={() => {
-                  if (canOpenWorkflowStep(stepNumber)) setStep(stepNumber);
-                }}
-              >
-                <span>{stepComplete ? "✓" : stepNumber}</span>
-                <strong>{label}</strong>
-              </button>
-            );
-          })}
-        </nav>
+      <section className="coach-simple-upload-panel" ref={uploadPanelRef}>
+        <div className="coach-simple-upload-heading">
+          <div>
+            <p className="eyebrow">Lesson upload</p>
+            <h3>Upload a lesson video</h3>
+            <span>Choose a member, add the video, and MAI Coach starts processing in the background.</span>
+          </div>
+          <span className={cls("coach-upload-status-pill", saveState === "saving" && "active")}>{uploadStatusText}</span>
+        </div>
 
-        <section className="coach-upload-stage">
-          {step === 1 && (
-            <div className="coach-step-stack">
-              <div className="coach-step-heading">
-                <p className="eyebrow">Step 1</p>
-                <h3>Select member</h3>
-                <p>Search by member name, email, or phone.</p>
+        {loadingMembers ? (
+          <div className="coach-simple-empty">
+            <strong>Loading members...</strong>
+            <p>Your roster will appear here in a moment.</p>
+          </div>
+        ) : uploadableMembers.length === 0 ? (
+          <div className="coach-simple-empty">
+            <strong>Add your first member</strong>
+            <p>You need a member before you can upload a lesson video.</p>
+            <button className="primary-action" disabled={!authenticated} onClick={() => openAddMemberDialog("first-member")} type="button">Add Member</button>
+          </div>
+        ) : (
+          <>
+            <div className="coach-simple-upload-grid">
+              <div className="coach-simple-member-picker">
+                <label className="coach-member-search">
+                  <span>Member</span>
+                  <input
+                    onChange={(event) => setMemberSearch(event.target.value)}
+                    placeholder="Choose a member"
+                    type="search"
+                    value={memberSearch}
+                  />
+                </label>
+                <div className="coach-member-results simple" role="listbox" aria-label="Choose a member">
+                  {memberResults.map((member) => (
+                    <button
+                      className={cls("coach-member-row", "simple", member.id === selectedMemberId && "selected")}
+                      key={member.id}
+                      onClick={() => chooseMember(member)}
+                      type="button"
+                    >
+                      <CoachAvatar coach={member} />
+                      <span>
+                        <strong>{member.name}</strong>
+                        <small>{member.email}</small>
+                      </span>
+                    </button>
+                  ))}
+                  {!memberResults.length && (
+                    <p className="coach-inline-warning">No members match that search.</p>
+                  )}
+                  <button className="coach-add-member-option" onClick={() => openAddMemberDialog("manual")} type="button">+ Add a new member</button>
+                </div>
               </div>
-              <label className="coach-member-search">
-                <span>Member search</span>
-                <input
-                  autoFocus
-                  onChange={(event) => setMemberSearch(event.target.value)}
-                  placeholder="Search members"
-                  type="search"
-                  value={memberSearch}
-                />
-              </label>
-              <div className="coach-member-results">
-                {memberResults.map((member) => (
-                  <button
-                    className={cls("coach-member-row", member.id === selectedMemberId && "selected")}
-                    key={member.id}
-                    onClick={() => chooseMember(member)}
-	                  >
-	                    <CoachAvatar coach={member} />
-                    <span>
-                      <strong>{member.name}</strong>
-                      <small>{member.email} · {member.phone}</small>
-                    </span>
-                    <span>
-                      <strong>{inviteStatusLabel(member.inviteStatus ?? "pending")}</strong>
-                      <small>{member.skillLevel || "Skill level not set"}</small>
-                    </span>
-                    <span>
-                      <strong>{member.recentLessonDate ? formatDate(member.recentLessonDate) : "No lesson"}</strong>
-                      <small>Recent lesson</small>
-                    </span>
-                  </button>
-                ))}
-              </div>
-              {!selectedMember && <p className="coach-inline-warning">Select a member before uploading a lesson video.</p>}
-              {selectedMember && (
-                <>
-	                  <div className="selected-member-confirmation">
-	                    <CoachAvatar coach={selectedMember} />
-                    <div><span>Selected member</span><strong>{selectedMember.name}</strong><small>{selectedMember.email}</small></div>
-                    <div><span>Contact</span><strong>{selectedMember.phone || "No phone"}</strong><small>{inviteStatusLabel(selectedMember.inviteStatus ?? "pending")}</small></div>
-                    <div><span>Lesson archive</span><strong>{selectedMember.videoCount ?? 0} videos</strong><small>{selectedMember.lastVideoAt ? formatVideoUploadDate(selectedMember.lastVideoAt) : "No lesson videos yet"}</small></div>
-                  </div>
-                  <div className="coach-member-profile">
-                    <div>
-                      <span>Skill level</span>
-                      <strong>{selectedMember.skillLevel || "Not provided"}</strong>
-                    </div>
-                    <div>
-                      <span>Coach notes</span>
-                      <p>{selectedMember.notes || "No member notes yet."}</p>
-                    </div>
-                    <div className="button-row">
-                      <button className="secondary-action" onClick={() => void resendMemberInvite(selectedMember)}>Resend Welcome Email</button>
-                      <button className="secondary-action" onClick={() => void copyMemberSetupLink(selectedMember)}>Copy Setup Link</button>
-                      <button className="secondary-action danger-text-button" onClick={() => void cancelMemberInvite(selectedMember)}>Cancel Invitation</button>
-                      <button className="secondary-action" onClick={() => onOpenMemberVideos(selectedMember.id, selectedMember.name)}>View Lesson Videos</button>
-                      <button className="secondary-action" onClick={() => setCoachQuickMode("session")}>Add Session</button>
-                      <button className="secondary-action" onClick={() => setCoachQuickMode("content")}>Assign Drill</button>
-                      <button className="primary-action" onClick={() => setStep(2)}>Upload New Video</button>
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
 
-          {step === 2 && (
-            <div className="coach-step-stack">
-              <div className="coach-step-heading">
-                <p className="eyebrow">Step 2</p>
-                <h3>{editingVideo ? "Update lesson video" : "Upload lesson video"}</h3>
-                <p>Common mobile video formats are supported up to 500 MB.</p>
-              </div>
-              <div className="coach-video-file-grid">
-                <label className="video-file-picker coach-file-picker">
+              <div className="coach-simple-video-picker">
+                <span className="coach-simple-field-label">Video</span>
+                <label
+                  className={cls("video-file-picker", "coach-file-picker", "coach-simple-dropzone", videoFile && "has-file")}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={dropLessonVideo}
+                >
                   <input
                     accept="video/mp4,video/quicktime,video/webm,video/x-m4v"
                     onChange={(event) => selectVideoFile(event.currentTarget.files?.[0] ?? null)}
                     type="file"
                   />
                   <span aria-hidden="true">▶</span>
-                  <strong>{videoFile?.name ?? (editingVideo ? "Keep current video" : "Choose video")}</strong>
-                  <small>MP4, MOV, WebM, or M4V · 500 MB max</small>
+                  <strong>{videoFile?.name ?? "Upload lesson video"}</strong>
+                  <small>Drag and drop a video here, or choose a file.</small>
                 </label>
-                <label className="video-file-picker coach-file-picker">
-                  <input
-                    accept="image/jpeg,image/png,image/webp"
-                    onChange={(event) => selectThumbnailFile(event.currentTarget.files?.[0] ?? null)}
-                    type="file"
-                  />
-                  <span aria-hidden="true">▣</span>
-                  <strong>{thumbnailFile?.name ?? (editingVideo?.thumbnailObjectUrl ? "Keep current thumbnail" : "Optional thumbnail")}</strong>
-                  <small>JPG, PNG, or WebP · 10 MB max</small>
-                </label>
-              </div>
-              {devAuthEnabled && (
-                <button className="text-button coach-dev-test-button" onClick={() => void loadDevelopmentTestVideo()} type="button">
-                  Use local test clip
-                </button>
-              )}
-              <div className="coach-video-form-grid">
-                <label className="wide"><span>Video title</span><input maxLength={120} onChange={(event) => setVideoTitle(event.target.value)} placeholder={videoFile ? videoDateTitleFromFile(videoFile) : videoDateTitleFromSource(lessonDate)} value={videoTitle} /></label>
-                <label><span>Video type</span><select onChange={(event) => setVideoType(event.target.value as VideoType)} value={videoType}>{VIDEO_TYPES.filter((type) => type !== "User Upload" && type !== "Practice Session" && type !== "Drill").map((type) => <option key={type}>{type}</option>)}</select></label>
-                <label><span>Lesson date</span><input onChange={(event) => setLessonDate(event.target.value)} type="date" value={lessonDate} /></label>
-                <label><span>Focus area</span><select onChange={(event) => setFocusArea(event.target.value as VideoFocusArea)} value={focusArea}>{VIDEO_FOCUS_AREAS.map((area) => <option key={area}>{area}</option>)}</select></label>
-                <label><span>Tags</span><input onChange={(event) => setTags(event.target.value)} placeholder="takeaway, face control" value={tags} /></label>
-                <label className="wide"><span>Description</span><textarea onChange={(event) => setVideoDescription(event.target.value)} placeholder="Optional context for this lesson video" value={videoDescription} /></label>
+                {devAuthEnabled && (
+                  <button className="text-button coach-dev-test-button" onClick={() => void loadDevelopmentTestVideo()} type="button">
+                    Use local test clip
+                  </button>
+                )}
               </div>
             </div>
-          )}
 
-          {step === 3 && (
-            <div className="coach-step-stack">
-              <div className="coach-step-heading">
-                <p className="eyebrow">Step 3</p>
-                <h3>Attach lesson or session data</h3>
-                <p>Session data is optional. The video can be published without it.</p>
-              </div>
-              <label className={cls("coach-session-option", "standalone", !selectedSessionId && "selected")}>
-                <input checked={!selectedSessionId} name="session" onChange={() => setSelectedSessionId("")} type="radio" />
-                <span><strong>Upload without session data</strong><small>Keep this as a standalone lesson video.</small></span>
-              </label>
-              {selectedMemberSessions.length ? (
-                <div className="coach-session-list">
-                  {selectedMemberSessions.map((session, index) => {
-                    const sessionClub = getSessionPrimaryClub(session);
-                    const sessionShots = sessionClub ? session.shots.filter((shot) => shot.club === sessionClub) : session.shots;
-                    return (
-                      <label className={cls("coach-session-option", selectedSessionId === session.id && "selected")} key={session.id}>
-                        <input checked={selectedSessionId === session.id} name="session" onChange={() => setSelectedSessionId(session.id)} type="radio" />
-                        <span>
-                          <strong>{formatFullDate(session.date)} · {session.title}</strong>
-                          <small>{index % 2 ? "5:30 PM" : "3:00 PM"} · {session.source} · Bay {index + 2} · Coach {coachName}</small>
-                        </span>
-                        <span>
-                          <strong>{sessionClub ? getClubDisplayName(sessionClub) : "Mixed bag"}</strong>
-                          <small>{formatAvailableMetric(averageMetric(sessionShots, "carry"), "yd")} carry · {session.shots.length} shots</small>
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              ) : (
-                <p className="coach-inline-warning">No session data found for this member. You can still upload this video to their library.</p>
-              )}
-            </div>
-          )}
-
-          {step === 4 && (
-            <div className="coach-step-stack">
-              <div className="coach-step-heading">
-                <p className="eyebrow">Step 4</p>
-                <h3>Create lesson recap</h3>
-                <p>Use your spoken feedback from the video to create a lesson recap, or enter a few notes manually.</p>
-              </div>
-              <label className="coach-email-toggle">
-                <input
-                  checked={generateAiRecap}
-                  disabled={Boolean(editingVideo) || accountUser?.role === "admin"}
-                  onChange={(event) => setGenerateAiRecap(event.target.checked)}
-                  type="checkbox"
-                />
-                <span>
-                  <strong>Use video audio to generate lesson notes</strong>
-                  <small>{editingVideo ? "Use Generate Notes From Video Audio to review or regenerate an existing video recap." : accountUser?.role === "admin" ? "Admin uploads can still use the manual recap fields." : "Enabled for coach uploads. Nothing is published until you approve it."}</small>
-                </span>
-              </label>
-              <section className="ai-recap-status-card">
-                <div>
-                  <span>{generateAiRecap ? "Video uploaded → checking audio" : "Manual recap mode"}</span>
-                  <strong>{generateAiRecap ? "MAI Coach is listening after upload" : "Skip AI and enter notes manually"}</strong>
-                  <p>
-                    {generateAiRecap
-                      ? "After the video finishes uploading, MAI Coach checks for coach audio, transcribes the feedback, creates a draft recap, and keeps it ready for coach review."
-                      : "Audio processing is skipped. All recap fields below are optional, and the video can still be published without notes."}
-                  </p>
-                </div>
-                <button className="primary-action" disabled={saveState === "saving" || (!editingVideo && !videoFile)} onClick={requestAudioRecapGeneration} type="button">
-                  Generate Notes From Video Audio
-                </button>
-              </section>
-              <button className="text-button" onClick={() => setGenerateAiRecap(false)} type="button">Skip AI and enter notes manually</button>
-              <div className="coach-notes-grid">
-                <label><span>Lesson summary</span><textarea onChange={(event) => setLessonSummary(event.target.value)} placeholder="Today we worked on takeaway and face control with the 7 iron." value={lessonSummary} /></label>
-                <label><span>Main focus</span><textarea onChange={(event) => setWorkedOn(event.target.value)} placeholder="Keeping the club from rolling inside while maintaining a square clubface." value={workedOn} /></label>
-                <label><span>Progress observed</span><textarea onChange={(event) => setImprovement(event.target.value)} placeholder="Start line tightened and contact moved closer to the center of the face." value={improvement} /></label>
-                <label><span>Practice next</span><textarea onChange={(event) => setPracticeAssignment(event.target.value)} placeholder="Three sets of the headcover takeaway drill, then 20 half-speed 7-iron swings." value={practiceAssignment} /></label>
-                <label><span>Next session goal</span><textarea onChange={(event) => setNextSessionGoal(event.target.value)} placeholder="Arrive next session with a neutral takeaway checkpoint and tighter start line." value={nextSessionGoal} /></label>
-                <label><span>Coach private notes</span><textarea onChange={(event) => setCoachPrivateNotes(event.target.value)} placeholder="Only coaches and admins can see this. Never shown to the member." value={coachPrivateNotes} /></label>
-              </div>
-            </div>
-          )}
-
-          {step === 5 && selectedMember && (
-            <div className="coach-step-stack">
-              <div className="coach-step-heading">
-                <p className="eyebrow">Step 5</p>
-                <h3>Review and publish</h3>
-                <p>Confirm the member and delivery settings before publishing.</p>
-              </div>
-              <div className="coach-review-layout">
-                <div className="coach-review-thumbnail">
-                  <span aria-hidden="true">▶</span>
-                  <strong>{thumbnailFile?.name ?? videoFile?.name ?? editingVideo?.fileName ?? "Lesson video"}</strong>
-                </div>
-                <dl className="coach-review-list">
-                  <div><dt>Member</dt><dd><CoachAvatar coach={selectedMember} /><span>{selectedMember.name}<small>{selectedMember.email}</small></span></dd></div>
-                  <div><dt>Coach</dt><dd><CoachAvatar coach={{ name: coachName, profileImageUrl: coachProfileImageUrl }} /><span>{coachName}<small>{viewerRole === "admin" ? "Admin upload" : "Coach upload"}</small></span></dd></div>
-                  <div><dt>Video</dt><dd>{videoTitle || (videoFile ? videoDateTitleFromFile(videoFile) : editingVideo?.title ?? videoDateTitleFromSource(lessonDate))}<small>{videoType}</small></dd></div>
-                  <div><dt>Lesson</dt><dd>{formatFullDate(lessonDate)}<small>{focusArea}</small></dd></div>
-                  <div><dt>Session</dt><dd>{selectedSession?.title ?? "No session attached"}<small>{selectedSession?.source ?? "Standalone video"}</small></dd></div>
-                  <div><dt>Lesson Summary</dt><dd>{lessonSummary || "Blank"}<small>Editable before approval.</small></dd></div>
-                  <div><dt>Main Focus</dt><dd>{workedOn || "Blank"}<small>Combines the old worked-on and key-issue fields.</small></dd></div>
-                  <div><dt>Progress Observed</dt><dd>{improvement || "Blank"}<small>Only what the coach confirms.</small></dd></div>
-                  <div><dt>Practice Next</dt><dd>{practiceAssignment || "Blank"}<small>Assignment and drill in one field.</small></dd></div>
-                  <div><dt>Next Session Goal</dt><dd>{nextSessionGoal || "Blank"}<small>Shared after coach approval.</small></dd></div>
-                  <div><dt>Private Coach Notes</dt><dd>{coachPrivateNotes || "None"}<small>Private to coaches and admins.</small></dd></div>
-                  <div><dt>Audio status</dt><dd>{generateAiRecap ? "Video uploaded, checking for coach audio after save" : "Manual notes mode"}<small>{generateAiRecap ? "Transcribing coach feedback, then creating lesson recap." : "No audio processing will run."}</small></dd></div>
-                </dl>
-              </div>
-              <label className="coach-email-toggle">
-                <input
-	                  checked={generateAiRecap}
-	                  disabled={Boolean(editingVideo) || accountUser?.role === "admin"}
-	                  onChange={(event) => setGenerateAiRecap(event.target.checked)}
-	                  type="checkbox"
-	                />
-	                <span>
-	                  <strong>Use video audio to generate lesson notes</strong>
-	                  <small>{editingVideo ? "Available for new coach uploads. Use Review AI Recap to retry an existing video." : accountUser?.role === "admin" ? "Admin uploads need a selected assigned coach before AI processing can run." : "Starts after upload and stays hidden until a coach approves it."}</small>
-	                </span>
-	              </label>
-              <label className="coach-email-toggle">
-                <input checked={emailMember} onChange={(event) => setEmailMember(event.target.checked)} type="checkbox" />
-                <span><strong>Email {selectedMember.name} when published</strong><small>Notification is sent only after the video is saved successfully.</small></span>
-              </label>
-              {saveState === "saving" && (
-                <div className="coach-upload-progress" aria-label={`Upload ${uploadProgress}% complete`}>
-                  <span style={{ width: `${uploadProgress}%` }} />
-                  <strong>{uploadProgress}%</strong>
-                </div>
-              )}
-            </div>
-          )}
-
-          <footer className="coach-step-actions">
-            <button className="secondary-action" disabled={step === 1 || saveState === "saving"} onClick={() => setStep((current) => Math.max(1, current - 1))}>Back</button>
-            {step < 5 ? (
-              <button className="primary-action" onClick={moveToNextStep}>Continue</button>
-            ) : (
-              <div className="button-row">
-                <button className="secondary-action" disabled={saveState === "saving"} onClick={() => void saveCoachVideo("Draft", false)}>Save as Draft</button>
-                <button className="secondary-action" disabled={saveState === "saving"} onClick={() => void saveCoachVideo("Published", false)}>Publish Video Without Recap</button>
-                <button className="primary-action" disabled={saveState === "saving"} onClick={() => void saveCoachVideo("Published", true)}>
-                  {saveState === "saving" ? "Publishing..." : "Approve & Publish to Member"}
-                </button>
+            {selectedMember && (
+              <div className="selected-member-confirmation simple">
+                <CoachAvatar coach={selectedMember} />
+                <div><span>Selected member</span><strong>{selectedMember.name}</strong><small>{selectedMember.email}</small></div>
+                <div><span>Lesson archive</span><strong>{selectedMember.videoCount ?? 0} videos</strong><small>{selectedMember.lastVideoAt ? formatVideoUploadDate(selectedMember.lastVideoAt) : "No lesson videos yet"}</small></div>
+                <button className="secondary-action" onClick={() => onOpenMemberVideos(selectedMember.id, selectedMember.name)} type="button">View videos</button>
               </div>
             )}
-          </footer>
-        </section>
+
+            <details className="coach-lesson-details" open={showLessonDetails} onToggle={(event) => setShowLessonDetails(event.currentTarget.open)}>
+              <summary>Add lesson details</summary>
+              <div className="coach-video-form-grid simple">
+                <label className="wide"><span>Video title optional</span><input maxLength={120} onChange={(event) => setVideoTitle(event.target.value)} placeholder={videoFile ? videoDateTitleFromFile(videoFile) : videoDateTitleFromSource(lessonDate)} value={videoTitle} /></label>
+                <label><span>Lesson date</span><input onChange={(event) => setLessonDate(event.target.value)} type="date" value={lessonDate} /></label>
+                <label><span>Club / focus optional</span><select onChange={(event) => setFocusArea(event.target.value as VideoFocusArea)} value={focusArea}>{VIDEO_FOCUS_AREAS.map((area) => <option key={area}>{area}</option>)}</select></label>
+                <label className="wide">
+                  <span>Link to session optional</span>
+                  <select onChange={(event) => setSelectedSessionId(event.target.value)} value={selectedSessionId}>
+                    <option value="">No session linked</option>
+                    {selectedMemberSessions.map((session) => (
+                      <option key={session.id} value={session.id}>{formatFullDate(session.date)} · {session.title}</option>
+                    ))}
+                  </select>
+                </label>
+                <label><span>Tags optional</span><input onChange={(event) => setTags(event.target.value)} placeholder="takeaway, face control" value={tags} /></label>
+                <label className="wide"><span>Coach notes optional</span><textarea onChange={(event) => setVideoDescription(event.target.value)} placeholder="Context, setup notes, or what to review after processing..." value={videoDescription} /></label>
+              </div>
+            </details>
+
+            {saveState === "saving" && (
+              <div className="coach-upload-progress" aria-label={`${uploadStatusText}: ${uploadProgress}%`}>
+                <span style={{ width: `${uploadProgress}%` }} />
+                <strong>{uploadStatusText} · {uploadProgress}%</strong>
+              </div>
+            )}
+
+            {uploadResult && (
+              <div className="coach-upload-result">
+                <strong>Video uploaded to {uploadResult.memberName}</strong>
+                <p>MAI Coach is processing the lesson. You can leave this page and come back later.</p>
+                <div className="button-row">
+                  <button
+                    className="secondary-action"
+                    onClick={() => {
+                      const video = videos.find((item) => item.id === uploadResult.videoId);
+                      if (video) setRecapReviewVideo(video);
+                    }}
+                    type="button"
+                  >
+                    View Processing Status
+                  </button>
+                  <button
+                    className="primary-action"
+                    onClick={() => {
+                      setUploadResult(null);
+                      setVideoFile(null);
+                      setUploadProgress(0);
+                      setWorkspaceMessage("Choose another video when ready.");
+                    }}
+                    type="button"
+                  >
+                    Upload Another Video
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="coach-simple-upload-actions">
+              <span>{selectedMember ? `Assigned to ${selectedMember.name}` : "Choose a member"} · {videoFile ? videoFile.name : "Choose a video"}</span>
+              <button
+                className="primary-action"
+                disabled={!canUploadLessonVideo}
+                onClick={() => void saveCoachVideo("Draft", false, { simpleUpload: true })}
+                type="button"
+              >
+                {saveState === "saving" ? "Uploading..." : "Upload to Member"}
+              </button>
+            </div>
+          </>
+        )}
       </section>
 
       <section className="coach-video-management">
