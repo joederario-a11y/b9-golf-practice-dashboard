@@ -4,9 +4,14 @@ import test from "node:test";
 
 import {
   canStartCoachLessonUpload,
+  canAttachCoachSessionData,
+  coachVideoDeliveryStatusLabel,
+  COACH_LESSON_UPLOAD_FACTS,
   coachLessonUploadStatusLabel,
   filterCoachUploadMembers,
+  formatLessonUploadFileSize,
   getCoachDashboardActionState,
+  shouldShowLessonUploadStallWarning,
 } from "../lib/coach-video-upload-policy.mjs";
 
 const members = [
@@ -101,10 +106,58 @@ test("coach dashboard source has a single first-member card and upload panel ope
 });
 
 test("coach upload status labels are plain language and never raw technical codes", () => {
+  assert.equal(coachLessonUploadStatusLabel("preparing_video"), "Preparing video");
   assert.equal(coachLessonUploadStatusLabel("uploading"), "Uploading video");
+  assert.equal(coachLessonUploadStatusLabel("upload_complete"), "Upload complete");
+  assert.equal(coachLessonUploadStatusLabel("processing_audio"), "Processing audio");
   assert.equal(coachLessonUploadStatusLabel("extracting_audio"), "Processing audio");
+  assert.equal(coachLessonUploadStatusLabel("creating_transcript"), "Creating transcript");
   assert.equal(coachLessonUploadStatusLabel("transcribing_coach_feedback"), "Processing audio");
   assert.equal(coachLessonUploadStatusLabel("generating_recap"), "Creating lesson recap");
+  assert.equal(coachLessonUploadStatusLabel("importing_session_data"), "Importing session data");
   assert.equal(coachLessonUploadStatusLabel("ready_for_review"), "Ready for review");
   assert.equal(coachLessonUploadStatusLabel("failed"), "Needs attention");
+});
+
+test("coach upload facts are local curated facts, not generated status replacements", () => {
+  assert.ok(COACH_LESSON_UPLOAD_FACTS.length >= 5);
+  assert.ok(COACH_LESSON_UPLOAD_FACTS.every((fact) => typeof fact === "string" && fact.length > 24));
+});
+
+test("lesson upload file sizes are shown in readable units", () => {
+  assert.equal(formatLessonUploadFileSize(0), "NA");
+  assert.equal(formatLessonUploadFileSize(1024), "1 KB");
+  assert.equal(formatLessonUploadFileSize(2.5 * 1024 * 1024), "2.5 MB");
+});
+
+test("coach upload stall warning only appears during an inactive file transfer", () => {
+  assert.equal(shouldShowLessonUploadStallWarning({
+    saveState: "saving",
+    stage: "uploading",
+    lastProgressAt: 1000,
+    now: 27000,
+    thresholdMs: 25000,
+  }), true);
+  assert.equal(shouldShowLessonUploadStallWarning({
+    saveState: "saving",
+    stage: "upload_complete",
+    lastProgressAt: 1000,
+    now: 27000,
+    thresholdMs: 25000,
+  }), false);
+});
+
+test("coach session data attachment validates the selected option", () => {
+  assert.equal(canAttachCoachSessionData({ mode: "none" }), true);
+  assert.equal(canAttachCoachSessionData({ mode: "existing", selectedSessionId: "" }), false);
+  assert.equal(canAttachCoachSessionData({ mode: "existing", selectedSessionId: "session-1" }), true);
+  assert.equal(canAttachCoachSessionData({ mode: "upload", fileCount: 0 }), false);
+  assert.equal(canAttachCoachSessionData({ mode: "upload", fileCount: 2 }), true);
+});
+
+test("coach upload delivery status derives from persistent video fields", () => {
+  assert.equal(coachVideoDeliveryStatusLabel({ uploadStatus: "pending", publicationStatus: "Draft" }), "Uploading");
+  assert.equal(coachVideoDeliveryStatusLabel({ uploadStatus: "ready", publicationStatus: "Draft" }), "Ready for review");
+  assert.equal(coachVideoDeliveryStatusLabel({ uploadStatus: "ready", publicationStatus: "Published" }), "Published to member");
+  assert.equal(coachVideoDeliveryStatusLabel({ uploadStatus: "ready", status: "Needs Attention" }), "Needs attention");
 });

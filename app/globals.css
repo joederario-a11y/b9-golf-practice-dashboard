@@ -5524,6 +5524,29 @@ button:disabled {
   padding: 14px;
 }
 
+.coach-session-upload-fields {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(220px, 1.2fr);
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--green) 7%, var(--field));
+  padding: 12px;
+}
+
+.coach-session-upload-fields p,
+.coach-session-upload-fields small {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.coach-session-upload-fields small {
+  color: var(--ink);
+  font-weight: 800;
+}
+
 .coach-upload-result {
   align-items: flex-start;
   border: 1px solid color-mix(in srgb, var(--green) 45%, var(--line));
@@ -5556,6 +5579,105 @@ button:disabled {
   font-weight: 800;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.coach-upload-status-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid color-mix(in srgb, var(--green) 40%, var(--line));
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--green) 9%, transparent), transparent 48%),
+    var(--field);
+  padding: 14px;
+}
+
+.coach-upload-status-card-heading,
+.coach-upload-status-meta,
+.coach-upload-checklist {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.coach-upload-status-card-heading {
+  justify-content: space-between;
+}
+
+.coach-upload-status-card-heading > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.coach-upload-status-card-heading span,
+.coach-upload-status-meta span {
+  color: var(--green);
+  font-size: 10px;
+  font-weight: 950;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.coach-upload-status-card-heading strong {
+  color: var(--ink);
+  font-size: 20px;
+}
+
+.coach-upload-status-card-heading small,
+.coach-upload-status-meta strong {
+  min-width: 0;
+  color: var(--ink);
+  font-weight: 900;
+}
+
+.coach-upload-status-meta {
+  flex-wrap: wrap;
+  color: var(--muted);
+}
+
+.coach-upload-status-card p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.coach-upload-checklist {
+  flex-wrap: wrap;
+}
+
+.coach-upload-check {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  color: var(--muted);
+  padding: 7px 10px;
+  font-size: 10px;
+  font-weight: 950;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.coach-upload-check.done,
+.coach-upload-check.processing {
+  border-color: color-mix(in srgb, var(--green) 55%, var(--line));
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+  color: var(--green);
+}
+
+.coach-upload-check.skipped {
+  color: var(--muted);
+}
+
+.coach-upload-check.attention {
+  border-color: color-mix(in srgb, #ffcd4b 65%, var(--line));
+  background: color-mix(in srgb, #ffcd4b 12%, transparent);
+  color: #ffcd4b;
+}
+
+.coach-upload-fact {
+  min-height: 42px;
 }
 
 .coach-upload-shell {

@@ -40,9 +40,14 @@ import {
 } from "@/lib/coach-first-member-onboarding-policy.mjs";
 import {
   canStartCoachLessonUpload,
+  canAttachCoachSessionData,
   coachLessonUploadStatusLabel,
+  coachVideoDeliveryStatusLabel,
+  COACH_LESSON_UPLOAD_FACTS,
   filterCoachUploadMembers,
+  formatLessonUploadFileSize,
   getCoachDashboardActionState,
+  shouldShowLessonUploadStallWarning,
 } from "@/lib/coach-video-upload-policy.mjs";
 
 type Tab = "dashboard" | "sessions" | "clubs" | "videos" | "coach" | "admin" | "practice" | "import";
@@ -60,6 +65,18 @@ type PerformanceTimeframe = {
 
 type PasswordModalMode = "reset" | "setup" | "temporary";
 type FirstMemberOnboardingStatus = "pending" | "dismissed" | "completed";
+type CoachLessonUploadStage =
+  | "idle"
+  | "preparing_video"
+  | "uploading"
+  | "upload_complete"
+  | "importing_session_data"
+  | "processing_audio"
+  | "ready_for_review"
+  | "published"
+  | "needs_attention";
+type CoachSessionDataMode = "none" | "existing" | "upload";
+type CoachSessionUploadKind = "csv" | "photos";
 
 type SessionViewSelection = {
   club: string | "all";
@@ -4407,9 +4424,9 @@ function uploadVideoAsset(
   videoId: string,
   file: File,
   asset: "video" | "thumbnail",
-  onProgress: (progress: number) => void,
+  onProgress: (progress: number, event?: ProgressEvent<EventTarget>) => void,
 ) {
-  return new Promise<void>((resolve, reject) => {
+  return new Promise<{ aiProcessing?: unknown; size?: number }>((resolve, reject) => {
     const request = new XMLHttpRequest();
     request.open(
       "PUT",
@@ -4425,15 +4442,15 @@ function uploadVideoAsset(
     };
     request.onerror = () => reject(new Error("The upload connection was interrupted."));
     request.onload = () => {
-      let payload: { error?: string } = {};
+      let payload: { aiProcessing?: unknown; error?: string; size?: number } = {};
       try {
-        payload = JSON.parse(request.responseText) as { error?: string };
+        payload = JSON.parse(request.responseText) as { aiProcessing?: unknown; error?: string; size?: number };
       } catch {
         // A non-JSON response is handled by the status check below.
       }
       if (request.status >= 200 && request.status < 300) {
         onProgress(100);
-        resolve();
+        resolve(payload);
       } else {
         reject(new Error(payload.error ?? "The video file could not be stored."));
       }
@@ -8734,6 +8751,26 @@ function CoachVideoWorkspace({
   const [coachQuickMode, setCoachQuickMode] = useState<"content" | "session" | null>(null);
   const [saveState, setSaveState] = useState<"idle" | "saving">("idle");
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStage, setUploadStage] = useState<CoachLessonUploadStage>("idle");
+  const [activeUploadInfo, setActiveUploadInfo] = useState<{
+    fileName: string;
+    fileSize: number;
+    memberName: string;
+    videoId?: string;
+  } | null>(null);
+  const [lastUploadProgressAt, setLastUploadProgressAt] = useState<number | null>(null);
+  const [showUploadSlowWarning, setShowUploadSlowWarning] = useState(false);
+  const [uploadFactIndex, setUploadFactIndex] = useState(0);
+  const [pendingUploadVideoId, setPendingUploadVideoId] = useState<string | null>(null);
+  const [sessionDataMode, setSessionDataMode] = useState<CoachSessionDataMode>("none");
+  const [sessionUploadKind, setSessionUploadKind] = useState<CoachSessionUploadKind>("csv");
+  const [sessionUploadFiles, setSessionUploadFiles] = useState<File[]>([]);
+  const [sessionUploadStatus, setSessionUploadStatus] = useState("");
+  const [sessionUploadResult, setSessionUploadResult] = useState<{
+    sessionId: string;
+    shotCount: number;
+    title: string;
+  } | null>(null);
   const [workspaceMessage, setWorkspaceMessage] = useState("Select a member to begin.");
   const [showUploadPanel, setShowUploadPanel] = useState(false);
   const [coachContentForm, setCoachContentForm] = useState({
@@ -8769,6 +8806,11 @@ function CoachVideoWorkspace({
     ? selectedMemberDetail.sessions
     : [];
   const selectedSession = selectedMemberSessions.find((session) => session.id === selectedSessionId);
+  const sessionAttachmentReady = canAttachCoachSessionData({
+    fileCount: sessionUploadFiles.length,
+    mode: sessionDataMode,
+    selectedSessionId,
+  });
   const managedVideos = [...videos]
     .sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
   const editingVideo = videos.find((video) => video.id === editingVideoId);
@@ -8787,6 +8829,14 @@ function CoachVideoWorkspace({
     coachDashboardActions.showMemberTools ||
     coachDashboardActions.showUploadLessonVideo;
   const shouldShowCoachAttentionStatus = !editingVideoId && /\b(could not|failed|unavailable|needs attention)\b/i.test(workspaceMessage);
+  const uploadStatusText = saveState === "saving"
+    ? coachLessonUploadStatusLabel(uploadStage === "idle" ? "preparing_video" : uploadStage)
+    : uploadResult
+      ? coachLessonUploadStatusLabel("queued")
+      : videoFile
+        ? "Ready to upload"
+        : "Choose a member and video";
+  const activeUploadFact = COACH_LESSON_UPLOAD_FACTS[uploadFactIndex % COACH_LESSON_UPLOAD_FACTS.length];
 
   function applyCoachMembersPayload(payload: MembersResponsePayload) {
     const loadedMembers = payload.members ?? [];
@@ -8914,6 +8964,30 @@ function CoachVideoWorkspace({
     setWorkspaceMessage("Start building your roster by inviting your first golfer to MAI Coach.");
   }, [accountUser?.role, activeMemberCount, authenticated, firstMemberOnboardingStatus, loadingMembers, viewerRole]);
 
+  useEffect(() => {
+    if (saveState !== "saving" && !uploadResult) return undefined;
+    if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return undefined;
+    const timer = window.setInterval(() => {
+      setUploadFactIndex((current) => (current + 1) % COACH_LESSON_UPLOAD_FACTS.length);
+    }, 9000);
+    return () => window.clearInterval(timer);
+  }, [saveState, uploadResult]);
+
+  useEffect(() => {
+    if (saveState !== "saving" || uploadStage !== "uploading" || !lastUploadProgressAt) {
+      setShowUploadSlowWarning(false);
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      setShowUploadSlowWarning(shouldShowLessonUploadStallWarning({
+        lastProgressAt: lastUploadProgressAt,
+        saveState,
+        stage: uploadStage,
+      }));
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [lastUploadProgressAt, saveState, uploadStage]);
+
   function resetWorkflow() {
     setMemberSearch("");
     setSelectedMemberId("");
@@ -8940,6 +9014,16 @@ function CoachVideoWorkspace({
     setGenerateAiRecap(true);
     setEditingVideoId(null);
     setUploadProgress(0);
+    setUploadStage("idle");
+    setActiveUploadInfo(null);
+    setLastUploadProgressAt(null);
+    setShowUploadSlowWarning(false);
+    setPendingUploadVideoId(null);
+    setSessionDataMode("none");
+    setSessionUploadKind("csv");
+    setSessionUploadFiles([]);
+    setSessionUploadStatus("");
+    setSessionUploadResult(null);
     setShowLessonDetails(false);
     setUploadResult(null);
     setShowUploadPanel(false);
@@ -8948,6 +9032,12 @@ function CoachVideoWorkspace({
   function chooseMember(member: CoachMember) {
     setSelectedMemberId(member.id);
     setSelectedSessionId("");
+    setPendingUploadVideoId(null);
+    setActiveUploadInfo(null);
+    setSessionDataMode("none");
+    setSessionUploadFiles([]);
+    setSessionUploadStatus("");
+    setSessionUploadResult(null);
     setUploadResult(null);
     setWorkspaceMessage(`${member.name} selected. Add the lesson video when ready.`);
     void loadCoachMemberDetail(member.id);
@@ -9148,6 +9238,10 @@ function CoachVideoWorkspace({
       return;
     }
     setVideoFile(file);
+    setPendingUploadVideoId(null);
+    setUploadStage("idle");
+    setUploadProgress(0);
+    setActiveUploadInfo(null);
     setUploadResult(null);
     if (!videoTitle.trim()) setVideoTitle(videoDateTitleFromFile(file));
     setWorkspaceMessage(`${file.name} is ready to upload.`);
@@ -9210,6 +9304,141 @@ function CoachVideoWorkspace({
     }
   }
 
+  function uploadProgressTick(progress: number, event?: ProgressEvent<EventTarget>) {
+    setUploadStage("uploading");
+    setUploadProgress(progress);
+    setLastUploadProgressAt(Date.now());
+    setShowUploadSlowWarning(false);
+    if (event?.lengthComputable) {
+      setWorkspaceMessage(`Uploading video: ${progress}% transferred.`);
+    }
+  }
+
+  async function parseCoachUploadedSessionData() {
+    const notes = [
+      videoDescription.trim(),
+      `Imported with lesson video on ${lessonDate || getTodayDateString()}.`,
+    ].filter(Boolean).join("\n");
+    if (sessionUploadKind === "csv") {
+      const csvFile = sessionUploadFiles.find((file) => /\.csv$/i.test(file.name) || file.type.includes("csv") || file.type.includes("text"));
+      if (!csvFile) throw new Error("Choose a CSV file for the attached session data.");
+      const parsed = parseCsvForImport(await csvFile.text(), csvFile.name);
+      return buildImportReview(
+        parsed.shots,
+        "CSV / Excel",
+        parsed.metadata.simulator ?? "CSV",
+        {
+          ...parsed.metadata,
+          capturedAt: lessonDate || parsed.metadata.capturedAt,
+          importedAt: new Date().toISOString(),
+          sourceFileName: csvFile.name,
+        },
+        notes,
+      );
+    }
+
+    const imageFiles = sessionUploadFiles.filter((file) => file.type.startsWith("image/"));
+    if (!imageFiles.length) throw new Error("Choose one or more session screenshots or photos.");
+    const form = new FormData();
+    imageFiles.forEach((file) => form.append("images", file));
+    form.append("sessionDate", lessonDate || getTodayDateString());
+    form.append("notes", notes);
+    const response = await fetch("/api/import/photos", {
+      method: "POST",
+      body: form,
+    });
+    const payload = await readApiJson<{
+      blockingIssues?: string[];
+      club?: string | null;
+      confidence?: number;
+      csvText?: string;
+      extractionModel?: string;
+      extractionProvider?: string;
+      jobId?: string;
+      sessionId?: string;
+      shots?: Shot[];
+      simulator?: string;
+      sourcePaths?: string[];
+      status?: string;
+      summary?: PhotoImportMetadata["photoImportSummary"];
+      warnings?: string[];
+    }>(response, "Session screenshots could not be read.");
+    const photoShots = Array.isArray(payload.shots) ? payload.shots : [];
+    return buildImportReview(
+      photoShots,
+      "Photo",
+      payload.simulator ?? DEFAULT_SIMULATOR,
+      {
+        blockingIssues: payload.blockingIssues,
+        capturedAt: lessonDate || getTodayDateString(),
+        importedAt: new Date().toISOString(),
+        normalizedCsv: payload.csvText,
+        photoImportJobId: payload.jobId,
+        photoImportSummary: payload.summary,
+        sessionId: payload.sessionId ?? payload.jobId,
+        simulator: payload.simulator ?? DEFAULT_SIMULATOR,
+        sourcePaths: payload.sourcePaths,
+        warnings: payload.warnings,
+      },
+      notes,
+    );
+  }
+
+  async function attachCoachSessionDataToVideo(videoId: string) {
+    if (!selectedMember) return undefined;
+    if (sessionDataMode === "none") {
+      setSessionUploadResult(null);
+      setSessionUploadStatus("");
+      return undefined;
+    }
+    if (sessionDataMode === "existing") {
+      if (!selectedSession) throw new Error("Choose the existing session you want to link.");
+      const summary = {
+        sessionId: selectedSession.id,
+        shotCount: selectedSession.shots.length,
+        title: selectedSession.title,
+      };
+      setSessionUploadResult(summary);
+      setSessionUploadStatus(`${selectedSession.title} will be linked to this lesson.`);
+      return summary;
+    }
+
+    setUploadStage("importing_session_data");
+    setSessionUploadStatus("Reading attached session data...");
+    const review = await parseCoachUploadedSessionData();
+    if (review.blockingIssues?.length) {
+      throw new Error(`Session data needs review: ${review.blockingIssues.join(" ")}`);
+    }
+    if (!review.shots.length) {
+      throw new Error("No usable shots were found in the attached session data.");
+    }
+    const nextSession = buildImportedSession(
+      review.shots,
+      review.submissionType,
+      review.simulator,
+      review.metadata,
+      review.notes,
+      review.missingMetrics,
+    );
+    const payload = await postStaffAction<{ session?: Session }>({
+      action: "importSession",
+      memberId: selectedMember.id,
+      session: nextSession,
+      source: "Coach lesson upload",
+      videoId,
+    });
+    const savedSession = payload.session ?? nextSession;
+    const summary = {
+      sessionId: savedSession.id,
+      shotCount: savedSession.shots.length,
+      title: savedSession.title,
+    };
+    setSessionUploadResult(summary);
+    setSessionUploadStatus(`${savedSession.shots.length} shots imported and linked to this lesson.`);
+    void loadCoachMemberDetail(selectedMember.id);
+    return summary;
+  }
+
   async function saveCoachVideo(
     publicationStatus: VideoPublicationStatus,
     notifyMember: boolean,
@@ -9225,9 +9454,21 @@ function CoachVideoWorkspace({
     }
 
     setSaveState("saving");
-    setUploadProgress(4);
-    let pendingVideoId = editingVideo?.id ?? "";
+    setUploadStage("preparing_video");
+    setUploadProgress(0);
+    setLastUploadProgressAt(Date.now());
+    setShowUploadSlowWarning(false);
+    setSessionUploadStatus("");
+    setSessionUploadResult(null);
+    setActiveUploadInfo(videoFile ? {
+      fileName: videoFile.name,
+      fileSize: videoFile.size,
+      memberName: selectedMember.name,
+      videoId: pendingUploadVideoId ?? editingVideo?.id ?? undefined,
+    } : null);
+    let pendingVideoId = editingVideo?.id ?? pendingUploadVideoId ?? "";
     let videoStored = false;
+    let sessionAttachmentError = "";
     try {
       const duration = videoFile ? await readVideoDuration(videoFile) : editingVideo?.duration ?? 0;
       const lessonSummaryText = lessonSummary.trim();
@@ -9244,7 +9485,7 @@ function CoachVideoWorkspace({
         description: videoDescription.trim(),
         videoType,
         tags: tags.split(",").map((tag) => tag.trim()).filter(Boolean),
-        sessionId: selectedSessionId || undefined,
+        sessionId: sessionDataMode === "existing" ? selectedSessionId || undefined : undefined,
         club: selectedSession ? getSessionPrimaryClub(selectedSession) : editingVideo?.club,
         swingType: editingVideo?.swingType,
         focusArea,
@@ -9269,30 +9510,53 @@ function CoachVideoWorkspace({
       if (!pendingVideoId) {
         const created = await createVideoRecord(metadata, videoFile!);
         pendingVideoId = created.id;
+        setPendingUploadVideoId(created.id);
+        setActiveUploadInfo((current) => current ? { ...current, videoId: created.id } : current);
+        replaceItem(created);
       }
       if (videoFile) {
-        await uploadVideoAsset(pendingVideoId, videoFile, "video", (progress) => {
-          setUploadProgress(8 + Math.round(progress * 0.72));
-        });
+        setUploadStage("uploading");
+        setWorkspaceMessage(`Uploading ${videoFile.name} to ${selectedMember.name}.`);
+        await uploadVideoAsset(pendingVideoId, videoFile, "video", uploadProgressTick);
         videoStored = true;
+        setUploadStage("upload_complete");
+        setUploadProgress(100);
+        setWorkspaceMessage("Your video is uploaded and processing. You can leave this page and come back later.");
+      }
+      let linkedSessionId = typeof metadata.sessionId === "string" ? metadata.sessionId : undefined;
+      let linkedSessionSummary: { sessionId: string; shotCount: number; title: string } | null = null;
+      try {
+        const attachedSession = await attachCoachSessionDataToVideo(pendingVideoId);
+        linkedSessionSummary = attachedSession ?? null;
+        linkedSessionId = attachedSession?.sessionId || linkedSessionId;
+      } catch (error) {
+        sessionAttachmentError = error instanceof Error ? error.message : "Session data could not be attached.";
+        setSessionUploadStatus(sessionAttachmentError);
       }
       if (thumbnailFile) {
         await uploadVideoAsset(pendingVideoId, thumbnailFile, "thumbnail", (progress) => {
-          setUploadProgress(80 + Math.round(progress * 0.12));
+          setUploadProgress(progress);
         });
       }
-      setUploadProgress(94);
+      setUploadStage("processing_audio");
       const record = await finalizeVideoRecord(pendingVideoId, {
         ...metadata,
+        sessionId: linkedSessionId,
         reviewStatus: publicationStatus === "Published" ? "New" : editingVideo?.status ?? "Coach Feedback",
         notifyMember: publicationStatus === "Published" && notifyMember && emailMember,
       });
       replaceItem(record);
-      setUploadProgress(100);
+      setUploadStage(publicationStatus === "Published" ? "published" : "ready_for_review");
+      setPendingUploadVideoId(null);
 
       const aiStatusNote = generateAiRecap && !editingVideo
         ? " MAI Coach recap processing is queued for coach review."
         : "";
+      const sessionStatusNote = sessionAttachmentError
+        ? ` Session data needs attention: ${sessionAttachmentError}`
+        : linkedSessionSummary
+          ? ` Session data linked: ${linkedSessionSummary.shotCount} shots.`
+          : "";
 
       if (options.simpleUpload) {
         setUploadResult({
@@ -9301,7 +9565,7 @@ function CoachVideoWorkspace({
           title: record.title,
           videoId: record.id,
         });
-        setWorkspaceMessage(`Video uploaded to ${selectedMember.name}. MAI Coach is processing the lesson. You can leave this page and come back later.`);
+        setWorkspaceMessage(`Video uploaded to ${selectedMember.name}. MAI Coach is processing the lesson. You can leave this page and come back later.${sessionStatusNote}`);
         setVideoFile(null);
         setThumbnailFile(null);
         setVideoTitle("");
@@ -9323,27 +9587,28 @@ function CoachVideoWorkspace({
       }
 
       if (publicationStatus === "Draft") {
-        setWorkspaceMessage(`Draft saved for ${selectedMember.name}. It is not visible to the member.${aiStatusNote}`);
+        setWorkspaceMessage(`Draft saved for ${selectedMember.name}. It is not visible to the member.${aiStatusNote}${sessionStatusNote}`);
       } else if (notifyMember && emailMember) {
         setWorkspaceMessage(
           record.emailStatus === "Sent"
-            ? `Video published to ${selectedMember.name} and the email notification was sent.${aiStatusNote}`
-            : `Video published, but the email notification could not be sent.${aiStatusNote}`,
+            ? `Video published to ${selectedMember.name} and the email notification was sent.${aiStatusNote}${sessionStatusNote}`
+            : `Video published, but the email notification could not be sent.${aiStatusNote}${sessionStatusNote}`,
         );
       } else {
-        setWorkspaceMessage(`Video published to ${selectedMember.name}. No email was sent.${aiStatusNote}`);
+        setWorkspaceMessage(`Video published to ${selectedMember.name}. No email was sent.${aiStatusNote}${sessionStatusNote}`);
       }
       const completedMember = selectedMember;
       resetWorkflow();
       if (publicationStatus === "Published") {
         onOpenMemberVideos(completedMember.id, completedMember.name);
       }
-    } catch {
+    } catch (error) {
       setUploadProgress(0);
+      setUploadStage("needs_attention");
       setWorkspaceMessage(
         pendingVideoId && videoStored
-          ? "The video was uploaded, but MAI Coach could not create the recap yet. You can retry from the video page."
-          : "We could not upload this video. Please try again.",
+          ? "The video was uploaded, but MAI Coach could not finish the lesson setup yet. You can retry processing from the video page."
+          : error instanceof Error ? error.message : "We could not upload this video. Please try again.",
       );
     } finally {
       setSaveState("idle");
@@ -9362,6 +9627,10 @@ function CoachVideoWorkspace({
     setVideoDescription(video.description);
     setTags(video.tags.join(", "));
     setSelectedSessionId(video.sessionId ?? "");
+    setSessionDataMode(video.sessionId ? "existing" : "none");
+    setSessionUploadFiles([]);
+    setSessionUploadStatus("");
+    setSessionUploadResult(null);
     setLessonSummary(video.lessonSummary ?? "");
     setWorkedOn(getLessonMainFocus(video));
     setKeyIssue(video.keyIssue ?? "");
@@ -9460,14 +9729,7 @@ function CoachVideoWorkspace({
     hasVideo: Boolean(videoFile),
     memberId: selectedMemberId,
     saveState,
-  });
-  const uploadStatusText = saveState === "saving"
-    ? coachLessonUploadStatusLabel(uploadProgress >= 92 ? "generating_recap" : "uploading")
-    : uploadResult
-      ? coachLessonUploadStatusLabel("queued")
-      : videoFile
-        ? "Ready to upload"
-        : "Choose a member and video";
+  }) && sessionAttachmentReady;
 
   return (
     <div className="coach-video-workspace">
@@ -9647,23 +9909,112 @@ function CoachVideoWorkspace({
                 <label><span>Lesson date</span><input onChange={(event) => setLessonDate(event.target.value)} type="date" value={lessonDate} /></label>
                 <label><span>Club / focus optional</span><select onChange={(event) => setFocusArea(event.target.value as VideoFocusArea)} value={focusArea}>{VIDEO_FOCUS_AREAS.map((area) => <option key={area}>{area}</option>)}</select></label>
                 <label className="wide">
-                  <span>Link to session optional</span>
-                  <select onChange={(event) => setSelectedSessionId(event.target.value)} value={selectedSessionId}>
-                    <option value="">No session linked</option>
-                    {selectedMemberSessions.map((session) => (
-                      <option key={session.id} value={session.id}>{formatFullDate(session.date)} · {session.title}</option>
-                    ))}
+                  <span>Session data optional</span>
+                  <select
+                    onChange={(event) => {
+                      const nextMode = event.target.value as CoachSessionDataMode;
+                      setSessionDataMode(nextMode);
+                      if (nextMode !== "existing") setSelectedSessionId("");
+                      if (nextMode !== "upload") {
+                        setSessionUploadFiles([]);
+                        setSessionUploadStatus("");
+                      }
+                    }}
+                    value={sessionDataMode}
+                  >
+                    <option value="none">No session data</option>
+                    <option value="existing">Link an existing session</option>
+                    <option value="upload">Upload new session data</option>
                   </select>
                 </label>
+                {sessionDataMode === "existing" && (
+                  <label className="wide">
+                    <span>Existing session</span>
+                    <select onChange={(event) => setSelectedSessionId(event.target.value)} value={selectedSessionId}>
+                      <option value="">Choose a session</option>
+                      {selectedMemberSessions.map((session) => (
+                        <option key={session.id} value={session.id}>{formatFullDate(session.date)} · {session.title} · {session.shots.length} shots</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                {sessionDataMode === "upload" && (
+                  <div className="coach-session-upload-fields wide">
+                    <label>
+                      <span>Session file type</span>
+                      <select
+                        onChange={(event) => {
+                          setSessionUploadKind(event.target.value as CoachSessionUploadKind);
+                          setSessionUploadFiles([]);
+                          setSessionUploadStatus("");
+                        }}
+                        value={sessionUploadKind}
+                      >
+                        <option value="csv">CSV / Excel export</option>
+                        <option value="photos">Session screenshots or photos</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>{sessionUploadKind === "csv" ? "Upload CSV" : "Upload photos"}</span>
+                      <input
+                        accept={sessionUploadKind === "csv" ? ".csv,text/csv,text/plain" : "image/*"}
+                        multiple={sessionUploadKind === "photos"}
+                        onChange={(event) => setSessionUploadFiles(Array.from(event.currentTarget.files ?? []))}
+                        type="file"
+                      />
+                    </label>
+                    <p>
+                      {sessionUploadKind === "csv"
+                        ? "Use a launch-monitor CSV with shot rows, club, distance, speed, launch, spin, and curve/path fields when available."
+                        : "Use clear screenshots of the simulator shot-history tables. If a photo needs review, the video upload will still be preserved."}
+                    </p>
+                    {sessionUploadFiles.length > 0 && (
+                      <small>{sessionUploadFiles.map((file) => file.name).join(", ")}</small>
+                    )}
+                  </div>
+                )}
                 <label><span>Tags optional</span><input onChange={(event) => setTags(event.target.value)} placeholder="takeaway, face control" value={tags} /></label>
                 <label className="wide"><span>Coach notes optional</span><textarea onChange={(event) => setVideoDescription(event.target.value)} placeholder="Context, setup notes, or what to review after processing..." value={videoDescription} /></label>
               </div>
             </details>
 
-            {saveState === "saving" && (
-              <div className="coach-upload-progress" aria-label={`${uploadStatusText}: ${uploadProgress}%`}>
-                <span style={{ width: `${uploadProgress}%` }} />
-                <strong>{uploadStatusText} · {uploadProgress}%</strong>
+            {(saveState === "saving" || uploadResult) && (
+              <div className="coach-upload-status-card" role="status">
+                <div className="coach-upload-status-card-heading">
+                  <div>
+                    <span>Lesson upload</span>
+                    <strong>{uploadStatusText}</strong>
+                  </div>
+                  <small>{activeUploadInfo?.memberName ?? uploadResult?.memberName ?? selectedMember?.name ?? "Member"}</small>
+                </div>
+                {activeUploadInfo && (
+                  <div className="coach-upload-status-meta">
+                    <span>File</span><strong>{activeUploadInfo.fileName}</strong>
+                    <span>Size</span><strong>{formatLessonUploadFileSize(activeUploadInfo.fileSize)}</strong>
+                    <span>Date</span><strong>{formatFullDate(lessonDate)}</strong>
+                  </div>
+                )}
+                {saveState === "saving" && uploadStage === "uploading" && (
+                  <div className="coach-upload-progress" aria-label={`Uploading video: ${uploadProgress}%`}>
+                    <span style={{ width: `${uploadProgress}%` }} />
+                    <strong>{uploadProgress}% uploaded</strong>
+                  </div>
+                )}
+                {showUploadSlowWarning && (
+                  <p className="coach-inline-warning">Still connected. Large videos can pause between browser progress updates; we will keep this upload tied to the same lesson record.</p>
+                )}
+                <div className="coach-upload-checklist">
+                  {[
+                    ["Video record", pendingUploadVideoId || activeUploadInfo?.videoId || uploadResult?.videoId ? "done" : "pending"],
+                    ["Video stored", uploadStage !== "idle" && uploadStage !== "preparing_video" && uploadStage !== "uploading" ? "done" : "pending"],
+                    ["Session data", sessionDataMode === "none" ? "skipped" : sessionUploadResult ? "done" : sessionUploadStatus ? "attention" : "pending"],
+                    ["Lesson recap", uploadStage === "ready_for_review" || uploadStage === "published" || uploadResult ? "processing" : "pending"],
+                  ].map(([label, status]) => (
+                    <span className={cls("coach-upload-check", status)} key={label}>{label}</span>
+                  ))}
+                </div>
+                {sessionUploadStatus && <p>{sessionUploadStatus}</p>}
+                {activeUploadFact && <p className="coach-upload-fact">Did you know? {activeUploadFact}</p>}
               </div>
             )}
 
@@ -9734,6 +10085,7 @@ function CoachVideoWorkspace({
                 </div>
                 <div>
                   <span className={cls("video-status", getVideoPublicationStatus(video).toLowerCase())}>{getVideoPublicationStatus(video)}</span>
+                  <small>Status: {coachVideoDeliveryStatusLabel(video)}</small>
                   <small>Email: {video.emailStatus ?? "Not sent"}</small>
                 </div>
                 <div>

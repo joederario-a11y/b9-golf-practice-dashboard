@@ -149,7 +149,7 @@ async function requestVisionExtraction(client: OpenAI, model: string, images: Up
         strict: true,
         schema: photoImportExtractionSchema,
       },
-      verbosity: "low",
+      verbosity: "medium",
     },
     max_output_tokens: 8000,
     store: false,

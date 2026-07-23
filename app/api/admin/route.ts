@@ -1041,6 +1041,97 @@ async function addSession(database: D1Database, identity: AuthIdentity, payload:
   return { session: nextSession };
 }
 
+async function importSession(database: D1Database, identity: AuthIdentity, payload: Record<string, unknown>) {
+  const memberId = text(payload.memberId, 80);
+  if (!memberId) throw new Response("memberId is required.", { status: 400 });
+  if (!(await memberIsVisible(identity, memberId, database))) {
+    throw new Response("You do not have access to that member.", { status: 403 });
+  }
+  const member = await getUser(database, memberId);
+  if (!member || member.role !== "member") throw new Response("Member not found.", { status: 404 });
+  const rawSession = payload.session;
+  if (!rawSession || typeof rawSession !== "object" || Array.isArray(rawSession)) {
+    throw new Response("A parsed session is required.", { status: 400 });
+  }
+  const sanitizedSession = sanitizeSession(rawSession);
+  if (!sanitizedSession) {
+    throw new Response("The session data did not include usable launch-monitor metrics.", { status: 400 });
+  }
+  const sessionId = text((sanitizedSession as { id?: unknown }).id, 120) || `coach-import-${crypto.randomUUID()}`;
+  const sessionToSave = { ...sanitizedSession, id: sessionId };
+  const videoId = text(payload.videoId, 80);
+  if (videoId) {
+    const video = await database
+      .prepare("SELECT id, member_id, coach_id, uploaded_by_role FROM lesson_videos WHERE id = ?")
+      .bind(videoId)
+      .first<{ id: string; member_id: string; coach_id: string | null; uploaded_by_role: string }>();
+    if (!video) throw new Response("Video not found.", { status: 404 });
+    if (video.member_id !== memberId) {
+      throw new Response("Session data and video must belong to the same member.", { status: 409 });
+    }
+    if (identity.role === "coach" && video.coach_id !== identity.id) {
+      throw new Response("Only the uploading coach can attach session data to this video.", { status: 403 });
+    }
+  }
+
+  const row = await database
+    .prepare("SELECT sessions_json FROM golf_session_snapshots WHERE user_id = ?")
+    .bind(member.id)
+    .first<{ sessions_json: string }>();
+  const existingSessions = parseJsonArray(row?.sessions_json ?? null);
+  const nextSessions = sanitizeSessionList([
+    sessionToSave,
+    ...existingSessions.filter((session) => (session as { id?: string }).id !== sessionId),
+  ]).slice(0, 80);
+  await database
+    .prepare(
+      row
+        ? `UPDATE golf_session_snapshots
+           SET user_email = ?, display_name = ?, sessions_json = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE user_id = ?`
+        : `INSERT INTO golf_session_snapshots (
+            user_email, user_id, display_name, sessions_json, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+          ON CONFLICT(user_email) DO UPDATE SET
+            user_id = excluded.user_id,
+            display_name = excluded.display_name,
+            sessions_json = excluded.sessions_json,
+            updated_at = CURRENT_TIMESTAMP`,
+    )
+    .bind(
+      ...(row
+        ? [member.email, displayName(member), JSON.stringify(nextSessions), member.id]
+        : [member.email, member.id, displayName(member), JSON.stringify(nextSessions)]
+      ),
+    )
+    .run();
+
+  if (videoId) {
+    await database
+      .prepare("UPDATE lesson_videos SET session_data_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .bind(sessionId, videoId)
+      .run();
+  }
+
+  await recordActivity({
+    action: videoId ? "lesson_session_data_imported" : "session_imported",
+    actor: identity,
+    database,
+    entityId: sessionId,
+    entityType: "session",
+    memberId,
+    metadata: {
+      source: text(payload.source, 80) || "Coach lesson upload",
+      videoId: videoId || null,
+      shotCount: Array.isArray((sessionToSave as { shots?: unknown }).shots) ? (sessionToSave as { shots: unknown[] }).shots.length : 0,
+    },
+    summary: `${identity.displayName} imported session data for ${displayName(member)}.`,
+    targetUserId: memberId,
+  });
+
+  return { session: sessionToSave, videoId: videoId || null };
+}
+
 async function reconcileCoachAssignments(database: D1Database, identity: AuthIdentity, payload: Record<string, unknown>) {
   if (identity.role !== "admin") throw new Response("Only admins can reconcile coach assignments.", { status: 403 });
   const apply = payload.apply === true;
@@ -1273,6 +1364,10 @@ export async function POST(request: Request) {
     }
     if (action === "addSession") {
       const result = await addSession(database, identity, payload);
+      return Response.json({ ok: true, ...result });
+    }
+    if (action === "importSession") {
+      const result = await importSession(database, identity, payload);
       return Response.json({ ok: true, ...result });
     }
     if (action === "resendInvitation") {
