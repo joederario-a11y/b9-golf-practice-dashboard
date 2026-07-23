@@ -5,12 +5,14 @@ import test from "node:test";
 import {
   canStartCoachLessonUpload,
   canAttachCoachSessionData,
+  chooseLessonVideoCompressionPlan,
   coachVideoDeliveryStatusLabel,
   COACH_LESSON_UPLOAD_FACTS,
   coachLessonUploadStatusLabel,
   filterCoachUploadMembers,
   formatLessonUploadFileSize,
   getCoachDashboardActionState,
+  shouldPrepareLessonVideoCompression,
   shouldShowLessonUploadStallWarning,
 } from "../lib/coach-video-upload-policy.mjs";
 
@@ -107,16 +109,83 @@ test("coach dashboard source has a single first-member card and upload panel ope
 
 test("coach upload status labels are plain language and never raw technical codes", () => {
   assert.equal(coachLessonUploadStatusLabel("preparing_video"), "Preparing video");
+  assert.equal(coachLessonUploadStatusLabel("compressing_video"), "Preparing video");
+  assert.equal(coachLessonUploadStatusLabel("compression_failed"), "Compression failed");
   assert.equal(coachLessonUploadStatusLabel("uploading"), "Uploading video");
   assert.equal(coachLessonUploadStatusLabel("upload_complete"), "Upload complete");
-  assert.equal(coachLessonUploadStatusLabel("processing_audio"), "Processing audio");
-  assert.equal(coachLessonUploadStatusLabel("extracting_audio"), "Processing audio");
+  assert.equal(coachLessonUploadStatusLabel("upload_failed"), "Upload failed");
+  assert.equal(coachLessonUploadStatusLabel("processing_audio"), "Processing video");
+  assert.equal(coachLessonUploadStatusLabel("extracting_audio"), "Processing video");
   assert.equal(coachLessonUploadStatusLabel("creating_transcript"), "Creating transcript");
-  assert.equal(coachLessonUploadStatusLabel("transcribing_coach_feedback"), "Processing audio");
+  assert.equal(coachLessonUploadStatusLabel("transcribing_coach_feedback"), "Processing video");
   assert.equal(coachLessonUploadStatusLabel("generating_recap"), "Creating lesson recap");
   assert.equal(coachLessonUploadStatusLabel("importing_session_data"), "Importing session data");
   assert.equal(coachLessonUploadStatusLabel("ready_for_review"), "Ready for review");
   assert.equal(coachLessonUploadStatusLabel("failed"), "Needs attention");
+});
+
+test("coach lesson upload source exposes browser video compression and recovery controls", async () => {
+  const pageSource = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(pageSource, /prepareLessonVideoForUpload/);
+  assert.match(pageSource, /MediaRecorder/);
+  assert.match(pageSource, /AbortController/);
+  assert.match(pageSource, /Cancel compression/);
+  assert.match(pageSource, /Cancel upload/);
+  assert.match(pageSource, /Upload original file/);
+  assert.match(pageSource, /compression_failed/);
+});
+
+test("lesson video compression starts for large files or footage above 1080p", () => {
+  assert.equal(shouldPrepareLessonVideoCompression({
+    fileSize: 49 * 1024 * 1024,
+    height: 1080,
+    width: 1920,
+  }), false);
+  assert.equal(shouldPrepareLessonVideoCompression({
+    fileSize: 178 * 1024 * 1024,
+    height: 1080,
+    width: 1920,
+  }), true);
+  assert.equal(shouldPrepareLessonVideoCompression({
+    fileSize: 20 * 1024 * 1024,
+    height: 2160,
+    width: 3840,
+  }), true);
+});
+
+test("lesson video compression plan uses 1080p normally and 720p for especially large or long clips", () => {
+  assert.deepEqual(chooseLessonVideoCompressionPlan({
+    duration: 300,
+    fileSize: 80 * 1024 * 1024,
+    height: 2160,
+    width: 3840,
+  }), {
+    audioBitsPerSecond: 128000,
+    maxLongEdge: 1920,
+    maxShortEdge: 1080,
+    shouldCompress: true,
+    targetLabel: "1080p",
+    videoBitsPerSecond: 3800000,
+  });
+  assert.deepEqual(chooseLessonVideoCompressionPlan({
+    duration: 300,
+    fileSize: 178 * 1024 * 1024,
+    height: 2160,
+    width: 3840,
+  }), {
+    audioBitsPerSecond: 96000,
+    maxLongEdge: 1280,
+    maxShortEdge: 720,
+    shouldCompress: true,
+    targetLabel: "720p",
+    videoBitsPerSecond: 2500000,
+  });
+  assert.equal(chooseLessonVideoCompressionPlan({
+    duration: 660,
+    fileSize: 80 * 1024 * 1024,
+    height: 1080,
+    width: 1920,
+  }).targetLabel, "720p");
 });
 
 test("coach upload facts are local curated facts, not generated status replacements", () => {
