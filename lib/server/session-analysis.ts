@@ -1408,6 +1408,24 @@ export async function getStoredSessionAnalysis(identity: AuthIdentity, sessionId
   }
 }
 
+export async function invalidateStoredSessionAnalyses(identity: AuthIdentity, sessionId: string) {
+  const database = getRequiredDatabase();
+  await prepareDatabase(database);
+  await loadOwnedSession(identity, sessionId, database);
+  const prefix = `${sessionId}::club=`;
+  await database
+    .prepare(
+      `UPDATE mai_caddy_session_analyses
+       SET is_current = 0, updated_at = CURRENT_TIMESTAMP
+       WHERE user_id = ?
+         AND (session_id = ? OR substr(session_id, 1, ?) = ?)`,
+    )
+    .bind(identity.id, sessionId, prefix.length, prefix)
+    .run();
+
+  return Response.json({ ok: true, sessionId });
+}
+
 export async function analyzeStoredSession(identity: AuthIdentity, sessionId: string, selection: AnalysisSelection = {}) {
   const database = getRequiredDatabase();
   await prepareDatabase(database);

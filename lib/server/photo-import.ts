@@ -38,6 +38,15 @@ type PhotoImportStatus =
 
 const MAX_IMAGES = 8;
 const MAX_IMAGE_BYTES = 18 * 1024 * 1024;
+const SUPPORTED_IMAGE_EXTENSIONS = /\.(jpe?g|png|webp|hei[cf])$/i;
+const IMAGE_CONTENT_TYPES: Record<string, string> = {
+  ".heic": "image/heic",
+  ".heif": "image/heif",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".webp": "image/webp",
+};
 
 function text(value: unknown, fallback = "", maxLength = 240) {
   return typeof value === "string" && value.trim() ? value.trim().slice(0, maxLength) : fallback;
@@ -45,6 +54,23 @@ function text(value: unknown, fallback = "", maxLength = 240) {
 
 function safeFileName(value: string) {
   return text(value, "photo.jpg", 160).replace(/[^a-z0-9._-]+/gi, "-");
+}
+
+function fileExtension(value: string) {
+  return value.toLowerCase().match(/\.[^.]+$/)?.[0] ?? "";
+}
+
+function contentTypeForUpload(file: File) {
+  if (file.type?.startsWith("image/")) return file.type;
+  return IMAGE_CONTENT_TYPES[fileExtension(file.name)] ?? "image/jpeg";
+}
+
+function isSupportedUploadedPhoto(file: File) {
+  return (
+    file.size > 0 &&
+    file.size <= MAX_IMAGE_BYTES &&
+    (file.type.startsWith("image/") || SUPPORTED_IMAGE_EXTENSIONS.test(file.name))
+  );
 }
 
 function bytesToBase64(bytes: ArrayBuffer) {
@@ -216,9 +242,7 @@ function normalizedHash(value: string | undefined) {
 }
 
 export async function readUploadedPhotos(files: File[], originalHashes: string[] = []) {
-  const supported = files.slice(0, MAX_IMAGES).filter((file) => {
-    return file.type.startsWith("image/") && file.size > 0 && file.size <= MAX_IMAGE_BYTES;
-  });
+  const supported = files.slice(0, MAX_IMAGES).filter(isSupportedUploadedPhoto);
 
   const photos: UploadedPhoto[] = [];
   for (let index = 0; index < supported.length; index += 1) {
@@ -229,7 +253,7 @@ export async function readUploadedPhotos(files: File[], originalHashes: string[]
     photos.push({
       base64: bytesToBase64(bytes),
       bytes,
-      contentType: file.type || "image/jpeg",
+      contentType: contentTypeForUpload(file),
       fileName: file.name || `photo-${index + 1}.jpg`,
       hash: uploadedHash,
       originalHash,

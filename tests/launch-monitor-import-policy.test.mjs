@@ -4,9 +4,11 @@ import test from "node:test";
 
 import {
   chooseClubForImportedSession,
+  isLaunchMonitorSummaryRowLabel,
   normalizeImportHeader,
   normalizeLaunchMonitorClubName,
   parseLaunchMonitorCsv,
+  UNKNOWN_IMPORT_CLUB,
 } from "../lib/launch-monitor-import-policy.mjs";
 
 const fixtureText = await readFile(new URL("./fixtures/full_swing_sample_session.csv", import.meta.url), "utf8");
@@ -175,8 +177,51 @@ test("normalizes supplied clubs and avoids stale imported-club selection", () =>
   assert.equal(normalizeLaunchMonitorClubName("5 Iron"), "5-Iron");
   assert.equal(normalizeLaunchMonitorClubName("Pitching Wedge"), "PW");
   assert.equal(normalizeLaunchMonitorClubName("56 Wedge"), "56° Wedge");
+  assert.equal(normalizeLaunchMonitorClubName("56 degree wedge"), "56° Wedge");
+  assert.equal(normalizeLaunchMonitorClubName("rescue"), "Hybrid");
+  assert.equal(normalizeLaunchMonitorClubName("Other / Unknown"), UNKNOWN_IMPORT_CLUB);
+  assert.equal(normalizeLaunchMonitorClubName(""), UNKNOWN_IMPORT_CLUB);
 
   const { shots } = parseLaunchMonitorCsv(fixtureText);
   assert.equal(chooseClubForImportedSession(shots, "8-Iron"), "Driver");
   assert.equal(chooseClubForImportedSession(shots, "7-Iron"), "7-Iron");
+});
+
+test("excludes AVG and summary rows from shot count and averages", () => {
+  assert.equal(isLaunchMonitorSummaryRowLabel("AVG"), true);
+  assert.equal(isLaunchMonitorSummaryRowLabel("Average"), true);
+  assert.equal(isLaunchMonitorSummaryRowLabel("Mean"), true);
+  assert.equal(isLaunchMonitorSummaryRowLabel("Summary"), true);
+
+  const csv = [
+    "shot,club,carry_distance_yd,total_distance_yd,ball_speed_mph",
+    "AVG,8 Iron,999,999,999",
+    "41,8 Iron,150,160,110",
+    "42,8 Iron,152,162,112",
+    "43,8 Iron,154,164,114",
+    "44,8 Iron,156,166,116",
+    "45,8 Iron,158,168,118",
+  ].join("\n");
+  const { shots, metadata } = parseLaunchMonitorCsv(csv);
+
+  assert.equal(shots.length, 5);
+  assert.equal(metadata.rowsDetected, 5);
+  assert.equal(metadata.summaryRowsExcluded, 1);
+  assert.equal(metadata.summaryRows[0].shot, "AVG");
+  assert.equal(average(shots, "carry"), 154);
+  assert.equal(average(shots, "ballSpeed"), 114);
+});
+
+test("missing club is saved as a warning rather than a blocking issue", () => {
+  const csv = [
+    "shot,carry_distance_yd,total_distance_yd,ball_speed_mph",
+    "1,150,160,110",
+    "2,152,162,112",
+  ].join("\n");
+  const { shots, metadata } = parseLaunchMonitorCsv(csv);
+
+  assert.equal(shots.length, 2);
+  assert.equal(shots.every((shot) => shot.club === UNKNOWN_IMPORT_CLUB), true);
+  assert.deepEqual(metadata.blockingIssues, []);
+  assert.equal(metadata.warnings.some((warning) => /missing a club/i.test(warning)), true);
 });

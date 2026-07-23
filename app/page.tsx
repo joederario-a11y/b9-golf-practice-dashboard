@@ -19,9 +19,12 @@ import {
 import {
   COLUMN_MAPPING_TARGETS,
   LAUNCH_MONITOR_MAPPING_PROFILE_VERSION,
+  DEFAULT_IMPORT_CLUB_ORDER,
+  UNKNOWN_IMPORT_CLUB,
   chooseClubForImportedSession,
   generateCanonicalLaunchMonitorCsv,
   getLaunchMonitorClubDisplayName,
+  isUnknownLaunchMonitorClubName,
   normalizeLaunchMonitorClubName,
   parseLaunchMonitorCsv,
 } from "@/lib/launch-monitor-import-policy.mjs";
@@ -135,6 +138,7 @@ type Shot = {
   mappingProfileVersion?: string;
   metricSources?: Record<string, MetricSource>;
   rawSourceData?: Record<string, unknown>;
+  clubConfirmed?: boolean;
   reviewStatus?: string;
   sourceFileName?: string;
   sourceImages?: string[];
@@ -153,6 +157,12 @@ type Session = {
   importNotes?: string;
   missingMetrics?: NumericShotMetric[];
   shots: Shot[];
+};
+
+type SessionEditValues = {
+  notes: string;
+  sessionClub: string;
+  shotClubs: Record<string, string>;
 };
 
 type Insight = {
@@ -450,6 +460,8 @@ type PhotoImportMetadata = {
   sourceFileName?: string;
   sourceHeaders?: string[];
   sourceRowCount?: number;
+  summaryRows?: Array<Record<string, unknown>>;
+  summaryRowsExcluded?: number;
   sourceCounts?: Record<"measured" | "derived" | "estimated" | "manual", number>;
   unitConversions?: Array<{
     sourceColumn: string;
@@ -552,6 +564,12 @@ type PhotoBatchImportResult = {
   averages?: Record<string, number>;
   sourcePaths?: string[];
   csvSchemaVersion?: string;
+};
+
+type SelectedImportPhoto = {
+  id: string;
+  file: File;
+  previewUrl: string;
 };
 
 type CoachMessage = {
@@ -3015,6 +3033,58 @@ function getClubDisplayName(club: string) {
   return getLaunchMonitorClubDisplayName(club);
 }
 
+const IMPORT_CLUB_OPTIONS = Array.from(new Set([
+  ...DEFAULT_IMPORT_CLUB_ORDER,
+  "46° Wedge",
+  "48° Wedge",
+  "50° Wedge",
+  "52° Wedge",
+  "54° Wedge",
+  "56° Wedge",
+  "58° Wedge",
+  "60° Wedge",
+  "62° Wedge",
+  "64° Wedge",
+  "Driving Iron",
+  UNKNOWN_IMPORT_CLUB,
+]));
+
+function isUnknownReviewClub(value: string | undefined | null) {
+  return !value || isUnknownLaunchMonitorClubName(value);
+}
+
+function normalizeReviewClubInput(value: string) {
+  return normalizeClubName(value.trim() || UNKNOWN_IMPORT_CLUB);
+}
+
+function importReviewClubNames(shots: Shot[]) {
+  return Array.from(new Set(shots.map((shot) => getClubDisplayName(shot.club || UNKNOWN_IMPORT_CLUB))));
+}
+
+function importReviewSessionClub(shots: Shot[], fallback = "") {
+  const clubs = importReviewClubNames(shots).filter(Boolean);
+  if (!clubs.length) return fallback || "";
+  return clubs.length === 1 ? clubs[0] : "";
+}
+
+function importReviewSummaryClubLabel(shots: Shot[]) {
+  const clubs = importReviewClubNames(shots).filter(Boolean);
+  if (!clubs.length) return UNKNOWN_IMPORT_CLUB;
+  return clubs.length === 1 ? clubs[0] : `${clubs.length} clubs`;
+}
+
+function setImportShotClub(shot: Shot, club: string, confirmed = true) {
+  return {
+    ...shot,
+    club: normalizeReviewClubInput(club),
+    clubConfirmed: confirmed,
+  };
+}
+
+function nonClubBlockingIssues(issues: string[] | undefined) {
+  return (issues ?? []).filter((issue) => !/missing a club|club.*missing/i.test(issue));
+}
+
 const REVIEW_IMPORT_METRICS: NumericShotMetric[] = [
   "carry",
   "total",
@@ -3039,11 +3109,17 @@ const REVIEW_IMPORT_METRICS: NumericShotMetric[] = [
 
 function inferClubFromImportNotes(notes: string) {
   const text = notes.toLowerCase();
+  const degreeWedge = text.match(/\b(4[6-9]|5[0-9]|6[0-4])\s*(?:degree|deg|°)?\s*wedge\b/);
+  if (degreeWedge) return `${degreeWedge[1]}° Wedge`;
   const patterns: Array<[RegExp, string]> = [
     [/\bdriver\b|\b1\s*w(?:ood)?\b/, "Driver"],
     [/\b3\s*w(?:ood)?\b|\bthree\s*wood\b/, "3-Wood"],
     [/\b5\s*w(?:ood)?\b|\bfive\s*wood\b/, "5-Wood"],
     [/\b7\s*w(?:ood)?\b|\bseven\s*wood\b/, "7-Wood"],
+    [/\bhybrid\b|\brescue\b/, "Hybrid"],
+    [/\b2\s*i(?:ron)?\b|\btwo\s*iron\b/, "2-Iron"],
+    [/\b3\s*i(?:ron)?\b|\bthree\s*iron\b/, "3-Iron"],
+    [/\b4\s*i(?:ron)?\b|\bfour\s*iron\b/, "4-Iron"],
     [/\b5\s*i(?:ron)?\b|\bfive\s*iron\b/, "5-Iron"],
     [/\b6\s*i(?:ron)?\b|\bsix\s*iron\b/, "6-Iron"],
     [/\b7\s*i(?:ron)?\b|\bseven\s*iron\b/, "7-Iron"],
@@ -3053,6 +3129,7 @@ function inferClubFromImportNotes(notes: string) {
     [/\bg(?:ap)?\s*wedge\b|\bapproach\s*wedge\b|\bgw\b|\baw\b/, "GW"],
     [/\bs(?:and)?\s*wedge\b|\bsw\b/, "SW"],
     [/\bl(?:ob)?\s*wedge\b|\blw\b/, "LW"],
+    [/\bputter\b/, "Putter"],
   ];
   return patterns.find(([pattern]) => pattern.test(text))?.[1];
 }
@@ -3101,7 +3178,7 @@ function buildImportReview(
   const normalized = applyImportNotesToShots(shots, notes);
   const detectedMetrics = getDetectedImportMetrics(normalized.shots);
   const missingMetrics = getMissingImportMetrics(normalized.shots);
-  const clubNames = Array.from(new Set(normalized.shots.map((shot) => getClubDisplayName(shot.club))));
+  const clubNames = importReviewClubNames(normalized.shots);
   const reviewId = `review-${Date.now()}`;
   const date = metadata.capturedAt ?? getTodayDateString();
   const normalizedCsv = metadata.normalizedCsv ?? generateCanonicalLaunchMonitorCsv({
@@ -3114,10 +3191,11 @@ function buildImportReview(
   const warnings = [
     ...(metadata.warnings ?? []),
     ...(missingMetrics.length ? [`${missingMetrics.length} metrics were not found and will show as NA.`] : []),
-    ...(clubNames.some((club) => normalizeDataLabel(club) === "unknownclub") && !normalized.inferredClub
-      ? ["Club was not detected. Add it in the notes or choose it before saving."]
+    ...(clubNames.some((club) => isUnknownReviewClub(club)) && !normalized.inferredClub
+      ? ["Club was not detected. Choose it during review or save as Unknown Club."]
       : []),
     ...(metadata.duplicateShotNumbers?.length ? [`Merged overlapping shots ${metadata.duplicateShotNumbers.join(", ")}.`] : []),
+    ...(metadata.summaryRowsExcluded ? [`${metadata.summaryRowsExcluded} AVG/summary row ${metadata.summaryRowsExcluded === 1 ? "was" : "were"} excluded from shot count and averages.`] : []),
   ];
   const blockingIssues = metadata.blockingIssues ?? [];
 
@@ -3933,6 +4011,10 @@ function parsePhotoOcr(text: string, fileName: string, fileIndex: number, tsv?: 
   };
 }
 
+function importedSessionTitle(subject: string, submissionType: LastImport["submissionType"]) {
+  return `${subject} ${submissionType === "Photo" ? "photo" : submissionType === "API feed" ? "API" : submissionType === "Manual entry" ? "manual" : "CSV"} import`;
+}
+
 function buildImportedSession(
   shots: Shot[],
   submissionType: LastImport["submissionType"],
@@ -3956,7 +4038,7 @@ function buildImportedSession(
 
   return {
     id: `import-${Date.now()}`,
-    title: `${subject} ${submissionType === "Photo" ? "photo" : submissionType === "API feed" ? "API" : submissionType === "Manual entry" ? "manual" : "CSV"} import`,
+    title: importedSessionTitle(subject, submissionType),
     date: metadata.capturedAt ?? getTodayDateString(),
     source,
     focus: "New data",
@@ -5195,6 +5277,81 @@ export default function Home() {
     );
   }
 
+  function updateSessionDetails(sessionId: string, values: SessionEditValues) {
+    const session = sessions.find((item) => item.id === sessionId);
+    if (!session) return;
+
+    const sessionClub = normalizeReviewClubInput(values.sessionClub);
+    const nextShots = session.shots.map((shot) => {
+      const requestedClub = values.shotClubs[shot.id] ?? values.sessionClub ?? shot.club;
+      return setImportShotClub(shot, requestedClub || sessionClub || shot.club, true);
+    });
+    const clubs = Array.from(new Set(nextShots.map((shot) => normalizeReviewClubInput(shot.club))));
+    const knownClubs = clubs.filter((club) => !isUnknownReviewClub(club));
+    const subject = clubs.length === 1 ? getClubDisplayName(clubs[0]) : `${clubs.length}-club`;
+    const submissionType = getSessionSubmissionType(session);
+    const missingMetrics = getMissingImportMetrics(nextShots);
+    const importNotes = values.notes.trim() || undefined;
+    const normalizedCsv =
+      submissionType === "Photo"
+        ? generateNormalizedPhotoImportCsv({
+          sessionId: session.importMetadata?.photoImportJobId ?? session.importMetadata?.sessionId ?? session.id,
+          sessionDate: session.date,
+          simulator: session.importMetadata?.simulator ?? session.source,
+          club: knownClubs[0] ?? clubs[0] ?? UNKNOWN_IMPORT_CLUB,
+          shots: nextShots,
+          notes: importNotes ?? "",
+        })
+        : generateCanonicalLaunchMonitorCsv({
+          sessionId: session.importMetadata?.sessionId ?? session.id,
+          sessionDate: session.date,
+          simulator: session.importMetadata?.simulator ?? session.source,
+          shots: nextShots,
+          notes: importNotes ?? "",
+        });
+    const nextSession: Session = {
+      ...session,
+      title: importedSessionTitle(subject, submissionType),
+      importNotes,
+      missingMetrics,
+      shots: nextShots,
+      importMetadata: {
+        ...(session.importMetadata ?? {}),
+        blockingIssues: nonClubBlockingIssues(session.importMetadata?.blockingIssues),
+        clubCount: clubs.length,
+        clubs,
+        missingMetrics,
+        normalizedCsv,
+        rowsDetected: nextShots.length,
+        sourceCounts: metricSourceCounts(nextShots),
+        measuredMetrics: metricSourcesForKind(nextShots, "measured"),
+        derivedMetrics: metricSourcesForKind(nextShots, "derived"),
+        estimatedMetrics: metricSourcesForKind(nextShots, "estimated"),
+        photoImportSummary: session.importMetadata?.photoImportSummary
+          ? {
+            ...session.importMetadata.photoImportSummary,
+            club: importReviewSummaryClubLabel(nextShots),
+            canonicalClub: knownClubs.length === 1 ? knownClubs[0] : null,
+            uniqueShotCount: nextShots.length,
+          }
+          : session.importMetadata?.photoImportSummary,
+      },
+    };
+    const nextSessions = sessions.map((item) => (item.id === session.id ? nextSession : item));
+    commitSessionDataChange(
+      nextSessions,
+      `${nextSession.title} was updated. Dashboard stats, club summaries, and saved session data were recalculated.`,
+    );
+    if (accountMode === "user") {
+      void fetch("/api/session-analysis", {
+        method: "DELETE",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: session.id }),
+      });
+    }
+  }
+
   async function saveUserPracticeProfile(profile: UserPracticeProfile) {
     try {
       const response = await fetch("/api/profile", {
@@ -5615,12 +5772,18 @@ export default function Home() {
     setPendingImportReview((current) => {
       if (!current) return current;
       const updated = updater(current);
+      const nextDetectedMetrics = getDetectedImportMetrics(updated.shots);
+      const nextMissingMetrics = getMissingImportMetrics(updated.shots);
+      const nextClubNames = Array.from(new Set(updated.shots.map((shot) => normalizeReviewClubInput(shot.club))));
+      const knownClubNames = nextClubNames.filter((club) => !isUnknownReviewClub(club));
+      const summaryClub = importReviewSummaryClubLabel(updated.shots);
+      const blockingIssues = nonClubBlockingIssues(updated.blockingIssues);
       const normalizedCsv = updated.submissionType === "Photo"
         ? generateNormalizedPhotoImportCsv({
           sessionId: updated.metadata.photoImportJobId ?? updated.id,
           sessionDate: updated.date,
           simulator: updated.simulator,
-          club: updated.shots[0]?.club ?? updated.inferredClub ?? "Unknown Club",
+          club: knownClubNames[0] ?? updated.shots[0]?.club ?? updated.inferredClub ?? UNKNOWN_IMPORT_CLUB,
           shots: updated.shots,
           notes: updated.notes,
         })
@@ -5633,18 +5796,40 @@ export default function Home() {
         });
       return {
         ...updated,
+        blockingIssues,
         csvText: normalizedCsv,
-        detectedMetrics: getDetectedImportMetrics(updated.shots),
+        detectedMetrics: nextDetectedMetrics,
+        inferredClub: nextClubNames.length === 1 ? nextClubNames[0] : (knownClubNames[0] ?? updated.inferredClub),
         metadata: {
           ...updated.metadata,
+          blockingIssues,
+          clubs: nextClubNames,
+          clubCount: nextClubNames.length,
+          rowsDetected: updated.shots.length,
+          photoImportSummary: updated.metadata.photoImportSummary
+            ? {
+              ...updated.metadata.photoImportSummary,
+              club: summaryClub,
+              canonicalClub: knownClubNames.length === 1 ? knownClubNames[0] : null,
+              uniqueShotCount: updated.shots.length,
+            }
+            : updated.metadata.photoImportSummary,
           sourceCounts: metricSourceCounts(updated.shots),
           measuredMetrics: metricSourcesForKind(updated.shots, "measured"),
           derivedMetrics: metricSourcesForKind(updated.shots, "derived"),
           estimatedMetrics: metricSourcesForKind(updated.shots, "estimated"),
-          missingMetrics: getMissingImportMetrics(updated.shots),
+          missingMetrics: nextMissingMetrics,
           normalizedCsv,
         },
-        missingMetrics: getMissingImportMetrics(updated.shots),
+        missingMetrics: nextMissingMetrics,
+        summary: updated.summary
+          ? {
+            ...updated.summary,
+            club: summaryClub,
+            canonicalClub: knownClubNames.length === 1 ? knownClubNames[0] : null,
+            uniqueShotCount: updated.shots.length,
+          }
+          : updated.summary,
       };
     });
   }
@@ -5655,15 +5840,34 @@ export default function Home() {
       return;
     }
     const review = pendingImportReview;
-    if (review.blockingIssues?.length) {
-      setImportMessage(`Resolve before saving: ${review.blockingIssues.join(" ")}`);
+    const blockingIssues = nonClubBlockingIssues(review.blockingIssues);
+    if (blockingIssues.length) {
+      setImportMessage(`Resolve before saving: ${blockingIssues.join(" ")}`);
       return;
     }
+    const hasUnknownClub = review.shots.some((shot) => isUnknownReviewClub(shot.club));
+    if (hasUnknownClub) {
+      const shouldSaveUnknown = window.confirm(
+        "Club not selected\n\nYou can save this session without a club and update it later.\n\nChoose OK to save as Unknown Club, or Cancel to go back.",
+      );
+      if (!shouldSaveUnknown) {
+        setImportMessage("Choose a club or save as Unknown Club when you are ready.");
+        return;
+      }
+    }
+    const shotsToSave = review.shots.map((shot) => (
+      isUnknownReviewClub(shot.club) ? setImportShotClub(shot, UNKNOWN_IMPORT_CLUB, true) : shot
+    ));
     const nextSession = buildImportedSession(
-      review.shots,
+      shotsToSave,
       review.submissionType,
       review.simulator,
-      review.metadata,
+      {
+        ...review.metadata,
+        clubs: Array.from(new Set(shotsToSave.map((shot) => shot.club))),
+        clubCount: new Set(shotsToSave.map((shot) => shot.club)).size,
+        blockingIssues,
+      },
       review.notes,
       review.missingMetrics,
     );
@@ -5674,7 +5878,7 @@ export default function Home() {
     }
     const nextLastImport = makeLastImport(
       review.submissionType,
-      review.shots,
+      shotsToSave,
       nextSession.date,
       review.simulator,
       review.location,
@@ -5692,7 +5896,7 @@ export default function Home() {
     if (accountMode !== "user") {
       storeImportState(nextSessions, nextLastImport);
     }
-    const importedClubNames = Array.from(new Set(review.shots.map((shot) => getClubDisplayName(shot.club))));
+    const importedClubNames = Array.from(new Set(shotsToSave.map((shot) => getClubDisplayName(shot.club))));
     const clubLabel = importedClubNames.length === 1 ? importedClubNames[0] : `${importedClubNames.length} clubs`;
     const successMessage =
       `${review.shots.length} ${clubLabel} ${review.shots.length === 1 ? "shot" : "shots"} successfully uploaded and analyzed. ` +
@@ -5890,6 +6094,7 @@ export default function Home() {
             canAnalyzeSession={accountMode === "user"}
             onDeleteSession={deleteSession}
             onDeleteShot={deleteShot}
+            onEditSession={updateSessionDetails}
             onOpenSession={(sessionId, selection) => openSessionView(sessionId, selection)}
             onSelectionChange={applySessionViewSelection}
             sessionSelection={sessionViewSelection}
@@ -6864,6 +7069,7 @@ function SessionsView({
   canAnalyzeSession,
   onDeleteSession,
   onDeleteShot,
+  onEditSession,
   onOpenSession,
   onSelectionChange,
   sessionSelection,
@@ -6877,6 +7083,7 @@ function SessionsView({
   canAnalyzeSession: boolean;
   onDeleteSession: (sessionId: string) => void;
   onDeleteShot: (sessionId: string, shotId: string) => void;
+  onEditSession: (sessionId: string, values: SessionEditValues) => void;
   onOpenSession: (sessionId: string, selection?: Partial<SessionViewSelection>) => void;
   onSelectionChange: (selection: Partial<SessionViewSelection>) => void;
   sessionSelection: SessionViewSelection;
@@ -6915,12 +7122,38 @@ function SessionsView({
   const [analysisBySessionId, setAnalysisBySessionId] = useState<Record<string, SessionAnalysisState>>({});
   const selectedAnalysis = analysisBySessionId[analysisKey] ?? { status: "idle", message: "" };
   const structuredAnalysis = selectedAnalysis.result?.analysis ?? null;
+  const [isEditingSession, setIsEditingSession] = useState(false);
+  const [editSessionClub, setEditSessionClub] = useState("");
+  const [editSessionNotes, setEditSessionNotes] = useState("");
+  const [editShotClubs, setEditShotClubs] = useState<Record<string, string>>({});
   const canRequestAnalysis =
     canAnalyzeSession &&
     selectedSession.id !== EMPTY_SESSION.id &&
     activeSessionShots.length > 0 &&
     selectedAnalysis.status !== "loading";
   const canExportSession = selectedSession.id !== EMPTY_SESSION.id && selectedSession.shots.length > 0;
+
+  function openSessionEditor() {
+    setEditSessionClub(importReviewSessionClub(selectedSession.shots, selectedSession.shots[0]?.club ?? UNKNOWN_IMPORT_CLUB));
+    setEditSessionNotes(selectedSession.importNotes ?? "");
+    setEditShotClubs(Object.fromEntries(selectedSession.shots.map((shot) => [shot.id, getClubDisplayName(shot.club)])));
+    setIsEditingSession(true);
+  }
+
+  function saveSessionEditor() {
+    if (selectedSession.id === EMPTY_SESSION.id) return;
+    setAnalysisBySessionId({});
+    onEditSession(selectedSession.id, {
+      notes: editSessionNotes,
+      sessionClub: editSessionClub,
+      shotClubs: editShotClubs,
+    });
+    setIsEditingSession(false);
+  }
+
+  useEffect(() => {
+    setIsEditingSession(false);
+  }, [selectedSession.id]);
 
   useEffect(() => {
     if (!canAnalyzeSession || selectedSession.id === EMPTY_SESSION.id || !activeSessionShots.length) return;
@@ -7133,6 +7366,9 @@ function SessionsView({
                   Download CSV
                 </a>
               )}
+              {selectedSession.id !== EMPTY_SESSION.id && (
+                <button className="text-button" onClick={openSessionEditor} type="button">Edit session</button>
+              )}
               <button className="text-button" onClick={() => setActiveTab("coach")} type="button">Coach notes</button>
               {selectedSession.id !== EMPTY_SESSION.id && (
                 <button className="text-button danger-text-button" onClick={() => onDeleteSession(selectedSession.id)} type="button">
@@ -7175,6 +7411,73 @@ function SessionsView({
             </button>
           )}
         </div>
+        {isEditingSession && selectedSession.id !== EMPTY_SESSION.id && (
+          <div className="session-edit-panel">
+            <div className="session-edit-heading">
+              <div>
+                <p className="eyebrow">Edit Session</p>
+                <h3>Update club and notes</h3>
+              </div>
+              <button className="text-button" onClick={() => setIsEditingSession(false)} type="button">Close</button>
+            </div>
+            <div className="session-edit-grid">
+              <label>
+                <span>Session-level club</span>
+                <input
+                  list="session-edit-club-options"
+                  onChange={(event) => {
+                    setEditSessionClub(event.target.value);
+                    const nextClub = normalizeReviewClubInput(event.target.value);
+                    setEditShotClubs(Object.fromEntries(
+                      selectedSession.shots.map((shot) => [shot.id, getClubDisplayName(nextClub)]),
+                    ));
+                  }}
+                  placeholder="Example: 8-Iron, 56° Wedge, Unknown Club"
+                  value={editSessionClub}
+                />
+              </label>
+              <label>
+                <span>Session notes</span>
+                <textarea
+                  onChange={(event) => setEditSessionNotes(event.target.value)}
+                  placeholder="Session context, club notes, or what you were working on."
+                  value={editSessionNotes}
+                />
+              </label>
+            </div>
+            <datalist id="session-edit-club-options">
+              {IMPORT_CLUB_OPTIONS.map((club) => (
+                <option key={club} value={getClubDisplayName(club)} />
+              ))}
+            </datalist>
+            <div className="session-edit-shot-list">
+              <div className="session-edit-shot-row header">
+                <span>Shot</span>
+                <span>Club</span>
+                <span>Carry</span>
+              </div>
+              {selectedSession.shots.map((shot, index) => (
+                <div className="session-edit-shot-row" key={shot.id}>
+                  <span>{shot.sourceShotNumber ? `#${shot.sourceShotNumber}` : `#${index + 1}`}</span>
+                  <input
+                    aria-label={`Club for shot ${shot.sourceShotNumber ?? index + 1}`}
+                    list="session-edit-club-options"
+                    onChange={(event) => setEditShotClubs((current) => ({
+                      ...current,
+                      [shot.id]: event.target.value,
+                    }))}
+                    value={editShotClubs[shot.id] ?? getClubDisplayName(shot.club)}
+                  />
+                  <span>{formatAvailableMetric(getShotMetric(shot, "carry") ?? Number.NaN, "yd")}</span>
+                </div>
+              ))}
+            </div>
+            <div className="button-row">
+              <button className="secondary-action" onClick={() => setIsEditingSession(false)} type="button">Cancel</button>
+              <button className="primary-action" onClick={saveSessionEditor} type="button">Save session edits</button>
+            </div>
+          </div>
+        )}
         <ShotMap
           allClubMode={allClubMode}
           onSelectClub={(club) => onSelectionChange({ club, shotId: null, metric: null })}
@@ -9337,7 +9640,7 @@ function CoachVideoWorkspace({
       );
     }
 
-    const imageFiles = sessionUploadFiles.filter((file) => file.type.startsWith("image/"));
+    const imageFiles = sessionUploadFiles.filter((file) => !sessionPhotoValidationMessage(file));
     if (!imageFiles.length) throw new Error("Choose one or more session screenshots or photos.");
     const form = new FormData();
     imageFiles.forEach((file) => form.append("images", file));
@@ -9406,8 +9709,9 @@ function CoachVideoWorkspace({
     setUploadStage("importing_session_data");
     setSessionUploadStatus("Reading attached session data...");
     const review = await parseCoachUploadedSessionData();
-    if (review.blockingIssues?.length) {
-      throw new Error(`Session data needs review: ${review.blockingIssues.join(" ")}`);
+    const blockingIssues = nonClubBlockingIssues(review.blockingIssues);
+    if (blockingIssues.length) {
+      throw new Error(`Session data needs review: ${blockingIssues.join(" ")}`);
     }
     if (!review.shots.length) {
       throw new Error("No usable shots were found in the attached session data.");
@@ -9957,7 +10261,7 @@ function CoachVideoWorkspace({
                     <label>
                       <span>{sessionUploadKind === "csv" ? "Upload CSV" : "Upload photos"}</span>
                       <input
-                        accept={sessionUploadKind === "csv" ? ".csv,text/csv,text/plain" : "image/*"}
+                        accept={sessionUploadKind === "csv" ? ".csv,text/csv,text/plain" : PHOTO_IMPORT_ACCEPT}
                         multiple={sessionUploadKind === "photos"}
                         onChange={(event) => setSessionUploadFiles(Array.from(event.currentTarget.files ?? []))}
                         type="file"
@@ -9966,7 +10270,7 @@ function CoachVideoWorkspace({
                     <p>
                       {sessionUploadKind === "csv"
                         ? "Use a launch-monitor CSV with shot rows, club, distance, speed, launch, spin, and curve/path fields when available."
-                        : "Use clear screenshots of the simulator shot-history tables. If a photo needs review, the video upload will still be preserved."}
+                        : `Use clear screenshots of the simulator shot-history tables. Accepted formats: ${PHOTO_IMPORT_ACCEPTED_LABEL}. If a photo needs review, the video upload will still be preserved.`}
                     </p>
                     {sessionUploadFiles.length > 0 && (
                       <small>{sessionUploadFiles.map((file) => file.name).join(", ")}</small>
@@ -11926,10 +12230,40 @@ const PHOTO_REVIEW_DELIVERY_FIELDS: Array<{ key: NumericShotMetric; label: strin
   { key: "swingPlane", label: "Plane" },
 ];
 
-const PHOTO_UPLOAD_REQUEST_BUDGET_BYTES = 900 * 1024;
+const PHOTO_UPLOAD_REQUEST_BUDGET_BYTES = 12 * 1024 * 1024;
 const PHOTO_UPLOAD_MAX_DIMENSION = 1800;
 const PHOTO_UPLOAD_MIN_DIMENSION = 900;
 const PHOTO_UPLOAD_JPEG_QUALITY_STEPS = [0.82, 0.74, 0.66];
+const PHOTO_IMPORT_MAX_FILES = 8;
+const PHOTO_IMPORT_MAX_FILE_BYTES = 18 * 1024 * 1024;
+const PHOTO_IMPORT_ACCEPTED_LABEL = "JPG, JPEG, PNG, HEIC, HEIF, WebP";
+const PHOTO_IMPORT_ACCEPT = ".jpg,.jpeg,.png,.webp,.heic,.heif,image/jpeg,image/png,image/webp,image/heic,image/heif";
+
+function isHeicPhoto(file: File) {
+  return /image\/hei[cf]/i.test(file.type) || /\.(hei[cf])$/i.test(file.name);
+}
+
+function isSupportedSessionPhoto(file: File) {
+  const lowerName = file.name.toLowerCase();
+  return (
+    ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"].includes(file.type.toLowerCase()) ||
+    /\.(jpe?g|png|webp|hei[cf])$/i.test(lowerName)
+  );
+}
+
+function sessionPhotoValidationMessage(file: File) {
+  if (file.name.toLowerCase().endsWith(".mov")) {
+    return "MAI Coach uses the still photo from a Live Photo. The motion portion is not needed.";
+  }
+  if (!isSupportedSessionPhoto(file)) {
+    return `This file type is not supported. Upload ${PHOTO_IMPORT_ACCEPTED_LABEL}.`;
+  }
+  if (file.size <= 0) return "This image is empty and cannot be processed.";
+  if (file.size > PHOTO_IMPORT_MAX_FILE_BYTES) {
+    return `This image is larger than the ${Math.round(PHOTO_IMPORT_MAX_FILE_BYTES / 1024 / 1024)} MB limit.`;
+  }
+  return "";
+}
 
 async function imageBitmapFromFile(file: File): Promise<ImageBitmap | HTMLImageElement> {
   if ("createImageBitmap" in window) {
@@ -11955,10 +12289,18 @@ function canvasBlob(canvas: HTMLCanvasElement, type: string, quality: number) {
 }
 
 async function preparePhotoForPrivateImport(file: File, targetBytes: number) {
+  if (isHeicPhoto(file)) {
+    return { file, originalSize: file.size, uploadSize: file.size, wasResized: false };
+  }
   if (file.size <= targetBytes) {
     return { file, originalSize: file.size, uploadSize: file.size, wasResized: false };
   }
-  const source = await imageBitmapFromFile(file);
+  let source: ImageBitmap | HTMLImageElement;
+  try {
+    source = await imageBitmapFromFile(file);
+  } catch {
+    return { file, originalSize: file.size, uploadSize: file.size, wasResized: false };
+  }
   const width = source.width;
   const height = source.height;
   const originalMaxDimension = Math.max(width, height);
@@ -12097,13 +12439,15 @@ function ImportView({
   setCsvText: (value: string) => void;
   updateImportReview: (updater: (review: ImportReview) => ImportReview) => void;
 }) {
-  const [importMode, setImportMode] = useState<"api" | "file" | "photo" | "manual">("api");
+  const [importMode, setImportMode] = useState<"api" | "file" | "photo" | "manual">("photo");
   const [importNotes, setImportNotes] = useState("");
   const [photoBatchImport, setPhotoBatchImport] = useState<PhotoBatchImportResult | null>(null);
   const [photoScans, setPhotoScans] = useState<PhotoScanResult[]>([]);
+  const [selectedPhotoFiles, setSelectedPhotoFiles] = useState<SelectedImportPhoto[]>([]);
+  const [sessionClubDraft, setSessionClubDraft] = useState("");
   const [photoScanState, setPhotoScanState] = useState<"idle" | "scanning" | "ready" | "error">("idle");
   const [photoProgress, setPhotoProgress] = useState(0);
-  const [photoStatus, setPhotoStatus] = useState("Choose up to five launch monitor screenshots or result photos.");
+  const [photoStatus, setPhotoStatus] = useState("Choose photos to start a private session import.");
   const [csvFileName, setCsvFileName] = useState("Sample rows");
   const [csvFileStatus, setCsvFileStatus] = useState("Choose a CSV file or paste exported rows.");
   const [manualStatus, setManualStatus] = useState("Enter at least one metric. Missing fields will display as NA.");
@@ -12131,6 +12475,14 @@ function ImportView({
       if (result.previewUrl) URL.revokeObjectURL(result.previewUrl);
     });
   }, [photoScans]);
+
+  useEffect(() => () => {
+    selectedPhotoFiles.forEach((photo) => URL.revokeObjectURL(photo.previewUrl));
+  }, [selectedPhotoFiles]);
+
+  useEffect(() => {
+    if (!pendingImportReview) setSessionClubDraft("");
+  }, [pendingImportReview]);
 
   function updateManualField(key: string, value: string) {
     setManualForm((current) => ({ ...current, [key]: value }));
@@ -12278,13 +12630,86 @@ function ImportView({
     }
   }
 
+  function addSelectedPhotoFiles(files: File[]) {
+    if (!files.length) return;
+    const accepted: SelectedImportPhoto[] = [];
+    const rejected: PhotoScanResult[] = [];
+    const existingKeys = new Set(
+      selectedPhotoFiles.map((photo) => `${photo.file.name}:${photo.file.size}:${photo.file.lastModified}`),
+    );
+    for (const file of files) {
+      const validationMessage = sessionPhotoValidationMessage(file);
+      if (validationMessage) {
+        rejected.push({
+          id: `rejected-${Date.now()}-${file.name}`,
+          fileName: file.name,
+          previewUrl: isSupportedSessionPhoto(file) ? URL.createObjectURL(file) : undefined,
+          status: "error",
+          message: validationMessage,
+        });
+        continue;
+      }
+      const key = `${file.name}:${file.size}:${file.lastModified}`;
+      if (existingKeys.has(key)) continue;
+      existingKeys.add(key);
+      accepted.push({
+        id: `selected-photo-${Date.now()}-${accepted.length}-${file.name}`,
+        file,
+        previewUrl: URL.createObjectURL(file),
+      });
+    }
+    if (rejected.length) {
+      setPhotoScans((current) => [...rejected, ...current]);
+      setPhotoScanState((current) => current === "idle" ? "error" : current);
+    }
+    if (!accepted.length) {
+      if (rejected.length) setPhotoStatus("Some files could not be added. Accepted photos remain available.");
+      return;
+    }
+    setSelectedPhotoFiles((current) => [...current, ...accepted].slice(0, PHOTO_IMPORT_MAX_FILES));
+    setPhotoStatus(`${Math.min(selectedPhotoFiles.length + accepted.length, PHOTO_IMPORT_MAX_FILES)} photos selected`);
+    setPhotoScanState("idle");
+  }
+
+  function removeSelectedPhoto(id: string) {
+    setSelectedPhotoFiles((current) => {
+      const target = current.find((photo) => photo.id === id);
+      if (target) URL.revokeObjectURL(target.previewUrl);
+      const next = current.filter((photo) => photo.id !== id);
+      setPhotoStatus(next.length ? `${next.length} photos selected` : "Choose photos to start a private session import.");
+      return next;
+    });
+  }
+
+  function clearSelectedPhotos() {
+    selectedPhotoFiles.forEach((photo) => URL.revokeObjectURL(photo.previewUrl));
+    setSelectedPhotoFiles([]);
+    setPhotoScans([]);
+    setPhotoBatchImport(null);
+    setPhotoScanState("idle");
+    setPhotoProgress(0);
+    setPhotoStatus("Choose photos to start a private session import.");
+  }
+
+  function moveSelectedPhoto(id: string, direction: -1 | 1) {
+    setSelectedPhotoFiles((current) => {
+      const index = current.findIndex((photo) => photo.id === id);
+      const targetIndex = index + direction;
+      if (index < 0 || targetIndex < 0 || targetIndex >= current.length) return current;
+      const next = [...current];
+      const [photo] = next.splice(index, 1);
+      next.splice(targetIndex, 0, photo);
+      return next;
+    });
+  }
+
   async function scanPhotoFiles(files: File[]) {
-    const selectedFiles = files.slice(0, 8);
+    const selectedFiles = files.slice(0, PHOTO_IMPORT_MAX_FILES);
     if (!selectedFiles.length) return;
 
     const previewUrls = new Map(selectedFiles.map((file) => [file.name, URL.createObjectURL(file)]));
     const supportedFiles = selectedFiles.filter((file) =>
-      file.type.startsWith("image/") && file.size <= 18 * 1024 * 1024,
+      !sessionPhotoValidationMessage(file),
     );
     const rejectedFiles: PhotoScanResult[] = selectedFiles
       .filter((file) => !supportedFiles.includes(file))
@@ -12293,7 +12718,7 @@ function ImportView({
         fileName: file.name,
         previewUrl: previewUrlForFileName(previewUrls, file.name),
         status: "error",
-        message: "Use PNG, JPG, JPEG, WebP, PDF, or CSV files under the listed size limit.",
+        message: sessionPhotoValidationMessage(file) || `Upload ${PHOTO_IMPORT_ACCEPTED_LABEL}.`,
       }));
     const fallbackResults = (message: string): PhotoScanResult[] => supportedFiles.map((file, index) => ({
       id: `photo-fallback-${Date.now()}-${index}`,
@@ -12306,7 +12731,7 @@ function ImportView({
     if (!supportedFiles.length) {
       setPhotoScans(rejectedFiles);
 	    setPhotoScanState("error");
-	    setPhotoStatus("No supported images were selected.");
+	    setPhotoStatus("No supported session photos were selected.");
 	    return;
 	  }
 
@@ -12365,9 +12790,9 @@ function ImportView({
         credentials: "same-origin",
       });
       const responseText = await response.text();
-      let payload: PhotoBatchImportResult & { error?: string };
+      let payload: PhotoBatchImportResult & { error?: unknown; message?: unknown; publicMessage?: unknown };
       try {
-        payload = JSON.parse(responseText) as PhotoBatchImportResult & { error?: string };
+        payload = JSON.parse(responseText) as PhotoBatchImportResult & { error?: unknown; message?: unknown; publicMessage?: unknown };
       } catch {
         throw new Error(responseText || "The private photo reader could not read the upload response.");
       }
@@ -12380,10 +12805,11 @@ function ImportView({
         shots: [],
         notes: importNotes,
       });
-      const fallbackMessage =
-        payload.error ||
-        payload.warnings?.[0] ||
-        (response.ok ? "No readable shot data was found." : "The private photo reader could not complete this batch.");
+      const fallbackMessage = payload.error || !response.ok
+        ? apiErrorMessage(payload, "The private photo reader could not complete this batch.", response.status)
+        : typeof payload.warnings?.[0] === "string" && payload.warnings[0].trim()
+          ? payload.warnings[0].trim()
+          : "No readable shot data was found.";
 
       const importedMetadata: PhotoImportMetadata = {
         ...combinedMetadata,
@@ -12473,9 +12899,15 @@ function ImportView({
     {},
   );
   const reviewClubNames = pendingImportReview
-    ? Array.from(new Set(pendingImportReview.shots.map((shot) => getClubDisplayName(shot.club))))
+    ? importReviewClubNames(pendingImportReview.shots)
     : [];
-  const reviewClubValue = reviewClubNames.length === 1 ? reviewClubNames[0] : reviewClubNames.join(", ");
+  const reviewClubValue = pendingImportReview
+    ? importReviewSessionClub(pendingImportReview.shots, pendingImportReview.inferredClub)
+    : "";
+  const sessionClubInputValue = pendingImportReview ? (sessionClubDraft || reviewClubValue) : "";
+  const suggestedClubFromNotes = pendingImportReview
+    ? inferClubFromImportNotes(pendingImportReview.notes || importNotes)
+    : undefined;
   const reviewCsvText = pendingImportReview?.csvText ?? pendingImportReview?.metadata.normalizedCsv ?? "";
   const reviewMetadata = pendingImportReview?.metadata;
 
@@ -12508,7 +12940,7 @@ function ImportView({
             {pendingImportReview.summary && (
               <div className="photo-import-summary-grid">
                 <div><span>Simulator</span><strong>{pendingImportReview.summary.simulator}</strong></div>
-                <div><span>Club</span><strong>{pendingImportReview.summary.club}</strong></div>
+                <div><span>Club</span><strong>{importReviewSummaryClubLabel(pendingImportReview.shots)}</strong></div>
                 <div><span>Images</span><strong>{pendingImportReview.summary.imageCount}</strong></div>
                 <div><span>Distance pages</span><strong>{pendingImportReview.summary.distancePageCount}</strong></div>
                 <div><span>Delivery pages</span><strong>{pendingImportReview.summary.deliveryPageCount}</strong></div>
@@ -12522,7 +12954,7 @@ function ImportView({
               <div className="photo-import-summary-grid import-evidence-summary">
                 <div><span>Detected session</span><strong>{reviewMetadata.sessionId ?? pendingImportReview.id}</strong></div>
                 <div><span>Rows</span><strong>{reviewMetadata.rowsDetected ?? pendingImportReview.shots.length}</strong></div>
-                <div><span>Clubs</span><strong>{reviewMetadata.clubCount ?? reviewClubNames.length}</strong></div>
+                <div><span>Clubs</span><strong>{reviewClubNames.length}</strong></div>
                 <div><span>Source file</span><strong>{reviewMetadata.sourceFileName ?? "NA"}</strong></div>
                 <div><span>Measured</span><strong>{sourceCountLabel(reviewMetadata.sourceCounts, "measured")}</strong></div>
                 <div><span>Calculated</span><strong>{sourceCountLabel(reviewMetadata.sourceCounts, "derived")}</strong></div>
@@ -12537,7 +12969,7 @@ function ImportView({
                 <div className="mapping-review-summary">
                   <div>
                     <strong>Clubs detected</strong>
-                    <span>{(reviewMetadata.clubs ?? reviewClubNames).map(getClubDisplayName).join(", ") || "NA"}</span>
+                    <span>{reviewClubNames.join(", ") || UNKNOWN_IMPORT_CLUB}</span>
                   </div>
                   <div>
                     <strong>Measured fields</strong>
@@ -12630,19 +13062,64 @@ function ImportView({
 
             <div className="import-review-grid">
               <label>
-                <span>Detected club</span>
+                <span>Club used</span>
                 <input
+                  list="import-club-options"
                   onChange={(event) => {
-                    const nextClub = normalizeClubName(event.target.value);
+                    const nextClub = normalizeReviewClubInput(event.target.value);
+                    setSessionClubDraft(event.target.value);
                     updateImportReview((review) => ({
                       ...review,
                       inferredClub: nextClub,
-                      shots: review.shots.map((shot) => ({ ...shot, club: nextClub })),
+                      shots: review.shots.map((shot) => (
+                        isUnknownReviewClub(shot.club) ? setImportShotClub(shot, nextClub, false) : shot
+                      )),
                     }));
                   }}
-                  placeholder="Sand Wedge"
-                  value={reviewClubValue}
+                  placeholder="Example: 8-Iron, 7-Wood, 56° Wedge"
+                  value={sessionClubInputValue}
                 />
+                <datalist id="import-club-options">
+                  {IMPORT_CLUB_OPTIONS.map((club) => (
+                    <option key={club} value={getClubDisplayName(club)} />
+                  ))}
+                </datalist>
+                <small>Changing this fills rows that are missing a club without overwriting row-specific clubs.</small>
+                {suggestedClubFromNotes && !reviewClubNames.includes(getClubDisplayName(suggestedClubFromNotes)) && (
+                  <button
+                    className="secondary-action compact-action"
+                    onClick={() => {
+                      setSessionClubDraft(getClubDisplayName(suggestedClubFromNotes));
+                      updateImportReview((review) => ({
+                        ...review,
+                        inferredClub: suggestedClubFromNotes,
+                        shots: review.shots.map((shot) => (
+                          isUnknownReviewClub(shot.club) ? setImportShotClub(shot, suggestedClubFromNotes, false) : shot
+                        )),
+                      }));
+                    }}
+                    type="button"
+                  >
+                    Use suggested club: {getClubDisplayName(suggestedClubFromNotes)}
+                  </button>
+                )}
+                {sessionClubInputValue && (
+                  <button
+                    className="secondary-action compact-action"
+                    onClick={() => {
+                      const nextClub = normalizeReviewClubInput(sessionClubInputValue);
+                      setSessionClubDraft(getClubDisplayName(nextClub));
+                      updateImportReview((review) => ({
+                        ...review,
+                        inferredClub: nextClub,
+                        shots: review.shots.map((shot) => setImportShotClub(shot, nextClub, true)),
+                      }));
+                    }}
+                    type="button"
+                  >
+                    Apply this club to all shots
+                  </button>
+                )}
               </label>
               <label>
                 <span>Session notes</span>
@@ -12668,9 +13145,9 @@ function ImportView({
               </div>
             </div>
 
-            {(pendingImportReview.blockingIssues?.length ?? 0) > 0 && (
+            {nonClubBlockingIssues(pendingImportReview.blockingIssues).length > 0 && (
               <ul className="import-review-warnings blocking">
-                {pendingImportReview.blockingIssues?.map((warning) => (
+                {nonClubBlockingIssues(pendingImportReview.blockingIssues).map((warning) => (
                   <li key={warning}>{warning}</li>
                 ))}
               </ul>
@@ -12694,7 +13171,36 @@ function ImportView({
               {pendingImportReview.shots.map((shot, index) => (
                 <div className="import-review-shot-row" key={shot.id} role="row">
                   <strong>{shot.sourceShotNumber ? `#${shot.sourceShotNumber}` : `#${index + 1}`}</strong>
-                  <span>{getClubDisplayName(shot.club)}</span>
+                  <label className="review-shot-club-cell">
+                    <span className="sr-only">Club for shot {shot.sourceShotNumber ?? index + 1}</span>
+                    <input
+                      list="import-club-options"
+                      onChange={(event) => {
+                        const nextClub = normalizeReviewClubInput(event.target.value);
+                        updateImportReview((review) => ({
+                          ...review,
+                          shots: review.shots.map((reviewShot) => (
+                            reviewShot.id === shot.id ? setImportShotClub(reviewShot, nextClub, true) : reviewShot
+                          )),
+                        }));
+                      }}
+                      value={getClubDisplayName(shot.club)}
+                    />
+                    <button
+                      className="table-link-action"
+                      onClick={() => {
+                        const nextClub = normalizeReviewClubInput(shot.club);
+                        updateImportReview((review) => ({
+                          ...review,
+                          inferredClub: nextClub,
+                          shots: review.shots.map((reviewShot) => setImportShotClub(reviewShot, nextClub, true)),
+                        }));
+                      }}
+                      type="button"
+                    >
+                      Apply to all
+                    </button>
+                  </label>
                   <div className="photo-review-metric-group">
                     {PHOTO_REVIEW_DISTANCE_FIELDS.map((field) => (
                       <label key={field.key}>
@@ -12739,7 +13245,7 @@ function ImportView({
 
             {reviewCsvText && (
               <details className="normalized-csv-preview">
-                <summary>Preview CSV</summary>
+                <summary>View source file</summary>
                 <textarea readOnly value={reviewCsvText} />
                 <div className="button-row">
                   <button className="secondary-action" onClick={() => copyReviewCsv(reviewCsvText)} type="button">Copy CSV</button>
@@ -12752,7 +13258,7 @@ function ImportView({
               <button className="secondary-action" onClick={cancelImportReview} type="button">Cancel review</button>
               <button
                 className="primary-action"
-                disabled={(pendingImportReview.blockingIssues?.length ?? 0) > 0}
+                disabled={nonClubBlockingIssues(pendingImportReview.blockingIssues).length > 0}
                 onClick={confirmImportReview}
                 type="button"
               >
@@ -12765,22 +13271,31 @@ function ImportView({
 
         <div className="import-mode-grid import-primary-paths">
           <button
-            className={cls("import-mode", importMode === "api" && "active")}
-            onClick={() => setImportMode("api")}
+            className={cls("import-mode", importMode === "photo" && "active")}
+            onClick={() => setImportMode("photo")}
             type="button"
           >
-            <strong>Connect your launch monitor</strong>
-            <span>Automatically sync sessions from a supported launch monitor or data provider.</span>
-            <em>Connect API</em>
+            <strong>Upload Photos</strong>
+            <span>Upload screenshots or phone photos of your launch-monitor results. Multiple files are supported.</span>
+            <em>Choose Photos</em>
           </button>
           <button
-            className={cls("import-mode", importMode !== "api" && "active")}
+            className={cls("import-mode", importMode === "file" && "active")}
             onClick={() => setImportMode("file")}
             type="button"
           >
-            <strong>Let’s see your shots</strong>
-            <span>Upload a CSV or photos of your launch-monitor data. MAI Coach will map the numbers, organize the session, and let you review everything before saving.</span>
-            <em>Upload CSV or Photos</em>
+            <strong>Upload CSV instead</strong>
+            <span>Use an exported CSV from Full Swing, TrackMan, Foresight, FlightScope, SkyTrak, Uneekor, Garmin, or similar systems.</span>
+            <em>Choose CSV</em>
+          </button>
+          <button
+            className={cls("import-mode", importMode === "manual" && "active")}
+            onClick={() => setImportMode("manual")}
+            type="button"
+          >
+            <strong>Enter Manually</strong>
+            <span>Add the values you can see when a file is incomplete or unavailable.</span>
+            <em>Manual Entry</em>
           </button>
         </div>
 
@@ -12798,12 +13313,89 @@ function ImportView({
                 </button>
               ))}
             </div>
-            <p className="muted-copy">API connections are not active yet. Use Upload CSV or Photos for today’s imports.</p>
+            <p className="muted-copy">API connections are not active yet. Use Upload Photos or CSV for today’s imports.</p>
           </div>
         )}
 
         {(importMode === "file" || importMode === "photo") && (
           <div className="import-panel">
+            <div className="manual-entry-guide">
+              <strong>Upload photos of your session</strong>
+              <span>Upload screenshots or photos of your launch-monitor results. You can add multiple images from the same session.</span>
+            </div>
+            <div className="photo-upload-actions">
+              <label className="primary-action file-button">
+                <span>{selectedPhotoFiles.length ? "Add more photos" : "Choose Photos"}</span>
+                <input
+                  className="visually-hidden-file"
+                  type="file"
+                  accept={PHOTO_IMPORT_ACCEPT}
+                  capture="environment"
+                  multiple
+                  disabled={photoScanState === "scanning"}
+                  onChange={(event) => {
+                    const files = Array.from(event.currentTarget.files ?? []);
+                    event.currentTarget.value = "";
+                    addSelectedPhotoFiles(files);
+                  }}
+                />
+              </label>
+              {selectedPhotoFiles.length > 0 && (
+                <button className="secondary-action" onClick={clearSelectedPhotos} type="button">Clear all</button>
+              )}
+            </div>
+            <p className="muted-copy">
+              Accepted files: {PHOTO_IMPORT_ACCEPTED_LABEL}. Up to {PHOTO_IMPORT_MAX_FILES} files.
+              Maximum {Math.round(PHOTO_IMPORT_MAX_FILE_BYTES / 1024 / 1024)} MB per file.
+              For Live Photos, choose the still HEIC/HEIF image; the .mov motion portion is not needed.
+            </p>
+            <div
+              className="photo-drop"
+              onDragOver={(event) => {
+                event.preventDefault();
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                addSelectedPhotoFiles(Array.from(event.dataTransfer.files ?? []));
+              }}
+            >
+              <strong>{photoScanState === "scanning" ? "Reading your data" : "Session photo reader"}</strong>
+              <span>{selectedPhotoFiles.length ? `${selectedPhotoFiles.length} photos selected` : photoStatus}</span>
+              {photoScanState === "scanning" && (
+                <progress aria-label="Photo scan progress" max="100" value={photoProgress} />
+              )}
+            </div>
+            {selectedPhotoFiles.length > 0 && (
+              <div className="selected-photo-list" aria-label="Selected session photos">
+                {selectedPhotoFiles.map((photo, index) => (
+                  <article className="selected-photo-card" key={photo.id}>
+                    <img alt={`Selected ${photo.file.name}`} src={photo.previewUrl} />
+                    <div>
+                      <strong>{photo.file.name}</strong>
+                      <span>{index + 1} of {selectedPhotoFiles.length}</span>
+                    </div>
+                    <div className="selected-photo-actions">
+                      <button disabled={index === 0} onClick={() => moveSelectedPhoto(photo.id, -1)} type="button">Up</button>
+                      <button disabled={index === selectedPhotoFiles.length - 1} onClick={() => moveSelectedPhoto(photo.id, 1)} type="button">Down</button>
+                      <button onClick={() => removeSelectedPhoto(photo.id)} type="button">Remove</button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+            {selectedPhotoFiles.length > 0 && (
+              <div className="button-row">
+                <button
+                  className="primary-action"
+                  disabled={photoScanState === "scanning"}
+                  onClick={() => void scanPhotoFiles(selectedPhotoFiles.map((photo) => photo.file))}
+                  type="button"
+                >
+                  <span>⇧</span>
+                  Process selected photos
+                </button>
+              </div>
+            )}
             <div className="manual-entry-guide">
               <strong>Upload CSV</strong>
               <span>CSV files can come from Full Swing, TrackMan, Foresight, FlightScope, SkyTrak, Uneekor, Garmin, Rapsodo, or similar launch monitors.</span>
@@ -12840,32 +13432,8 @@ function ImportView({
             </div>
             <p className="muted-copy">
               Accepted format: CSV under 5 MB. Include at least club plus one shot metric such as carry, total,
-              ball speed, launch, spin, offline, club path, or face angle. PNG/JPG/PDF result exports can be added in Session photos.
+              ball speed, launch, spin, offline, club path, or face angle. Session photos should be JPG, JPEG, PNG, HEIC, HEIF, or WebP.
             </p>
-            <div className="manual-entry-guide import-subsection-guide">
-              <strong>Upload photos</strong>
-              <span>Use clear launch-monitor screenshots or result photos. Multiple pages are merged into one review when shot numbers overlap.</span>
-            </div>
-		            <input
-		              className="file-input"
-	              type="file"
-	              accept="image/*"
-	              capture="environment"
-	              multiple
-	              disabled={photoScanState === "scanning"}
-              onChange={(event) => {
-                const files = Array.from(event.currentTarget.files ?? []);
-                event.currentTarget.value = "";
-                void scanPhotoFiles(files);
-              }}
-            />
-            <div className="photo-drop">
-              <strong>{photoScanState === "scanning" ? "Reading your data" : "Session photo reader"}</strong>
-              <span>{photoStatus}</span>
-              {photoScanState === "scanning" && (
-                <progress aria-label="Photo scan progress" max="100" value={photoProgress} />
-              )}
-            </div>
 
             {photoScans.length > 0 && (
               <div className="photo-scan-results" aria-live="polite">
@@ -12958,7 +13526,7 @@ function ImportView({
 	                    setPhotoScans([]);
 	                    setPhotoScanState("idle");
 	                    setPhotoProgress(0);
-                    setPhotoStatus("Choose up to five launch monitor screenshots or result photos.");
+                    setPhotoStatus("Choose photos to start a private session import.");
                   }}
                 >
                   Clear

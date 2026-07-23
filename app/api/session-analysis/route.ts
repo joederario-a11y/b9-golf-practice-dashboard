@@ -1,4 +1,4 @@
-import { analyzeStoredSession, getStoredSessionAnalysis } from "@/lib/server/session-analysis";
+import { analyzeStoredSession, getStoredSessionAnalysis, invalidateStoredSessionAnalyses } from "@/lib/server/session-analysis";
 import { requireIdentity, responseFromError } from "@/lib/server/platform";
 
 function text(value: unknown, maxLength: number) {
@@ -34,6 +34,22 @@ export async function GET(request: Request) {
     }
 
     return getStoredSessionAnalysis(identity, sessionId, { club });
+  } catch (error) {
+    return responseFromError(error);
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    const identity = await requireIdentity();
+    const payload = await request.json().catch(() => ({})) as { sessionId?: unknown };
+    const sessionId = text(payload.sessionId, 160);
+
+    if (!sessionId) {
+      return Response.json({ error: "Choose a saved session to update." }, { status: 400 });
+    }
+
+    return invalidateStoredSessionAnalyses(identity, sessionId);
   } catch (error) {
     return responseFromError(error);
   }
