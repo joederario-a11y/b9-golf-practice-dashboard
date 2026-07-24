@@ -1621,6 +1621,9 @@ export async function updateVideoRecapState(identity: AuthIdentity, payload: Rec
   }
 
   if (action === "retry" || action === "retranscribeVideo") {
+    if (action === "retry" && transcript && draft && ["ready_for_review", "needs_coach_input", "approved", "published"].includes(draft.status)) {
+      return readVideoRecapState(identity, video.id);
+    }
     const activeJob = await loadActiveJob(database, video.id);
     if (activeJob) {
       if (!activeJobIsStale(activeJob)) return readVideoRecapState(identity, video.id);
