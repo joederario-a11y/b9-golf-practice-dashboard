@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -95,6 +96,14 @@ test("short or silent transcripts are treated as needing coach input", () => {
   assert.equal(transcriptLooksUsable(""), false);
   assert.equal(transcriptLooksUsable("Nice swing."), false);
   assert.equal(transcriptLooksUsable("We worked on club path, face angle, and a slower takeaway for better contact."), true);
+});
+
+test("video recap source tries audio extraction before QuickTime video normalization fallback", async () => {
+  const source = await readFile(new URL("../lib/server/video-ai-recap.ts", import.meta.url), "utf8");
+  assert.match(source, /function shouldPreferVideoChunkFallback/);
+  assert.match(source, /!isQuickTimeVideo\(video\) && sourceSize > MAX_TRANSCRIPTION_BYTES \* 20/);
+  assert.match(source, /mode: "audio"/);
+  assert.match(source, /format: "m4a"/);
 });
 
 test("draft normalization never invents missing coach feedback", () => {

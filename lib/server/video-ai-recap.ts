@@ -20,7 +20,6 @@ import {
 import {
   canDirectTranscribeStoredMedia,
   MAX_AUDIO_EXTRACTION_TRANSCRIPTION_BYTES,
-  MAX_DIRECT_MEDIA_TRANSCRIPTION_BYTES,
   mediaContainerFromMimeType,
   mediaProbeHasAudio,
   normalizeVideoProcessingSafeCode,
@@ -584,7 +583,7 @@ async function mediaResponseWithTimeout(promise: Promise<Response>, code: string
 }
 
 function shouldPreferVideoChunkFallback(video: VideoRecapRow, sourceSize: number) {
-  return isQuickTimeVideo(video) || sourceSize > MAX_TRANSCRIPTION_BYTES;
+  return !isQuickTimeVideo(video) && sourceSize > MAX_TRANSCRIPTION_BYTES * 20;
 }
 
 function canUseOriginalMediaFallback(video: VideoRecapRow, sourceSize: number, source: VideoTranscriptionMediaSource) {
