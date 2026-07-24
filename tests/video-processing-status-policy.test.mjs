@@ -84,7 +84,7 @@ test("transcript proof appears before recap draft completion", () => {
   assert.equal(status.title, "Transcript created");
   assert.equal(steps.find((step) => step.key === "transcript")?.state, "done");
   assert.equal(steps.find((step) => step.key === "recap")?.state, "pending");
-  assert.match(transcriptProof({ text: "Keep the face stable and rehearse the takeaway before speed work." }), /11 words/);
+  assert.match(transcriptProof({ durationSeconds: 131, text: "Keep the face stable and rehearse the takeaway before speed work." }), /11 words captured from 2:11/);
 });
 
 test("failed transcription can be retried without changing upload visibility", () => {
@@ -110,4 +110,19 @@ test("failed transcription can be retried without changing upload visibility", (
   assert.equal(status.safeFailureCode, "transcription_request_failed");
   assert.equal(steps.find((step) => step.key === "transcript")?.state, "attention");
   assert.equal(canShowVideoInLibrary({ ownerId, publicationStatus: "Draft", uploadStatus: "ready", visibility: "Admin only" }, ownerId, "coach"), true);
+});
+
+test("audio-stage failures explain retry without another upload", () => {
+  const status = lessonProcessingStatus({
+    job: {
+      errorCode: "cloudflare_normalization_failed",
+      status: "failed",
+      currentStep: "extracting_audio",
+    },
+    video: { ownerId, uploadStatus: "ready" },
+  });
+
+  assert.equal(status.title, "Audio processing needs attention");
+  assert.match(status.explanation, /Retry processing without uploading it again/);
+  assert.equal(status.safeFailureCode, "cloudflare_normalization_failed");
 });

@@ -5092,6 +5092,20 @@ async function prepareLessonVideoForUpload(
       warning: "Browser video recording unavailable",
     };
   }
+  const AudioCtor = audioContextConstructor();
+  if (!AudioCtor) {
+    return {
+      container: "original",
+      compressionTimeMs: 0,
+      file,
+      metadata,
+      message: "This browser cannot preserve lesson audio during optimization, so the original file will be uploaded.",
+      mimeType: file.type,
+      outputMetadata: metadata,
+      skipped: true,
+      warning: "Browser audio capture unavailable",
+    };
+  }
   const mimeType = recorderFormat.mimeType;
 
   const dimensions = fitLessonVideoDimensions(metadata, plan.maxShortEdge, plan.maxLongEdge);
@@ -5100,7 +5114,6 @@ async function prepareLessonVideoForUpload(
   const canvas = document.createElement("canvas");
   const context = canvas.getContext("2d", { alpha: false });
   const chunks: Blob[] = [];
-  const AudioCtor = audioContextConstructor();
   let audioContext: AudioContext | null = null;
   let audioDestination: MediaStreamAudioDestinationNode | null = null;
   let audioSource: MediaElementAudioSourceNode | null = null;
@@ -12399,7 +12412,7 @@ function AiLessonRecapReviewModal({
     if (action === "approveAndPublish" && !window.confirm("Publish this coach-approved recap and transcript to the member?")) return;
     if (action === "markIncorrect" && !window.confirm("Mark this AI recap as incorrect? It will stay hidden from the member.")) return;
     if (action === "cancelProcessing" && !window.confirm("Cancel the active MAI Coach processing job? Published recaps will remain available.")) return;
-    if (action === "retry" && !window.confirm("Retry MAI Coach processing for this video? The existing video will be preserved.")) return;
+    if (action === "retry" && !window.confirm("Retry audio processing for this video? The existing video will be preserved.")) return;
     if (action === "retranscribeVideo" && !window.confirm("Retranscribe the original video and create a new draft revision?")) return;
     setSaving("saving");
     try {
@@ -12428,7 +12441,7 @@ function AiLessonRecapReviewModal({
         });
         setMessage("Recap approved and published to the member.");
       } else if (action === "retry") {
-        setMessage("Retry Processing was queued.");
+        setMessage("Retry Audio Processing was queued.");
       } else if (action === "retranscribeVideo") {
         setMessage("Generate Notes From Video Audio was queued.");
       } else if (action === "regenerateRecapFromTranscript") {
@@ -12555,7 +12568,7 @@ function AiLessonRecapReviewModal({
             <button className="secondary-action" disabled={saving === "saving" || !hasDraft || draftLocked} onClick={() => void submit("saveDraft")} type="button">Save Draft</button>
             <button className="secondary-action" disabled={saving === "saving"} onClick={() => void refreshNow()} type="button">Refresh</button>
             <button className="secondary-action" disabled={saving === "saving" || !hasDraft || draftLocked} onClick={() => void submit("editTranscript")} type="button">Save Transcript</button>
-            {canRetryProcessing && <button className="secondary-action" disabled={saving === "saving"} onClick={() => void submit("retry")} type="button">Retry Processing</button>}
+            {canRetryProcessing && <button className="secondary-action" disabled={saving === "saving"} onClick={() => void submit("retry")} type="button">Retry Audio Processing</button>}
             <button className="secondary-action" disabled={saving === "saving" || isProcessingActive} onClick={() => void submit("retranscribeVideo")} type="button">Regenerate From Video Audio</button>
             <button className="secondary-action" disabled={saving === "saving"} onClick={() => void publishVideoWithoutRecap()} type="button">Publish Video Without Recap</button>
             {isProcessingActive && <button className="text-button danger-text-button" disabled={saving === "saving"} onClick={() => void submit("cancelProcessing")} type="button">Cancel Processing</button>}

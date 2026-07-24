@@ -17,6 +17,13 @@ import {
   VIDEO_RECAP_PROCESSING_TYPE,
   VIDEO_RECAP_PROMPT_VERSION,
 } from "@/lib/video-ai-recap-policy.mjs";
+import {
+  canDirectTranscribeStoredMedia,
+  MAX_AUDIO_EXTRACTION_TRANSCRIPTION_BYTES,
+  MAX_DIRECT_MEDIA_TRANSCRIPTION_BYTES,
+  normalizeVideoProcessingSafeCode,
+  transcriptionSizeLimitForMedia,
+} from "@/lib/video-media-processing-policy.mjs";
 import { MAI_CADDY_CORE_INSTRUCTIONS } from "@/lib/mai-caddy-instructions";
 import {
   ensurePlatformSchema,
@@ -129,6 +136,7 @@ type TranscriptRow = {
 type AudioExtractionResult = {
   paths: string[];
   source: "media_chunks" | "normalized_video_chunks" | "original_media";
+  fallbackReason?: string;
 };
 
 type TranscriptionSegmentResult = {
@@ -189,7 +197,7 @@ type RecapEnv = {
   VIDEO_STORAGE: R2Bucket;
 };
 
-const MAX_TRANSCRIPTION_BYTES = 25 * 1024 * 1024;
+const MAX_TRANSCRIPTION_BYTES = MAX_AUDIO_EXTRACTION_TRANSCRIPTION_BYTES;
 const MAX_MEDIA_AUDIO_CHUNK_SECONDS = 60;
 const MAX_MEDIA_VIDEO_CHUNK_SECONDS = 10;
 const MAX_MEDIA_AUDIO_TOTAL_SECONDS = 60 * 30;
@@ -235,7 +243,7 @@ function combineRecapText(...values: unknown[]) {
 
 function jobError(error: unknown) {
   const message = error instanceof Error ? error.message : "Video AI processing failed.";
-  const code = error instanceof RecapProcessingError ? error.code : "processing_failed";
+  const code = normalizeVideoProcessingSafeCode(error instanceof RecapProcessingError ? error.code : "processing_failed", message);
   const status = error instanceof RecapProcessingError ? error.status : "failed";
   return { code, message, status };
 }
@@ -471,16 +479,27 @@ function shouldPreferVideoChunkFallback(video: VideoRecapRow, sourceSize: number
   return isQuickTimeVideo(video) || sourceSize > MAX_TRANSCRIPTION_BYTES;
 }
 
+function canUseOriginalMediaFallback(video: VideoRecapRow, sourceSize: number) {
+  return canDirectTranscribeStoredMedia({
+    mimeType: video.mime_type,
+    size: sourceSize,
+  });
+}
+
 async function useOriginalMediaForTranscription(database: D1Database, job: ProcessingJobRow, video: VideoRecapRow, source: string) {
-  await markJob(database, job.id, { status: "extracting_audio", step: "using_original_media_for_transcription" });
+  await markJob(database, job.id, {
+    audioStoragePath: video.storage_path,
+    status: "extracting_audio",
+    step: "direct_media_fallback_ready_for_transcription",
+  });
   await recordProcessingEvent(
     database,
-    "audio_extraction_fallback_original_media",
+    "direct_media_fallback_started",
     job,
     "Media audio extraction failed, so MAI Coach will transcribe the original uploaded video directly.",
     { source },
   );
-  return { paths: [video.storage_path], source: "original_media" } satisfies AudioExtractionResult;
+  return { paths: [video.storage_path], source: "original_media", fallbackReason: source } satisfies AudioExtractionResult;
 }
 
 function assertTemporaryAudioPath(video: VideoRecapRow, audioStoragePath: string) {
@@ -852,7 +871,7 @@ async function normalizeVideoChunksForTranscription(
         "mp4_fallback_timeout",
       );
       if (!videoResponse.ok || !videoResponse.body) {
-        throw new RecapProcessingError("mp4_fallback_failed", "Cloudflare Media could not normalize this video for transcription.");
+        throw new RecapProcessingError("cloudflare_normalization_failed", "Cloudflare Media could not normalize this video for transcription.");
       }
       const normalizedVideoPath = `video-processing/${video.id}/media/${job.id}-part-${index + 1}.mp4`;
       await env.VIDEO_STORAGE.put(normalizedVideoPath, videoResponse.body, {
@@ -884,7 +903,7 @@ async function normalizeVideoChunksForTranscription(
   } catch (error) {
     await deleteTemporaryPaths(env, normalizedVideoPaths);
     if (error instanceof RecapProcessingError) throw error;
-    throw new RecapProcessingError("mp4_fallback_failed", "Cloudflare Media could not normalize this video for transcription.");
+    throw new RecapProcessingError("cloudflare_normalization_failed", "Cloudflare Media could not normalize this video for transcription.");
   }
 }
 
@@ -902,7 +921,7 @@ async function extractAudio(env: RecapEnv, database: D1Database, job: Processing
         await markJob(database, job.id, { status: "extracting_audio", step: "using_video_chunk_fallback_for_quicktime" });
         return await normalizeVideoChunksForTranscription(env, database, job, video, object.size);
       } catch (error) {
-        if (object.size <= MAX_TRANSCRIPTION_BYTES) {
+        if (canUseOriginalMediaFallback(video, object.size)) {
           return useOriginalMediaForTranscription(database, job, video, error instanceof RecapProcessingError ? error.code : "media_normalization_failed");
         }
         throw error;
@@ -929,7 +948,7 @@ async function extractAudio(env: RecapEnv, database: D1Database, job: Processing
         "audio_extraction_timeout",
       );
       if (!audioResponse.ok || !audioResponse.body) {
-        throw new RecapProcessingError("audio_extraction_failed", "Cloudflare Media audio extraction failed for this video.");
+        throw new RecapProcessingError("cloudflare_normalization_failed", "Cloudflare Media could not prepare the audio from this video.");
       }
       const audioStoragePath = `video-processing/${video.id}/audio/${job.id}-part-${index + 1}.m4a`;
       await env.VIDEO_STORAGE.put(audioStoragePath, audioResponse.body, {
@@ -953,13 +972,13 @@ async function extractAudio(env: RecapEnv, database: D1Database, job: Processing
       try {
         return await normalizeVideoChunksForTranscription(env, database, job, video, object.size);
       } catch (fallbackError) {
-        if (object.size <= MAX_TRANSCRIPTION_BYTES) {
+        if (canUseOriginalMediaFallback(video, object.size)) {
           return useOriginalMediaForTranscription(database, job, video, fallbackError instanceof RecapProcessingError ? fallbackError.code : "media_normalization_failed");
         }
         throw fallbackError;
       }
     }
-    if (object.size <= MAX_TRANSCRIPTION_BYTES) {
+    if (canUseOriginalMediaFallback(video, object.size)) {
       return useOriginalMediaForTranscription(database, job, video, error instanceof RecapProcessingError ? error.code : "audio_extraction_failed");
     }
     return normalizeVideoChunksForTranscription(env, database, job, video, object.size);
@@ -978,8 +997,14 @@ async function transcribeAudioSegment(
   }
   const audioObject = await env.VIDEO_STORAGE.get(audioStoragePath);
   if (!audioObject) throw new RecapProcessingError("audio_missing_from_r2", "Extracted audio could not be loaded.");
-  if (audioObject.size > MAX_TRANSCRIPTION_BYTES) {
-    throw new RecapProcessingError("audio_too_large", "The lesson media is too large for the transcription endpoint.");
+  const isOriginalMedia = audioStoragePath === video.storage_path;
+  const sizeLimit = transcriptionSizeLimitForMedia({
+    isOriginalMedia,
+    mimeType: video.mime_type,
+    size: audioObject.size,
+  });
+  if (audioObject.size > sizeLimit) {
+    throw new RecapProcessingError("transcription_file_too_large", "The lesson media is too large for transcription.");
   }
   const model = env.OPENAI_TRANSCRIPTION_MODEL || DEFAULT_TRANSCRIPTION_MODEL;
   const form = new FormData();
@@ -1019,7 +1044,10 @@ async function transcribeAudioSegment(
       requestId: diagnostic.requestId,
       model: diagnostic.model,
     });
-    throw new RecapProcessingError(diagnostic.category || "transcription_failed", "MAI Coach transcription is temporarily unavailable.");
+    const category = isOriginalMedia
+      ? normalizeVideoProcessingSafeCode("direct_transcription_rejected", payload.error?.message)
+      : normalizeVideoProcessingSafeCode(diagnostic.category || "transcription_failed", payload.error?.message);
+    throw new RecapProcessingError(category, "MAI Coach transcription is temporarily unavailable.");
   }
   return {
     duration: Number.isFinite(payload.duration) ? Number(payload.duration) : null,
@@ -1043,6 +1071,9 @@ async function transcribeAudio(env: RecapEnv, database: D1Database, job: Process
     results.push(await transcribeAudioSegment(env, video, job, audioStoragePath));
   }
   const transcriptText = text(results.map((result) => result.text).filter(Boolean).join("\n\n"), 120_000);
+  if (!transcriptLooksUsable(transcriptText)) {
+    throw new RecapProcessingError("transcript_empty", "MAI Coach could not detect enough coach voiceover in this video.", "no_usable_audio");
+  }
   const segments = results.flatMap((result) => result.segments);
   const duration = results.reduce((total, result) => total + (Number.isFinite(result.duration) ? Number(result.duration) : 0), 0);
   const model = results[0]?.model || env.OPENAI_TRANSCRIPTION_MODEL || DEFAULT_TRANSCRIPTION_MODEL;
@@ -1071,7 +1102,18 @@ async function transcribeAudio(env: RecapEnv, database: D1Database, job: Process
       duration > 0 ? duration : null,
       job.id,
       job.processing_version,
-      JSON.stringify({ chunks: audio.paths.length, source: "openai_audio_transcription", usable: transcriptLooksUsable(transcriptText) }),
+      JSON.stringify({
+        audioDurationSeconds: duration > 0 ? duration : null,
+        chunks: audio.paths.length,
+        fallbackReason: audio.fallbackReason ?? null,
+        source: "openai_audio_transcription",
+        transcriptCharacterCount: transcriptText.length,
+        transcriptionCompletedAt: new Date().toISOString(),
+        transcriptionModel: model,
+        transcriptionSource: audio.source,
+        transcriptWordCount: transcriptText.split(/\s+/).filter(Boolean).length,
+        usable: transcriptLooksUsable(transcriptText),
+      }),
     )
     .run();
   await markJob(database, job.id, { status: "transcribing", step: "transcription_completed" });

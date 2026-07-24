@@ -8,6 +8,10 @@ import {
   requireIdentity,
   responseFromError,
 } from "@/lib/server/platform";
+import {
+  inferCodecProbeFromBytes,
+  mediaContainerFromMimeType,
+} from "@/lib/video-media-processing-policy.mjs";
 
 type RouteContext = {
   params: Promise<{ videoId: string }> | { videoId: string };
@@ -19,8 +23,10 @@ type DiagnosticVideoRow = {
   coach_id: string | null;
   uploaded_by_role: string;
   storage_path: string;
+  file_name: string;
   file_size: number;
   mime_type: string;
+  duration: number;
   publication_status: string;
   upload_status: string;
   created_at: string;
@@ -43,6 +49,8 @@ type DiagnosticTranscriptRow = {
   transcript_text: string;
   created_at: string;
   duration_seconds: number | null;
+  model: string;
+  quality_json: string;
 };
 
 type DiagnosticDraftRow = {
@@ -60,6 +68,43 @@ function devDiagnosticsEnabled(request: Request) {
 function stepReached(job: DiagnosticJobRow | null, patterns: RegExp[]) {
   const value = `${job?.status ?? ""} ${job?.current_step ?? ""}`.toLowerCase();
   return patterns.some((pattern) => pattern.test(value));
+}
+
+function safeJson(value: string | null | undefined) {
+  try {
+    return value ? JSON.parse(value) as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+function likelyOriginalObjectKeys(video: DiagnosticVideoRow) {
+  const directory = video.storage_path.split("/").slice(0, -1).join("/");
+  if (!directory) return [];
+  const originalFromOptimized = video.file_name.replace(/-optimized\.webm$/i, ".mov");
+  return Array.from(new Set([
+    `${directory}/original`,
+    `${directory}/source`,
+    `${directory}/${originalFromOptimized}`,
+    `${directory}/${originalFromOptimized.replace(/\.mov$/i, ".mp4")}`,
+  ]));
+}
+
+async function probeStoredMedia(bucket: R2Bucket, video: DiagnosticVideoRow) {
+  try {
+    const object = await bucket.get(video.storage_path, { range: { offset: 0, length: 1024 * 1024 } });
+    const bytes = object ? new Uint8Array(await object.arrayBuffer()) : null;
+    return inferCodecProbeFromBytes(bytes, video.mime_type, video.duration);
+  } catch {
+    return {
+      audioCodec: undefined,
+      container: mediaContainerFromMimeType(video.mime_type),
+      durationSeconds: Number.isFinite(Number(video.duration)) && Number(video.duration) > 0 ? Number(video.duration) : null,
+      hasAudio: false,
+      hasVideo: false,
+      videoCodec: undefined,
+    };
+  }
 }
 
 export async function GET(request: Request, context: RouteContext) {
@@ -81,7 +126,7 @@ export async function GET(request: Request, context: RouteContext) {
     const video = await database
       .prepare(
         `SELECT id, member_id, coach_id, uploaded_by_role, storage_path, file_size,
-          mime_type, publication_status, upload_status, created_at, updated_at
+          file_name, mime_type, duration, publication_status, upload_status, created_at, updated_at
          FROM lesson_videos
          WHERE id = ?`,
       )
@@ -104,7 +149,7 @@ export async function GET(request: Request, context: RouteContext) {
         .bind(video.id)
         .first<DiagnosticJobRow>(),
       database
-        .prepare("SELECT transcript_text, created_at, duration_seconds FROM video_transcripts WHERE video_id = ? AND is_current = 1 ORDER BY created_at DESC LIMIT 1")
+        .prepare("SELECT transcript_text, created_at, duration_seconds, model, quality_json FROM video_transcripts WHERE video_id = ? AND is_current = 1 ORDER BY created_at DESC LIMIT 1")
         .bind(video.id)
         .first<DiagnosticTranscriptRow>(),
       database
@@ -121,20 +166,48 @@ export async function GET(request: Request, context: RouteContext) {
 
     const bucket = getRequiredVideoStorage();
     const r2Head = await bucket.head(video.storage_path);
+    const probe = r2Head ? await probeStoredMedia(bucket, video) : null;
+    const originalMovObjectExists = r2Head
+      ? (await Promise.all(likelyOriginalObjectKeys(video).map((key) => bucket.head(key).catch(() => null)))).some(Boolean)
+      : false;
     const transcriptCharacterCount = transcript?.transcript_text?.length ?? 0;
+    const transcriptQuality = safeJson(transcript?.quality_json);
     const audioStarted = stepReached(job ?? null, [/extract/, /audio/, /transcrib/, /recap/]);
     const transcriptionStarted = stepReached(job ?? null, [/transcrib/, /recap/]);
+    const currentStep = job?.current_step ?? "";
+    const jobErrorText = `${job?.error_code ?? ""} ${job?.error_message ?? ""} ${currentStep}`.toLowerCase();
+    const directFallbackSucceeded = transcriptQuality.transcriptionSource === "original_media";
 
     return Response.json({
       videoId: video.id,
       memberId: video.member_id,
       coachId: video.coach_id,
+      objectExists: Boolean(r2Head),
+      objectSize: r2Head?.size ?? null,
+      storagePath: video.storage_path,
+      originalUploadedFilename: video.file_name.replace(/-optimized\.webm$/i, ".mov"),
+      storedFilename: video.file_name,
+      storedMimeType: video.mime_type,
+      container: probe?.container || mediaContainerFromMimeType(video.mime_type) || null,
+      videoCodec: probe?.videoCodec ?? null,
+      audioTrackPresent: probe?.hasAudio ?? null,
+      audioCodec: probe?.audioCodec ?? null,
+      durationSeconds: probe?.durationSeconds ?? (video.duration || null),
+      originalMovObjectExists,
+      optimizedWebmExists: Boolean(r2Head && mediaContainerFromMimeType(video.mime_type) === "webm"),
       r2ObjectExists: Boolean(r2Head),
       expectedSize: Number(video.file_size ?? 0),
       actualSize: r2Head?.size ?? null,
       mimeType: video.mime_type,
       uploadStatus: video.upload_status === "ready" && r2Head ? "stored" : video.upload_status,
       publicationStatus: video.publication_status,
+      processingStage: job?.current_step ?? "not_queued",
+      cloudflareNormalizationAttempted: jobErrorText.includes("cloudflare") || jobErrorText.includes("audio") || jobErrorText.includes("normaliz"),
+      cloudflareNormalizationSucceeded: Boolean(job?.audio_storage_path && String(job.audio_storage_path).startsWith("video-processing/")),
+      directMediaFallbackAttempted: currentStep.includes("direct_media") || transcriptQuality.transcriptionSource === "original_media",
+      directMediaFallbackSucceeded,
+      transcriptionModel: transcript?.model ?? null,
+      transcriptWordCount: transcript?.transcript_text ? transcript.transcript_text.split(/\s+/).filter(Boolean).length : 0,
       processingStatus: job?.status ?? "not_queued",
       processingStep: job?.current_step ?? "not_queued",
       workflowJobId: job?.id ?? null,
