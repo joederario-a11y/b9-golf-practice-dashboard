@@ -25,6 +25,7 @@ import {
   transcriptionSizeLimitForMedia,
 } from "@/lib/video-media-processing-policy.mjs";
 import { MAI_CADDY_CORE_INSTRUCTIONS } from "@/lib/mai-caddy-instructions";
+import { sendVideoNotification } from "@/lib/server/video-email";
 import {
   ensurePlatformSchema,
   ensureUserDataOwnershipSchema,
@@ -76,6 +77,9 @@ type VideoRecapRow = {
   lesson_date: string | null;
   publication_status: string;
   upload_status: string;
+  email_status: string;
+  email_sent_at: string | null;
+  email_failure_reason: string | null;
   lesson_summary: string;
   worked_on: string;
   key_issue: string;
@@ -1323,6 +1327,7 @@ function serializeDraft(row: DraftRow | null) {
     recommendedDrill: row.recommended_drill,
     reviewedAt: row.reviewed_at,
     reviewedBy: row.reviewed_by,
+    publishedAt: row.published_at,
     status: row.status,
     transcriptEvidence: safeJson(row.transcript_evidence_json, []),
     updatedAt: row.updated_at,
@@ -1413,11 +1418,14 @@ export async function readVideoRecapState(identity: AuthIdentity, videoId: strin
       objectUrl: `/api/videos/media?videoId=${encodeURIComponent(video.id)}`,
       sessionId: video.session_data_id,
       title: video.title,
+      emailStatus: video.email_status,
+      emailSentAt: video.email_sent_at,
+      emailFailureReason: video.email_failure_reason,
     },
   });
 }
 
-export async function updateVideoRecapState(identity: AuthIdentity, payload: Record<string, unknown>) {
+export async function updateVideoRecapState(identity: AuthIdentity, payload: Record<string, unknown>, request?: Request) {
   const database = getRequiredDatabase();
   await prepareDatabase(database);
   const videoId = text(payload.videoId, 80);
@@ -1496,6 +1504,10 @@ export async function updateVideoRecapState(identity: AuthIdentity, payload: Rec
     });
   }
 
+  if (action === "approveAndPublish" && draft?.status === "published") {
+    return readVideoRecapState(identity, video.id);
+  }
+
   if (action === "approveAndPublish" && draft) {
     assertDraftIsMutable(draft, action);
     if (video.upload_status !== "ready") throw new Response("Finish uploading the video before publishing the recap.", { status: 409 });
@@ -1560,6 +1572,45 @@ export async function updateVideoRecapState(identity: AuthIdentity, payload: Rec
       summary: `${identity.displayName} approved and published a coach-reviewed MAI Coach recap.`,
       targetUserId: video.member_id,
     });
+
+    if (request && payload.notifyMember !== false) {
+      let notificationStatus = "Not sent";
+      let emailSentAt: string | null = null;
+      let emailFailureReason: string | null = null;
+      try {
+        const notification = await sendVideoNotification(
+          request,
+          identity,
+          {
+            email: video.member_email,
+            firstName: video.member_first_name,
+            lastName: video.member_last_name,
+          },
+          {
+            id: video.id,
+            memberId: video.member_id,
+            title: video.title,
+            lessonSummary: text(payload.lessonSummary),
+            memberFacingNotes: text(payload.memberFacingNotes),
+            practiceAssignment: text(payload.practiceAssignment),
+          },
+        );
+        notificationStatus = notification.status;
+        emailSentAt = notification.status === "Sent" ? new Date().toISOString() : null;
+        emailFailureReason = "failureReason" in notification ? notification.failureReason : null;
+      } catch {
+        notificationStatus = "Failed";
+        emailFailureReason = "notification_failed";
+      }
+      await database
+        .prepare(
+          `UPDATE lesson_videos SET
+            email_status = ?, email_sent_at = ?, email_failure_reason = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ? AND member_id = ?`,
+        )
+        .bind(notificationStatus, emailSentAt, emailFailureReason, video.id, video.member_id)
+        .run();
+    }
   }
 
   if (action === "cancel" && draft) {

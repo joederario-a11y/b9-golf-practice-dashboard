@@ -18,7 +18,7 @@ export async function PATCH(request: Request) {
   try {
     const identity = await requireIdentity();
     const payload = await request.json() as Record<string, unknown>;
-    return updateVideoRecapState(identity, payload);
+    return updateVideoRecapState(identity, payload, request);
   } catch (error) {
     return responseFromError(error);
   }

@@ -4489,6 +4489,62 @@ button:disabled {
   width: min(1180px, 100%);
 }
 
+.lesson-publish-confirmation-modal {
+  width: min(720px, 100%);
+}
+
+.lesson-publish-confirmation-body {
+  display: grid;
+  gap: 16px;
+}
+
+.lesson-publish-confirmation-body > p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.lesson-publish-confirmation-body dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.lesson-publish-confirmation-body dl > div,
+.lesson-published-status {
+  display: grid;
+  gap: 5px;
+  border: 1px solid rgba(150, 203, 57, 0.28);
+  border-radius: 8px;
+  background: rgba(150, 203, 57, 0.08);
+  padding: 12px;
+}
+
+.lesson-publish-confirmation-body dt,
+.lesson-published-status span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.lesson-publish-confirmation-body dd,
+.lesson-published-status strong {
+  margin: 0;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.lesson-published-status {
+  min-width: 230px;
+  align-content: center;
+}
+
 .video-upload-modal.auth-modal {
   width: min(760px, 100%);
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -6550,6 +6606,14 @@ button:disabled {
 
   .lesson-processing-steps {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .lesson-publish-confirmation-body dl {
+    grid-template-columns: 1fr;
+  }
+
+  .lesson-published-status {
+    width: 100%;
   }
 }
 

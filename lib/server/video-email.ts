@@ -35,6 +35,7 @@ async function logNotification(values: {
   member: EmailMember;
   status: "sent" | "failed";
   video: EmailVideo;
+  subject: string;
   providerId?: string;
   failureReason?: string;
 }) {
@@ -52,7 +53,7 @@ async function logNotification(values: {
       values.video.memberId,
       values.identity.email,
       values.member.email,
-      "Your new lesson video is ready",
+      values.subject,
       values.status,
       values.providerId ?? null,
       values.failureReason ?? null,
@@ -66,6 +67,15 @@ export async function sendVideoNotification(
   member: EmailMember,
   video: EmailVideo,
 ) {
+  const database = getRequiredDatabase();
+  const existingSent = await database
+    .prepare("SELECT provider_id FROM video_email_notifications WHERE video_id = ? AND member_id = ? AND status = 'sent' ORDER BY created_at DESC LIMIT 1")
+    .bind(video.id, video.memberId)
+    .first<{ provider_id: string | null }>();
+  if (existingSent) {
+    return { status: "Sent" as const, providerId: existingSent.provider_id ?? undefined, alreadySent: true };
+  }
+
   const runtime = getPlatformEnvironment();
   const notePreview = video.memberFacingNotes || video.practiceAssignment || video.lessonSummary || "";
   const appBaseUrl = runtime.APP_BASE_URL?.replace(/\/$/, "") || new URL(request.url).origin;
@@ -76,6 +86,7 @@ export async function sendVideoNotification(
     userId: video.memberId,
   });
   const videoLink = `${appBaseUrl}/?tab=videos&video=${encodeURIComponent(video.id)}&login=${encodeURIComponent(loginToken)}`;
+  const subject = `New lesson from ${identity.displayName}`;
   const noteBlock = notePreview
     ? `<p style="margin:16px 0;padding:14px;border-left:3px solid #96cb39;background:#edfdf2;">${escapeHtml(notePreview)}</p>`
     : "";
@@ -94,14 +105,14 @@ export async function sendVideoNotification(
 
   const result = await sendEmailMessage({
     html,
-    subject: "Your new lesson video is ready",
+    subject,
     toEmail: member.email,
   });
   if (result.success) {
-    await logNotification({ identity, member, status: "sent", video, providerId: result.providerMessageId });
+    await logNotification({ identity, member, status: "sent", subject, video, providerId: result.providerMessageId });
     return { status: "Sent" as const, providerId: result.providerMessageId };
   }
   const failureReason = result.errorCode ?? "email_failed";
-  await logNotification({ identity, member, status: "failed", video, failureReason });
+  await logNotification({ identity, member, status: "failed", subject, video, failureReason });
   return { status: "Failed" as const, failureReason };
 }

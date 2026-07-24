@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildLessonPublishConfirmation,
+  canSubmitLessonPublish,
   canReadApprovedVideoRecap,
   canReviewVideoRecap,
   lessonRecapJsonSchema,
@@ -52,6 +54,41 @@ test("members can read only approved recap data on published videos", () => {
     ),
     false,
   );
+});
+
+test("successful recap publish confirmation names the member and included lesson", () => {
+  const confirmation = buildLessonPublishConfirmation({
+    includedRecap: true,
+    includedSessionData: false,
+    lessonTitle: "Jul 23, 2026",
+    memberName: "Liam Gerdis",
+  });
+  assert.equal(confirmation.title, "Lesson sent to Liam");
+  assert.match(confirmation.body, /published to Liam Gerdis/);
+  assert.match(confirmation.body, /practice recommendations/);
+  assert.equal(confirmation.includedLabel, "Video and MAI Coach lesson recap");
+  assert.equal(confirmation.lessonTitle, "Jul 23, 2026");
+  assert.equal(confirmation.statusLabel, "Published to Liam Gerdis");
+});
+
+test("publish without recap confirmation does not imply feedback was included", () => {
+  const confirmation = buildLessonPublishConfirmation({
+    includedRecap: false,
+    includedSessionData: true,
+    lessonTitle: "Short Game Tuneup",
+    memberName: "Aubryn Taylor",
+  });
+  assert.equal(confirmation.title, "Video sent to Aubryn");
+  assert.match(confirmation.body, /without a MAI Coach recap/);
+  assert.equal(confirmation.includedLabel, "Video only");
+  assert.equal(confirmation.sessionIncludedLabel, "Session data included");
+});
+
+test("published lesson recap cannot show an active publish action", () => {
+  assert.equal(canSubmitLessonPublish({ hasDraft: true, draftStatus: "ready_for_review", isSubmitting: false }), true);
+  assert.equal(canSubmitLessonPublish({ hasDraft: true, draftStatus: "needs_coach_input", isSubmitting: false }), true);
+  assert.equal(canSubmitLessonPublish({ hasDraft: true, draftStatus: "published", isSubmitting: false }), false);
+  assert.equal(canSubmitLessonPublish({ hasDraft: true, draftStatus: "ready_for_review", isSubmitting: true }), false);
 });
 
 test("short or silent transcripts are treated as needing coach input", () => {

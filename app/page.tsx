@@ -56,6 +56,10 @@ import {
   shouldShowLessonUploadStallWarning,
 } from "@/lib/coach-video-upload-policy.mjs";
 import {
+  buildLessonPublishConfirmation,
+  canSubmitLessonPublish,
+} from "@/lib/video-ai-recap-policy.mjs";
+import {
   canShowVideoInLibrary,
   lessonProcessingStatus,
   lessonProcessingSteps,
@@ -1087,6 +1091,7 @@ type VideoRecapDraft = {
   recommendedDrill: string;
   reviewedAt?: string | null;
   reviewedBy?: string | null;
+  publishedAt?: string | null;
   status: string;
   transcriptEvidence: Array<{ excerpt: string; field: string; timestamp?: string | null }>;
   updatedAt: string;
@@ -1130,7 +1135,27 @@ type VideoRecapState = {
     objectUrl: string;
     sessionId?: string | null;
     title: string;
+    emailStatus?: VideoEmailStatus;
+    emailSentAt?: string | null;
+    emailFailureReason?: string | null;
   };
+};
+
+type LessonPublishConfirmation = {
+  body: string;
+  emailFailureReason?: string | null;
+  emailStatus?: VideoEmailStatus;
+  includedLabel: string;
+  includedRecap: boolean;
+  includedSessionData: boolean;
+  lessonTitle: string;
+  memberFirstName: string;
+  memberName: string;
+  publishedAt?: string | null;
+  sessionIncludedLabel: string;
+  statusLabel: string;
+  title: string;
+  videoId: string;
 };
 
 type OnboardingQuestionId =
@@ -4502,6 +4527,20 @@ function formatLessonProcessingTimestamp(value?: string | null) {
     hour: "numeric",
     minute: "2-digit",
   }).format(date);
+}
+
+function formatLessonPublishedTimestamp(value?: string | null) {
+  if (!value) return "NA";
+  const date = parseDisplayDate(value);
+  return date
+    ? new Intl.DateTimeFormat("en", {
+        hour: "numeric",
+        minute: "2-digit",
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      }).format(date)
+    : "NA";
 }
 
 function videoPatchPayload(video: VideoLibraryRecord) {
@@ -11563,9 +11602,17 @@ function CoachVideoWorkspace({
       {recapReviewVideo && (
         <AiLessonRecapReviewModal
           onClose={() => setRecapReviewVideo(null)}
+          onOpenMemberVideos={onOpenMemberVideos}
           onPublished={(record) => {
             replaceItem(record);
             setRecapReviewVideo(createVideoLibraryItem(record));
+          }}
+          onUploadAnother={() => {
+            setUploadResult(null);
+            setVideoFile(null);
+            setUploadProgress(0);
+            setShowUploadPanel(true);
+            setWorkspaceMessage("Choose another lesson video when ready.");
           }}
           video={recapReviewVideo}
         />
@@ -12290,18 +12337,124 @@ function LessonProcessingTracker({ state, video }: { state: VideoRecapState | nu
   );
 }
 
+function LessonPublishConfirmationModal({
+  confirmation,
+  onDone,
+  onOpenLibrary,
+  onUploadAnother,
+}: {
+  confirmation: LessonPublishConfirmation;
+  onDone: () => void;
+  onOpenLibrary: () => void;
+  onUploadAnother: () => void;
+}) {
+  const doneButtonRef = useRef<HTMLButtonElement | null>(null);
+  const modalRef = useRef<HTMLElement | null>(null);
+  const titleId = `lesson-publish-title-${confirmation.videoId}`;
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    doneButtonRef.current?.focus();
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onDone();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(
+        modalRef.current?.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      ).filter((element) => !element.hasAttribute("disabled"));
+      if (!focusable.length) return;
+      const firstElement = focusable[0];
+      const lastElement = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === firstElement) {
+        event.preventDefault();
+        lastElement.focus();
+      } else if (!event.shiftKey && document.activeElement === lastElement) {
+        event.preventDefault();
+        firstElement.focus();
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [onDone]);
+
+  const emailWarning = confirmation.emailStatus === "Failed"
+    ? "The lesson was published, but the email notification could not be sent."
+    : "";
+
+  return (
+    <div className="video-modal-overlay">
+      <section
+        aria-labelledby={titleId}
+        aria-modal="true"
+        className="video-upload-modal lesson-publish-confirmation-modal"
+        ref={modalRef}
+        role="dialog"
+      >
+        <div className="video-modal-header">
+          <div>
+            <p className="eyebrow">Lesson published</p>
+            <h2 id={titleId}>{confirmation.title}</h2>
+          </div>
+          <button aria-label="Close publication confirmation" className="icon-button" onClick={onDone} type="button">×</button>
+        </div>
+        <div className="lesson-publish-confirmation-body">
+          <p>{confirmation.body}</p>
+          <dl>
+            <div><dt>Published to</dt><dd>{confirmation.memberName}</dd></div>
+            <div><dt>Lesson</dt><dd>{confirmation.lessonTitle}</dd></div>
+            <div><dt>Published</dt><dd>{formatLessonPublishedTimestamp(confirmation.publishedAt)}</dd></div>
+            <div><dt>Included</dt><dd>{confirmation.includedLabel}</dd></div>
+            <div><dt>Session data</dt><dd>{confirmation.sessionIncludedLabel}</dd></div>
+          </dl>
+          {emailWarning && (
+            <p className="coach-inline-warning">
+              {emailWarning} Use Resend Email from the lesson card when you are ready to try again.
+            </p>
+          )}
+        </div>
+        <div className="video-modal-actions">
+          <span>✓ {confirmation.statusLabel}</span>
+          <div className="button-row">
+            <button className="secondary-action" onClick={onOpenLibrary} type="button">View {confirmation.memberFirstName}'s Video Library</button>
+            <button className="secondary-action" onClick={onUploadAnother} type="button">Upload Another Lesson</button>
+            <button className="secondary-action" onClick={onOpenLibrary} type="button">View Published Lesson</button>
+            <button className="primary-action" onClick={onDone} ref={doneButtonRef} type="button">Done</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function AiLessonRecapReviewModal({
   onClose,
+  onOpenMemberVideos,
   onPublished,
+  onUploadAnother,
   video,
 }: {
   onClose: () => void;
+  onOpenMemberVideos: (memberId: string, memberName: string) => void;
   onPublished: (record: VideoLibraryRecord) => void;
+  onUploadAnother: () => void;
   video: VideoLibraryItem;
 }) {
   const [state, setState] = useState<VideoRecapState | null>(null);
   const [message, setMessage] = useState("Loading MAI Coach recap state...");
   const [saving, setSaving] = useState<"idle" | "saving">("idle");
+  const [savingAction, setSavingAction] = useState("");
+  const [publishConfirmation, setPublishConfirmation] = useState<LessonPublishConfirmation | null>(null);
   const [transcriptText, setTranscriptText] = useState("");
   const [fields, setFields] = useState({
     lessonSummary: video.lessonSummary ?? "",
@@ -12311,6 +12464,7 @@ function AiLessonRecapReviewModal({
     progressObserved: video.improvement ?? "",
   });
   const activeJobStatuses = new Set(["queued", "extracting_audio", "transcribing", "generating_recap"]);
+  const actionInFlightRef = useRef(false);
 
   function legacyPayloadFromFields() {
     return {
@@ -12392,7 +12546,10 @@ function AiLessonRecapReviewModal({
   }
 
   async function refreshNow() {
+    if (actionInFlightRef.current) return;
+    actionInFlightRef.current = true;
     setSaving("saving");
+    setSavingAction("refresh");
     try {
       const payload = await readVideoRecap(video.id);
       setState(payload);
@@ -12405,28 +12562,38 @@ function AiLessonRecapReviewModal({
       setMessage(error instanceof Error ? error.message : "The MAI Coach recap could not be refreshed.");
     } finally {
       setSaving("idle");
+      setSavingAction("");
+      actionInFlightRef.current = false;
     }
   }
 
   async function submit(action: "approveAndPublish" | "cancelProcessing" | "editTranscript" | "markIncorrect" | "regenerateRecapFromTranscript" | "retry" | "retranscribeVideo" | "saveDraft") {
+    if (actionInFlightRef.current) return;
     if (action === "approveAndPublish" && !window.confirm("Publish this coach-approved recap and transcript to the member?")) return;
     if (action === "markIncorrect" && !window.confirm("Mark this AI recap as incorrect? It will stay hidden from the member.")) return;
     if (action === "cancelProcessing" && !window.confirm("Cancel the active MAI Coach processing job? Published recaps will remain available.")) return;
     if (action === "retry" && !window.confirm("Retry audio processing for this video? The existing video will be preserved.")) return;
     if (action === "retranscribeVideo" && !window.confirm("Retranscribe the original video and create a new draft revision?")) return;
+    actionInFlightRef.current = true;
     setSaving("saving");
+    setSavingAction(action);
     try {
       const nextState = await updateVideoRecap({
         ...legacyPayloadFromFields(),
         action,
+        notifyMember: true,
         transcriptText,
         videoId: video.id,
       });
       setState(nextState);
       if (nextState.transcript?.text) setTranscriptText(nextState.transcript.text);
       if (action === "approveAndPublish") {
-        onPublished({
+        const publishedAt = nextState.draft?.publishedAt ?? nextState.job?.completedAt ?? new Date().toISOString();
+        const publishedRecord = {
           ...stripVideoObjectUrl(video),
+          emailFailureReason: nextState.video.emailFailureReason ?? undefined,
+          emailSentAt: nextState.video.emailSentAt ?? undefined,
+          emailStatus: nextState.video.emailStatus ?? video.emailStatus,
           improvement: fields.progressObserved,
           keyIssue: "",
           lessonSummary: fields.lessonSummary,
@@ -12436,10 +12603,30 @@ function AiLessonRecapReviewModal({
           publicationStatus: "Published",
           recommendedDrill: "",
           status: "Coach Feedback",
-          updatedAt: new Date().toISOString(),
+          updatedAt: publishedAt,
           workedOn: fields.mainFocus,
+        } satisfies VideoLibraryRecord;
+        onPublished(publishedRecord);
+        const confirmation = buildLessonPublishConfirmation({
+          includedRecap: true,
+          includedSessionData: Boolean(nextState.video.sessionId ?? video.sessionId),
+          lessonTitle: nextState.video.title || video.title,
+          memberName: nextState.video.memberName || video.memberName || "Member",
+        }) as Omit<LessonPublishConfirmation, "emailFailureReason" | "emailStatus" | "includedRecap" | "includedSessionData" | "publishedAt" | "videoId">;
+        setPublishConfirmation({
+          ...confirmation,
+          emailFailureReason: nextState.video.emailFailureReason ?? null,
+          emailStatus: nextState.video.emailStatus,
+          includedRecap: true,
+          includedSessionData: Boolean(nextState.video.sessionId ?? video.sessionId),
+          publishedAt,
+          videoId: video.id,
         });
-        setMessage("Recap approved and published to the member.");
+        setMessage(
+          nextState.video.emailStatus === "Failed"
+            ? `✓ Published to ${nextState.video.memberName}. The email notification could not be sent.`
+            : `✓ Published to ${nextState.video.memberName}.`,
+        );
       } else if (action === "retry") {
         setMessage("Retry Audio Processing was queued.");
       } else if (action === "retranscribeVideo") {
@@ -12456,27 +12643,57 @@ function AiLessonRecapReviewModal({
         setMessage("Draft saved.");
       }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "The MAI Coach action could not be completed.");
+      setMessage(
+        action === "approveAndPublish"
+          ? "We could not publish this lesson right now. Your video and recap are still saved. Try Again"
+          : error instanceof Error ? error.message : "The MAI Coach action could not be completed.",
+      );
     } finally {
       setSaving("idle");
+      setSavingAction("");
+      actionInFlightRef.current = false;
     }
   }
 
   async function publishVideoWithoutRecap() {
+    if (actionInFlightRef.current) return;
     if (!window.confirm("Publish this video without approving an AI recap? Any unapproved draft will remain hidden from the member.")) return;
+    actionInFlightRef.current = true;
     setSaving("saving");
+    setSavingAction("publishVideoWithoutRecap");
     try {
       const updated = await finalizeVideoRecord(video.id, {
         ...videoPatchPayload(stripVideoObjectUrl(video)),
         publicationStatus: "Published",
-        notifyMember: false,
+        notifyMember: true,
       });
       onPublished(updated);
-      setMessage("Video published without a recap. Unapproved AI drafts remain hidden.");
+      const confirmation = buildLessonPublishConfirmation({
+        includedRecap: false,
+        includedSessionData: Boolean(updated.sessionId ?? video.sessionId),
+        lessonTitle: updated.title || video.title,
+        memberName: updated.memberName || video.memberName || "Member",
+      }) as Omit<LessonPublishConfirmation, "emailFailureReason" | "emailStatus" | "includedRecap" | "includedSessionData" | "publishedAt" | "videoId">;
+      setPublishConfirmation({
+        ...confirmation,
+        emailFailureReason: updated.emailFailureReason ?? null,
+        emailStatus: updated.emailStatus,
+        includedRecap: false,
+        includedSessionData: Boolean(updated.sessionId ?? video.sessionId),
+        publishedAt: updated.updatedAt ?? new Date().toISOString(),
+        videoId: video.id,
+      });
+      setMessage(
+        updated.emailStatus === "Failed"
+          ? `✓ Published to ${updated.memberName ?? video.memberName ?? "the member"}. The email notification could not be sent.`
+          : `✓ Published to ${updated.memberName ?? video.memberName ?? "the member"}.`,
+      );
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "The video could not be published without a recap.");
+      setMessage("We could not publish this lesson right now. Your video and recap are still saved. Try Again");
     } finally {
       setSaving("idle");
+      setSavingAction("");
+      actionInFlightRef.current = false;
     }
   }
 
@@ -12484,7 +12701,9 @@ function AiLessonRecapReviewModal({
   const hasDraft = Boolean(state?.draft);
   const draftStatus = state?.draft?.status ?? "";
   const draftLocked = draftStatus === "published";
-  const canPublish = hasDraft && (draftStatus === "ready_for_review" || draftStatus === "needs_coach_input");
+  const canPublish = Boolean(canSubmitLessonPublish({ draftStatus, hasDraft, isSubmitting: false }));
+  const publishedAt = state?.draft?.publishedAt ?? state?.job?.completedAt ?? video.updatedAt ?? null;
+  const publishedStatusLabel = `Published to ${state?.video.memberName ?? video.memberName ?? "the member"}`;
   const evidence = state?.draft?.transcriptEvidence ?? [];
   const noUsableAudio = jobStatus === "no_usable_audio";
   const jobUpdatedAt = state?.job?.updatedAt ? new Date(state.job.updatedAt).getTime() : Number.NaN;
@@ -12497,6 +12716,30 @@ function AiLessonRecapReviewModal({
     video,
   });
   const playbackMessage = videoUploadPlaybackMessage(video);
+
+  if (publishConfirmation) {
+    return (
+      <LessonPublishConfirmationModal
+        confirmation={publishConfirmation}
+        onDone={() => {
+          setPublishConfirmation(null);
+          onClose();
+        }}
+        onOpenLibrary={() => {
+          const memberId = video.ownerId;
+          const memberName = publishConfirmation.memberName || video.memberName || "Member";
+          setPublishConfirmation(null);
+          onClose();
+          onOpenMemberVideos(memberId, memberName);
+        }}
+        onUploadAnother={() => {
+          setPublishConfirmation(null);
+          onClose();
+          onUploadAnother();
+        }}
+      />
+    );
+  }
 
   return (
     <div className="video-modal-overlay">
@@ -12570,13 +12813,22 @@ function AiLessonRecapReviewModal({
             <button className="secondary-action" disabled={saving === "saving" || !hasDraft || draftLocked} onClick={() => void submit("editTranscript")} type="button">Save Transcript</button>
             {canRetryProcessing && <button className="secondary-action" disabled={saving === "saving"} onClick={() => void submit("retry")} type="button">Retry Audio Processing</button>}
             <button className="secondary-action" disabled={saving === "saving" || isProcessingActive} onClick={() => void submit("retranscribeVideo")} type="button">Regenerate From Video Audio</button>
-            <button className="secondary-action" disabled={saving === "saving"} onClick={() => void publishVideoWithoutRecap()} type="button">Publish Video Without Recap</button>
+            <button className="secondary-action" disabled={saving === "saving" || draftLocked} onClick={() => void publishVideoWithoutRecap()} type="button">
+              {savingAction === "publishVideoWithoutRecap" ? "Publishing…" : "Publish Video Without Recap"}
+            </button>
             {isProcessingActive && <button className="text-button danger-text-button" disabled={saving === "saving"} onClick={() => void submit("cancelProcessing")} type="button">Cancel Processing</button>}
             <button className="text-button danger-text-button" disabled={saving === "saving" || !hasDraft || draftLocked} onClick={() => void submit("markIncorrect")} type="button">Mark Incorrect</button>
             <button className="secondary-action" onClick={onClose} type="button">Back</button>
-            <button className="primary-action" disabled={saving === "saving" || !canPublish} onClick={() => void submit("approveAndPublish")} type="button">
-              {saving === "saving" ? "Saving..." : "Approve & Publish to Member"}
-            </button>
+            {draftLocked ? (
+              <div className="lesson-published-status" role="status">
+                <strong>{publishedStatusLabel}</strong>
+                <span>Published {formatLessonPublishedTimestamp(publishedAt)}</span>
+              </div>
+            ) : (
+              <button className="primary-action" disabled={saving === "saving" || !canPublish} onClick={() => void submit("approveAndPublish")} type="button">
+                {savingAction === "approveAndPublish" ? "Publishing…" : "Approve & Publish to Member"}
+              </button>
+            )}
           </div>
         </div>
       </section>
