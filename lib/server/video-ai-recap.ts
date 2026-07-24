@@ -1247,8 +1247,8 @@ async function generateRecapDraft(env: RecapEnv, database: D1Database, job: Proc
     )
     .run();
   await markJob(database, job.id, {
-    status: status === "needs_coach_input" ? "no_usable_audio" : "ready_for_review",
-    step: status === "needs_coach_input" ? "no_usable_audio_detected" : "ready_for_coach_review",
+    status: "ready_for_review",
+    step: status === "needs_coach_input" ? "needs_coach_review" : "ready_for_coach_review",
   });
   await recordProcessingEvent(database, "recap_generation_completed", job, "MAI Coach created a coach-review lesson recap draft.", { draftId, transcriptId: transcript.transcriptId });
   return draftId;

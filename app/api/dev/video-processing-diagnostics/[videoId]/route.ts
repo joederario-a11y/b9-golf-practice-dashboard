@@ -205,7 +205,7 @@ export async function GET(request: Request, context: RouteContext) {
       cloudflareNormalizationAttempted: jobErrorText.includes("cloudflare") || jobErrorText.includes("audio") || jobErrorText.includes("normaliz"),
       cloudflareNormalizationSucceeded: Boolean(job?.audio_storage_path && String(job.audio_storage_path).startsWith("video-processing/")),
       directMediaFallbackAttempted: currentStep.includes("direct_media") || transcriptQuality.transcriptionSource === "original_media",
-      directMediaFallbackSucceeded,
+      directMediaFallbackSucceeded: directFallbackSucceeded,
       transcriptionModel: transcript?.model ?? null,
       transcriptWordCount: transcript?.transcript_text ? transcript.transcript_text.split(/\s+/).filter(Boolean).length : 0,
       processingStatus: job?.status ?? "not_queued",
