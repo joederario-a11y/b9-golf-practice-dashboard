@@ -113,7 +113,15 @@ type LessonVideoCompressionState = {
   warning: string;
 };
 
+type LessonVideoRecorderFormat = {
+  container: "mp4" | "webm";
+  extension: "mp4" | "webm";
+  label: "MP4" | "WebM";
+  mimeType: string;
+};
+
 type PreparedLessonVideo = {
+  container: "original" | "mp4" | "webm";
   compressionTimeMs: number;
   file: File;
   message: string;
@@ -122,6 +130,35 @@ type PreparedLessonVideo = {
   outputMetadata: LessonVideoMetadata;
   skipped?: boolean;
   warning?: string;
+};
+
+type LessonVideoUploadTransferState = {
+  attempt: number;
+  bytesUploaded: number;
+  lastProgressAtMs: number | null;
+  speedBytesPerSecond: number | null;
+  startedAtMs: number | null;
+  totalBytes: number;
+};
+
+type LessonVideoUploadDebugState = {
+  compressionDurationMs: number | null;
+  compressionStatus: string;
+  fallbackReason: string;
+  lastProgressEventAt: number | null;
+  originalHeight: number | null;
+  originalMimeType: string;
+  originalSize: number;
+  originalWidth: number | null;
+  outputHeight: number | null;
+  outputMimeType: string;
+  outputSize: number | null;
+  outputWidth: number | null;
+  storageResponseStatus: number | null;
+  uploadAttempt: number;
+  uploadRoute: string;
+  uploadedBytes: number;
+  uploadFileSize: number | null;
 };
 
 function initialLessonVideoCompressionState(file?: File | null): LessonVideoCompressionState {
@@ -142,6 +179,39 @@ function initialLessonVideoCompressionState(file?: File | null): LessonVideoComp
     status: "idle",
     targetLabel: "",
     warning: "",
+  };
+}
+
+function initialLessonVideoUploadTransferState(attempt = 0): LessonVideoUploadTransferState {
+  return {
+    attempt,
+    bytesUploaded: 0,
+    lastProgressAtMs: null,
+    speedBytesPerSecond: null,
+    startedAtMs: null,
+    totalBytes: 0,
+  };
+}
+
+function initialLessonVideoUploadDebugState(): LessonVideoUploadDebugState {
+  return {
+    compressionDurationMs: null,
+    compressionStatus: "idle",
+    fallbackReason: "",
+    lastProgressEventAt: null,
+    originalHeight: null,
+    originalMimeType: "",
+    originalSize: 0,
+    originalWidth: null,
+    outputHeight: null,
+    outputMimeType: "",
+    outputSize: null,
+    outputWidth: null,
+    storageResponseStatus: null,
+    uploadAttempt: 0,
+    uploadRoute: "",
+    uploadedBytes: 0,
+    uploadFileSize: null,
   };
 }
 
@@ -4573,7 +4643,7 @@ function uploadVideoAsset(
   onProgress: (progress: number, event?: ProgressEvent<EventTarget>) => void,
   signal?: AbortSignal,
 ) {
-  return new Promise<{ aiProcessing?: unknown; size?: number }>((resolve, reject) => {
+  return new Promise<{ aiProcessing?: unknown; size?: number; status?: number }>((resolve, reject) => {
     const request = new XMLHttpRequest();
     let settled = false;
     let abortHandler: (() => void) | null = null;
@@ -4586,7 +4656,7 @@ function uploadVideoAsset(
       removeAbortListener();
       reject(error);
     };
-    const succeed = (payload: { aiProcessing?: unknown; size?: number }) => {
+    const succeed = (payload: { aiProcessing?: unknown; size?: number; status?: number }) => {
       if (settled) return;
       settled = true;
       removeAbortListener();
@@ -4601,6 +4671,14 @@ function uploadVideoAsset(
       return;
     }
     signal?.addEventListener("abort", abortHandler, { once: true });
+    const uploadRoute = `/api/videos PUT ${asset}`;
+    logLessonVideoDiagnostic("upload-start", {
+      asset,
+      fileName: file.name,
+      mimeType: file.type,
+      route: uploadRoute,
+      size: file.size,
+    });
     request.open(
       "PUT",
       `/api/videos?videoId=${encodeURIComponent(videoId)}&asset=${asset}`,
@@ -4610,11 +4688,24 @@ function uploadVideoAsset(
     request.setRequestHeader("X-File-Size", String(file.size));
     request.upload.onprogress = (event) => {
       if (event.lengthComputable) {
-        onProgress(Math.round((event.loaded / event.total) * 100));
+        const progress = Math.round((event.loaded / event.total) * 100);
+        onProgress(progress, event);
+        logLessonVideoDiagnostic("upload-progress", {
+          asset,
+          loadedBytes: event.loaded,
+          progress,
+          totalBytes: event.total,
+        });
       }
     };
-    request.onerror = () => fail(new Error("The upload connection was interrupted."));
-    request.onabort = () => fail(abortError(asset === "video" ? "Video upload was cancelled." : "Thumbnail upload was cancelled."));
+    request.onerror = () => {
+      logLessonVideoDiagnostic("upload-network-error", { asset, route: uploadRoute });
+      fail(new Error("The upload connection was interrupted."));
+    };
+    request.onabort = () => {
+      logLessonVideoDiagnostic("upload-aborted", { asset, route: uploadRoute });
+      fail(abortError(asset === "video" ? "Video upload was cancelled." : "Thumbnail upload was cancelled."));
+    };
     request.onload = () => {
       let payload: { aiProcessing?: unknown; error?: string; size?: number } = {};
       try {
@@ -4622,9 +4713,15 @@ function uploadVideoAsset(
       } catch {
         // A non-JSON response is handled by the status check below.
       }
+      logLessonVideoDiagnostic("upload-response", {
+        asset,
+        route: uploadRoute,
+        size: payload.size,
+        status: request.status,
+      });
       if (request.status >= 200 && request.status < 300) {
         onProgress(100);
-        succeed(payload);
+        succeed({ ...payload, status: request.status });
       } else {
         fail(new Error(payload.error ?? "The video file could not be stored."));
       }
@@ -4786,19 +4883,45 @@ function isAbortError(error: unknown) {
   return Boolean(error && typeof error === "object" && "name" in error && error.name === "AbortError");
 }
 
-function lessonVideoRecorderMimeType() {
-  if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") return "";
-  const candidates = [
-    "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
-    "video/mp4;codecs=h264,aac",
-    "video/mp4",
+function lessonVideoRecorderFormat(): LessonVideoRecorderFormat | null {
+  if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") return null;
+  const mp4Candidates: LessonVideoRecorderFormat[] = [
+    { container: "mp4", extension: "mp4", label: "MP4", mimeType: "video/mp4;codecs=avc1.42E01E,mp4a.40.2" },
+    { container: "mp4", extension: "mp4", label: "MP4", mimeType: "video/mp4;codecs=h264,aac" },
+    { container: "mp4", extension: "mp4", label: "MP4", mimeType: "video/mp4" },
   ];
-  return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) ?? "";
+  const webmCandidates: LessonVideoRecorderFormat[] = [
+    { container: "webm", extension: "webm", label: "WebM", mimeType: "video/webm;codecs=vp8,opus" },
+    { container: "webm", extension: "webm", label: "WebM", mimeType: "video/webm;codecs=vp9,opus" },
+    { container: "webm", extension: "webm", label: "WebM", mimeType: "video/webm" },
+  ];
+  const userAgent = typeof navigator === "undefined" ? "" : navigator.userAgent;
+  const chromiumRecorder = /\b(?:Chrome|Chromium|Edg|OPR|CriOS)\b|HeadlessChrome/i.test(userAgent);
+  const candidates = chromiumRecorder ? [...webmCandidates, ...mp4Candidates] : [...mp4Candidates, ...webmCandidates];
+  return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate.mimeType)) ?? null;
 }
 
-function lessonVideoOutputFileName(fileName: string, mimeType: string) {
+function lessonVideoRecorderSupportSnapshot() {
+  if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") {
+    return { mp4: false, webm: false };
+  }
+  return {
+    mp4: [
+      "video/mp4;codecs=avc1.42E01E,mp4a.40.2",
+      "video/mp4;codecs=h264,aac",
+      "video/mp4",
+    ].some((mimeType) => MediaRecorder.isTypeSupported(mimeType)),
+    webm: [
+      "video/webm;codecs=vp9,opus",
+      "video/webm;codecs=vp8,opus",
+      "video/webm",
+    ].some((mimeType) => MediaRecorder.isTypeSupported(mimeType)),
+  };
+}
+
+function lessonVideoOutputFileName(fileName: string, format: LessonVideoRecorderFormat) {
   const baseName = fileName.replace(/\.[^.]+$/, "") || "lesson-video";
-  return `${baseName}-optimized.mp4`;
+  return `${baseName}-optimized.${format.extension}`;
 }
 
 function fitLessonVideoDimensions(metadata: LessonVideoMetadata, maxShortEdge: number, maxLongEdge: number) {
@@ -4829,6 +4952,11 @@ function formatElapsedSeconds(seconds: number) {
   return minutes ? `${minutes}m ${String(remainingSeconds).padStart(2, "0")}s` : `${remainingSeconds}s`;
 }
 
+function formatUploadSpeed(bytesPerSecond: number | null) {
+  if (!bytesPerSecond || !Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return "Calculating";
+  return `${formatLessonUploadFileSize(bytesPerSecond)}/s`;
+}
+
 function lessonVideoDiagnosticsEnabled() {
   if (typeof window === "undefined") return false;
   return window.location.hostname === "localhost" ||
@@ -4842,6 +4970,60 @@ function logLessonVideoDiagnostic(event: string, details: Record<string, unknown
     Object.entries(details).filter(([key]) => !/token|secret|url|auth|member|email/i.test(key)),
   );
   console.info(`[MAI Coach video upload] ${event}`, sanitized);
+}
+
+function validatePreparedLessonVideo(
+  originalFile: File,
+  optimizedFile: File,
+  originalMetadata: LessonVideoMetadata,
+  outputMetadata: LessonVideoMetadata,
+) {
+  if (!optimizedFile.size) return "Optimized video was empty.";
+  if (!["video/mp4", "video/webm"].includes(optimizedFile.type)) {
+    return "Optimized video format is not supported by the lesson library.";
+  }
+  if (optimizedFile.size >= originalFile.size * 0.95) {
+    return "Optimization provided little size reduction.";
+  }
+  if (originalMetadata.duration > 0 && outputMetadata.duration > 0) {
+    const durationDelta = Math.abs(outputMetadata.duration - originalMetadata.duration);
+    if (durationDelta / originalMetadata.duration > 0.2) {
+      return "Optimized video duration did not match the original closely enough.";
+    }
+  }
+  if ((originalMetadata.width > 0 || originalMetadata.height > 0) && (!outputMetadata.width || !outputMetadata.height)) {
+    return "Optimized video metadata could not be verified.";
+  }
+  return "";
+}
+
+function waitForVideoFrameData(video: HTMLVideoElement, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (video.readyState >= 2) {
+      resolve();
+      return;
+    }
+    let settled = false;
+    const cleanup = () => {
+      video.removeEventListener("loadeddata", onReady);
+      video.removeEventListener("canplay", onReady);
+      video.removeEventListener("error", onError);
+      signal.removeEventListener("abort", onAbort);
+    };
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback();
+    };
+    const onReady = () => finish(resolve);
+    const onError = () => finish(() => reject(new Error("This video could not provide frames for browser compression.")));
+    const onAbort = () => finish(() => reject(abortError("Video preparation was cancelled.")));
+    video.addEventListener("loadeddata", onReady, { once: true });
+    video.addEventListener("canplay", onReady, { once: true });
+    video.addEventListener("error", onError, { once: true });
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 async function prepareLessonVideoForUpload(
@@ -4876,23 +5058,26 @@ async function prepareLessonVideoForUpload(
       outputMetadata: metadata,
       skipped: true,
       warning: plan.skipReason,
+      container: "original",
     };
   }
 
   if (options.signal.aborted) throw abortError("Video preparation was cancelled.");
-  const mimeType = lessonVideoRecorderMimeType();
-  if (!mimeType || typeof MediaRecorder === "undefined") {
+  const recorderFormat = lessonVideoRecorderFormat();
+  if (!recorderFormat || typeof MediaRecorder === "undefined") {
     return {
+      container: "original",
       compressionTimeMs: 0,
       file,
       metadata,
-      message: "This browser cannot create an MP4-optimized video before upload, so the original file will be uploaded.",
+      message: "This browser cannot optimize the video before upload, so the original file will be uploaded.",
       mimeType: file.type,
       outputMetadata: metadata,
       skipped: true,
-      warning: "MP4 browser compression unavailable",
+      warning: "Browser video recording unavailable",
     };
   }
+  const mimeType = recorderFormat.mimeType;
 
   const dimensions = fitLessonVideoDimensions(metadata, plan.maxShortEdge, plan.maxLongEdge);
   const objectUrl = URL.createObjectURL(file);
@@ -4910,10 +5095,13 @@ async function prepareLessonVideoForUpload(
   let stream: MediaStream | null = null;
   let settled = false;
   const startedAt = performance.now();
+  let progressTimerId: number | null = null;
   let timeoutId: number | null = null;
+  const timeoutMs = options.timeoutMs ?? LESSON_VIDEO_COMPRESSION_TIMEOUT_MS;
 
   const cleanup = () => {
     if (timeoutId) window.clearTimeout(timeoutId);
+    if (progressTimerId) window.clearInterval(progressTimerId);
     if (abortHandler) options.signal.removeEventListener("abort", abortHandler);
     if (animationFrame) window.cancelAnimationFrame(animationFrame);
     video.onended = null;
@@ -4935,6 +5123,7 @@ async function prepareLessonVideoForUpload(
   if (!context || typeof canvas.captureStream !== "function") {
     cleanup();
     return {
+      container: "original",
       compressionTimeMs: 0,
       file,
       metadata,
@@ -4959,24 +5148,24 @@ async function prepareLessonVideoForUpload(
       cleanup();
       resolve(result);
     };
-    abortHandler = () => {
+    const stopRecorder = () => {
       try {
         if (recorder && recorder.state !== "inactive") recorder.stop();
       } catch {
-        // The rejection below is the source of truth for cancellation.
+        // The rejection below is the source of truth.
       }
+    };
+    const timeoutMessage = "Video preparation timed out. You can retry compression or upload the original video.";
+    abortHandler = () => {
+      stopRecorder();
       fail(abortError("Video preparation was cancelled."));
     };
 
     options.signal.addEventListener("abort", abortHandler, { once: true });
     timeoutId = window.setTimeout(() => {
-      try {
-        if (recorder && recorder.state !== "inactive") recorder.stop();
-      } catch {
-        // The timeout error below is the source of truth.
-      }
-      fail(new Error("Video preparation timed out. You can retry compression or upload the original video."));
-    }, options.timeoutMs ?? LESSON_VIDEO_COMPRESSION_TIMEOUT_MS);
+      stopRecorder();
+      fail(new Error(timeoutMessage));
+    }, timeoutMs);
     video.preload = "auto";
     video.playsInline = true;
     video.muted = true;
@@ -4987,7 +5176,9 @@ async function prepareLessonVideoForUpload(
         if (options.signal.aborted) throw abortError("Video preparation was cancelled.");
         canvas.width = dimensions.width;
         canvas.height = dimensions.height;
-        const canvasStream = canvas.captureStream();
+        await waitForVideoFrameData(video, options.signal);
+        context.drawImage(video, 0, 0, dimensions.width, dimensions.height);
+        const canvasStream = canvas.captureStream(30);
         const tracks = [...canvasStream.getVideoTracks()];
 
         if (AudioCtor) {
@@ -5011,37 +5202,53 @@ async function prepareLessonVideoForUpload(
           const progress = metadata.duration > 0
             ? Math.min(99, Math.max(1, Math.round((video.currentTime / metadata.duration) * 100)))
             : 50;
-          options.onProgress(progress, `Compressing video to ${plan.targetLabel}...`);
+          options.onProgress(progress, `Compressing video to ${plan.targetLabel} ${recorderFormat.label}...`);
         };
         recorder.onerror = () => fail(new Error("Browser video compression failed."));
-        recorder.onstop = () => {
+        recorder.onstop = async () => {
           if (settled || options.signal.aborted) return;
           const blob = new Blob(chunks, { type: mimeType });
           const compressionTimeMs = Math.round(performance.now() - startedAt);
-          if (!blob.size || blob.size >= file.size * 0.95) {
-            done({
-              compressionTimeMs,
-              file,
-              message: "The original file is already close to the optimized size, so the original will be uploaded.",
-              metadata,
-              mimeType: file.type,
-              outputMetadata: metadata,
-              skipped: true,
-              warning: "Optimization provided little size reduction",
-            });
+          if (!blob.size) {
+            fail(new Error("Optimized video was empty. You can retry compression or upload the original video."));
             return;
           }
-          const optimizedFile = new File([blob], lessonVideoOutputFileName(file.name, mimeType), {
+          if (blob.size >= file.size * 0.95) {
+            fail(new Error("Optimization provided little size reduction. You can retry compression or upload the original video."));
+            return;
+          }
+          const optimizedFile = new File([blob], lessonVideoOutputFileName(file.name, recorderFormat), {
             lastModified: file.lastModified,
             type: mimeType.split(";")[0] || mimeType,
           });
+          let outputMetadata = { duration: metadata.duration, height: dimensions.height, width: dimensions.width };
+          try {
+            outputMetadata = await readVideoMetadata(optimizedFile, options.signal);
+          } catch (error) {
+            if (isAbortError(error) || options.signal.aborted) {
+              fail(abortError("Video preparation was cancelled."));
+              return;
+            }
+            fail(new Error("The optimized video could not be verified. You can retry compression or upload the original video."));
+            return;
+          }
+          const validationIssue = validatePreparedLessonVideo(file, optimizedFile, metadata, outputMetadata);
+          if (validationIssue) {
+            fail(new Error(`${validationIssue} You can retry compression or upload the original video.`));
+            return;
+          }
           done({
+            container: recorderFormat.container,
             compressionTimeMs,
             file: optimizedFile,
-            message: `Optimized ${formatLessonUploadFileSize(file.size)} to ${formatLessonUploadFileSize(optimizedFile.size)}.`,
+            message: `Optimized ${formatLessonUploadFileSize(file.size)} to ${formatLessonUploadFileSize(optimizedFile.size)} as ${recorderFormat.label}.`,
             metadata,
             mimeType,
-            outputMetadata: { duration: metadata.duration, height: dimensions.height, width: dimensions.width },
+            outputMetadata: {
+              duration: outputMetadata.duration || metadata.duration,
+              height: outputMetadata.height || dimensions.height,
+              width: outputMetadata.width || dimensions.width,
+            },
           });
         };
 
@@ -5051,7 +5258,19 @@ async function prepareLessonVideoForUpload(
           animationFrame = window.requestAnimationFrame(drawFrame);
         };
         recorder.start(1000);
-        options.onProgress(1, `Compressing video to ${plan.targetLabel}...`);
+        options.onProgress(1, `Compressing video to ${plan.targetLabel} ${recorderFormat.label}...`);
+        progressTimerId = window.setInterval(() => {
+          if (!recorder || recorder.state === "inactive" || options.signal.aborted) return;
+          if (performance.now() - startedAt >= timeoutMs) {
+            stopRecorder();
+            fail(new Error(timeoutMessage));
+            return;
+          }
+          const progress = metadata.duration > 0
+            ? Math.min(99, Math.max(1, Math.round((video.currentTime / metadata.duration) * 100)))
+            : 50;
+          options.onProgress(progress, `Compressing video to ${plan.targetLabel} ${recorderFormat.label}...`);
+        }, 1000);
         await video.play();
         drawFrame();
       } catch (error) {
@@ -9490,6 +9709,9 @@ function CoachVideoWorkspace({
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadStage, setUploadStage] = useState<CoachLessonUploadStage>("idle");
   const [compressionState, setCompressionState] = useState<LessonVideoCompressionState>(() => initialLessonVideoCompressionState());
+  const [uploadTransferState, setUploadTransferState] = useState<LessonVideoUploadTransferState>(() => initialLessonVideoUploadTransferState());
+  const [lessonVideoUploadDebug, setLessonVideoUploadDebug] = useState<LessonVideoUploadDebugState>(() => initialLessonVideoUploadDebugState());
+  const [showLessonVideoUploadDebug, setShowLessonVideoUploadDebug] = useState(false);
   const [activeUploadInfo, setActiveUploadInfo] = useState<{
     fileName: string;
     fileSize: number;
@@ -9541,6 +9763,9 @@ function CoachVideoWorkspace({
   useEffect(() => () => {
     compressionAbortRef.current?.abort();
     uploadAbortRef.current?.abort();
+  }, []);
+  useEffect(() => {
+    setShowLessonVideoUploadDebug(lessonVideoDiagnosticsEnabled());
   }, []);
   const allowedMembers = members;
   const normalizedMemberSearch = memberSearch.trim().toLowerCase();
@@ -9771,6 +9996,8 @@ function CoachVideoWorkspace({
     setUploadProgress(0);
     setUploadStage("idle");
     setCompressionState(initialLessonVideoCompressionState());
+    setUploadTransferState(initialLessonVideoUploadTransferState());
+    setLessonVideoUploadDebug(initialLessonVideoUploadDebugState());
     setActiveUploadInfo(null);
     setLastUploadProgressAt(null);
     setShowUploadSlowWarning(false);
@@ -9998,6 +10225,12 @@ function CoachVideoWorkspace({
     setUploadStage("idle");
     setUploadProgress(0);
     setCompressionState(initialLessonVideoCompressionState(file));
+    setUploadTransferState(initialLessonVideoUploadTransferState());
+    setLessonVideoUploadDebug({
+      ...initialLessonVideoUploadDebugState(),
+      originalMimeType: file.type,
+      originalSize: file.size,
+    });
     setActiveUploadInfo(null);
     setUploadResult(null);
     if (!videoTitle.trim()) setVideoTitle(videoDateTitleFromFile(file));
@@ -10062,11 +10295,29 @@ function CoachVideoWorkspace({
   }
 
   function uploadProgressTick(progress: number, event?: ProgressEvent<EventTarget>) {
+    const now = Date.now();
     setUploadStage("uploading");
     setUploadProgress(progress);
-    setLastUploadProgressAt(Date.now());
+    setLastUploadProgressAt(now);
     setShowUploadSlowWarning(false);
     if (event?.lengthComputable) {
+      setUploadTransferState((current) => {
+        const elapsedSeconds = current.lastProgressAtMs ? (now - current.lastProgressAtMs) / 1000 : 0;
+        const bytesSinceLast = Math.max(0, event.loaded - current.bytesUploaded);
+        return {
+          ...current,
+          bytesUploaded: event.loaded,
+          lastProgressAtMs: now,
+          speedBytesPerSecond: elapsedSeconds > 0 ? bytesSinceLast / elapsedSeconds : current.speedBytesPerSecond,
+          totalBytes: event.total,
+        };
+      });
+      setLessonVideoUploadDebug((current) => ({
+        ...current,
+        lastProgressEventAt: now,
+        uploadedBytes: event.loaded,
+        uploadFileSize: event.total,
+      }));
       setWorkspaceMessage(`Uploading video: ${progress}% transferred.`);
     }
   }
@@ -10231,11 +10482,19 @@ function CoachVideoWorkspace({
       return;
     }
 
+    const nextUploadAttempt = uploadTransferState.attempt + 1;
     setSaveState("saving");
     setUploadStage("preparing_video");
     setUploadProgress(0);
     setLastUploadProgressAt(Date.now());
     setShowUploadSlowWarning(false);
+    setUploadTransferState(initialLessonVideoUploadTransferState(nextUploadAttempt));
+    setLessonVideoUploadDebug({
+      ...initialLessonVideoUploadDebugState(),
+      originalMimeType: videoFile?.type ?? "",
+      originalSize: videoFile?.size ?? 0,
+      uploadAttempt: nextUploadAttempt,
+    });
     setSessionUploadStatus("");
     setSessionUploadResult(null);
     if (videoFile) {
@@ -10284,16 +10543,29 @@ function CoachVideoWorkspace({
         const estimatedOptimizedSize = shouldCompressVideo && videoMetadata.duration > 0
           ? Math.round(((compressionPlan.videoBitsPerSecond + compressionPlan.audioBitsPerSecond) / 8) * videoMetadata.duration)
           : null;
+        const recorderSupport = lessonVideoRecorderSupportSnapshot();
         logLessonVideoDiagnostic("prepare-start", {
           compressionTriggered: shouldCompressVideo,
           deviceMemory,
           duration: videoMetadata.duration,
+          mp4RecorderSupported: recorderSupport.mp4,
           originalHeight: videoMetadata.height,
+          originalFileName: videoFile.name,
           originalMimeType: videoFile.type,
           originalSize: videoFile.size,
           originalWidth: videoMetadata.width,
           skipReason: options.skipCompression ? "user_selected_original" : compressionPlan.skipReason,
+          webmRecorderSupported: recorderSupport.webm,
         });
+        setLessonVideoUploadDebug((current) => ({
+          ...current,
+          compressionStatus: shouldCompressVideo ? "eligible" : "skipped",
+          fallbackReason: options.skipCompression ? "user_selected_original" : compressionPlan.skipReason,
+          originalHeight: videoMetadata.height || null,
+          originalMimeType: videoFile.type,
+          originalSize: videoFile.size,
+          originalWidth: videoMetadata.width || null,
+        }));
         const compressionController = preparationController ?? new AbortController();
         compressionAbortRef.current = compressionController;
         let compressionElapsedTimer: number | null = null;
@@ -10343,6 +10615,10 @@ function CoachVideoWorkspace({
                 status: "compressing",
                 targetLabel: compressionPlan.targetLabel,
               }));
+              setLessonVideoUploadDebug((current) => ({
+                ...current,
+                compressionStatus: "compressing",
+              }));
               setWorkspaceMessage(message);
             },
           });
@@ -10353,7 +10629,9 @@ function CoachVideoWorkspace({
           setCompressionState((current) => ({
             ...current,
             canUploadOriginal: false,
-            codec: preparedVideo.skipped ? preparedVideo.file.type || "Original" : "MP4",
+            codec: preparedVideo.skipped
+              ? preparedVideo.file.type || "Original"
+              : preparedVideo.container === "webm" ? "WebM" : "MP4",
             compressionTimeMs: preparedVideo.compressionTimeMs,
             elapsedSeconds: Math.round(preparedVideo.compressionTimeMs / 1000),
             estimatedSize: estimatedOptimizedSize,
@@ -10368,6 +10646,17 @@ function CoachVideoWorkspace({
             targetLabel: compressionPlan.targetLabel,
             warning: preparedVideo.warning ?? "",
           }));
+          setLessonVideoUploadDebug((current) => ({
+            ...current,
+            compressionDurationMs: preparedVideo.compressionTimeMs,
+            compressionStatus: preparedVideo.skipped ? "skipped" : "complete",
+            fallbackReason: preparedVideo.warning ?? "",
+            outputHeight: preparedVideo.outputMetadata.height || null,
+            outputMimeType: preparedVideo.file.type,
+            outputSize: preparedVideo.file.size,
+            outputWidth: preparedVideo.outputMetadata.width || null,
+            uploadFileSize: preparedVideo.file.size,
+          }));
           logLessonVideoDiagnostic("prepare-complete", {
             compressionDurationMs: preparedVideo.compressionTimeMs,
             fallbackReason: preparedVideo.warning ?? "",
@@ -10379,7 +10668,7 @@ function CoachVideoWorkspace({
             originalMimeType: videoFile.type,
             originalSize: videoFile.size,
             originalWidth: originalVideoMetadata.width,
-            outputFormat: preparedVideo.skipped ? "original" : "mp4",
+            outputFormat: preparedVideo.container,
           });
           setActiveUploadInfo((current) => current ? {
             ...current,
@@ -10398,6 +10687,11 @@ function CoachVideoWorkspace({
           });
           setUploadProgress(0);
           setUploadStage("compression_failed");
+          setLessonVideoUploadDebug((current) => ({
+            ...current,
+            compressionStatus: "failed",
+            fallbackReason: error instanceof Error ? error.message : "Compression failed.",
+          }));
           setCompressionState((current) => ({
             ...current,
             canUploadOriginal: true,
@@ -10468,12 +10762,38 @@ function CoachVideoWorkspace({
         uploadAbortRef.current = uploadController;
         setUploadStage("uploading");
         setUploadProgress(0);
+        setUploadTransferState((current) => ({
+          ...current,
+          bytesUploaded: 0,
+          lastProgressAtMs: null,
+          speedBytesPerSecond: null,
+          startedAtMs: Date.now(),
+          totalBytes: uploadFile.size,
+        }));
+        setLessonVideoUploadDebug((current) => ({
+          ...current,
+          storageResponseStatus: null,
+          uploadFileSize: uploadFile.size,
+          uploadRoute: "/api/videos PUT video",
+          uploadedBytes: 0,
+        }));
         setWorkspaceMessage(`Uploading ${uploadFile.name} to ${selectedMember.name}.`);
+        logLessonVideoDiagnostic("upload-file-selected", {
+          fileName: uploadFile.name,
+          mimeType: uploadFile.type,
+          size: uploadFile.size,
+        });
         try {
-          await uploadVideoAsset(pendingVideoId, uploadFile, "video", uploadProgressTick, uploadController.signal);
+          const uploadResponse = await uploadVideoAsset(pendingVideoId, uploadFile, "video", uploadProgressTick, uploadController.signal);
+          setLessonVideoUploadDebug((current) => ({
+            ...current,
+            storageResponseStatus: uploadResponse.status ?? null,
+            uploadedBytes: uploadResponse.size ?? uploadFile.size,
+          }));
           logLessonVideoDiagnostic("upload-complete", {
             mimeType: uploadFile.type,
-            size: uploadFile.size,
+            responseStatus: uploadResponse.status,
+            size: uploadResponse.size ?? uploadFile.size,
           });
         } catch (error) {
           uploadFailed = true;
@@ -10575,7 +10895,7 @@ function CoachVideoWorkspace({
       const failureMessage = isAbortError(error)
         ? (compressionFailed ? "Video preparation was cancelled. You can retry or upload the original file." : "Video upload was cancelled. You can retry when ready.")
         : compressionFailed
-          ? "Compression failed. You can retry or upload the original video."
+          ? error instanceof Error ? error.message : "Compression failed. You can retry or upload the original video."
           : uploadFailed
             ? (error instanceof Error ? error.message : "Upload failed. You can retry when ready.")
             : pendingVideoId && videoStored
@@ -10705,6 +11025,9 @@ function CoachVideoWorkspace({
   const canCancelCompression = saveState === "saving" && (uploadStage === "preparing_video" || uploadStage === "compressing_video");
   const canCancelUpload = saveState === "saving" && uploadStage === "uploading";
   const canRetryCoachUpload = saveState !== "saving" && Boolean(videoFile) && (uploadStage === "compression_failed" || uploadStage === "upload_failed" || uploadStage === "needs_attention");
+  const uploadElapsedSeconds = uploadTransferState.startedAtMs && uploadTransferState.lastProgressAtMs
+    ? Math.round((uploadTransferState.lastProgressAtMs - uploadTransferState.startedAtMs) / 1000)
+    : 0;
 
   return (
     <div className="coach-video-workspace">
@@ -11001,9 +11324,16 @@ function CoachVideoWorkspace({
                   </div>
                 )}
                 {saveState === "saving" && uploadStage === "uploading" && (
-                  <div className="coach-upload-progress" aria-label={`Uploading video: ${uploadProgress}%`}>
-                    <span style={{ width: `${uploadProgress}%` }} />
-                    <strong>{uploadProgress}% uploaded</strong>
+                  <div className="coach-upload-transfer-status">
+                    <div className="coach-upload-progress" aria-label={`Uploading video: ${uploadProgress}%`}>
+                      <span style={{ width: `${uploadProgress}%` }} />
+                      <strong>{uploadProgress}% uploaded</strong>
+                    </div>
+                    <small>
+                      {formatLessonUploadFileSize(uploadTransferState.bytesUploaded)} of {formatLessonUploadFileSize(uploadTransferState.totalBytes || activeUploadInfo?.fileSize || 0)}
+                      {" "}· {formatUploadSpeed(uploadTransferState.speedBytesPerSecond)}
+                      {uploadElapsedSeconds > 0 ? ` · ${formatElapsedSeconds(uploadElapsedSeconds)} elapsed` : ""}
+                    </small>
                   </div>
                 )}
                 {(canCancelCompression || canCancelUpload || canRetryCoachUpload || compressionState.canUploadOriginal) && (
@@ -11017,7 +11347,7 @@ function CoachVideoWorkspace({
                   </div>
                 )}
                 {showUploadSlowWarning && (
-                  <p className="coach-inline-warning">Still connected. Large videos can pause between browser progress updates; we will keep this upload tied to the same lesson record.</p>
+                  <p className="coach-inline-warning">The upload is not making progress. You can retry or cancel without creating a duplicate lesson record.</p>
                 )}
                 <div className="coach-upload-checklist">
                   {[
@@ -11030,6 +11360,23 @@ function CoachVideoWorkspace({
                     <span className={cls("coach-upload-check", status)} key={label}>{label}</span>
                   ))}
                 </div>
+                {showLessonVideoUploadDebug && (
+                  <details className="coach-upload-debug-panel">
+                    <summary>Development upload diagnostics</summary>
+                    <dl>
+                      <div><dt>Original</dt><dd>{formatLessonUploadFileSize(lessonVideoUploadDebug.originalSize)} · {lessonVideoUploadDebug.originalMimeType || "unknown"}</dd></div>
+                      <div><dt>Original resolution</dt><dd>{lessonVideoUploadDebug.originalWidth && lessonVideoUploadDebug.originalHeight ? `${lessonVideoUploadDebug.originalWidth}×${lessonVideoUploadDebug.originalHeight}` : "unknown"}</dd></div>
+                      <div><dt>Compression</dt><dd>{lessonVideoUploadDebug.compressionStatus}</dd></div>
+                      <div><dt>Optimized</dt><dd>{lessonVideoUploadDebug.outputSize ? `${formatLessonUploadFileSize(lessonVideoUploadDebug.outputSize)} · ${lessonVideoUploadDebug.outputMimeType}` : "pending"}</dd></div>
+                      <div><dt>Optimized resolution</dt><dd>{lessonVideoUploadDebug.outputWidth && lessonVideoUploadDebug.outputHeight ? `${lessonVideoUploadDebug.outputWidth}×${lessonVideoUploadDebug.outputHeight}` : "pending"}</dd></div>
+                      <div><dt>Compression time</dt><dd>{lessonVideoUploadDebug.compressionDurationMs ? formatElapsedSeconds(lessonVideoUploadDebug.compressionDurationMs / 1000) : "pending"}</dd></div>
+                      <div><dt>Fallback reason</dt><dd>{lessonVideoUploadDebug.fallbackReason || "none"}</dd></div>
+                      <div><dt>Upload</dt><dd>Attempt {lessonVideoUploadDebug.uploadAttempt || uploadTransferState.attempt} · {formatLessonUploadFileSize(lessonVideoUploadDebug.uploadedBytes)} / {formatLessonUploadFileSize(lessonVideoUploadDebug.uploadFileSize ?? 0)}</dd></div>
+                      <div><dt>Route</dt><dd>{lessonVideoUploadDebug.uploadRoute || "pending"}</dd></div>
+                      <div><dt>Storage status</dt><dd>{lessonVideoUploadDebug.storageResponseStatus ?? "pending"}</dd></div>
+                    </dl>
+                  </details>
+                )}
                 {sessionUploadStatus && <p>{sessionUploadStatus}</p>}
                 {activeUploadFact && <p className="coach-upload-fact">Did you know? {activeUploadFact}</p>}
               </div>

@@ -133,9 +133,15 @@ test("coach lesson upload source exposes browser video compression and recovery 
   assert.match(pageSource, /Cancel upload/);
   assert.match(pageSource, /Upload original file/);
   assert.match(pageSource, /compression_failed/);
-  assert.match(pageSource, /MP4 browser compression unavailable/);
+  assert.match(pageSource, /video\/webm;codecs=vp9,opus/);
+  assert.match(pageSource, /lessonVideoOutputFileName/);
+  assert.match(pageSource, /validatePreparedLessonVideo/);
+  assert.match(pageSource, /waitForVideoFrameData/);
+  assert.match(pageSource, /canvas\.captureStream\(30\)/);
+  assert.match(pageSource, /Development upload diagnostics/);
   assert.match(pageSource, /Video preparation timed out/);
-  assert.doesNotMatch(pageSource, /video\/webm;codecs/);
+  assert.match(pageSource, /Optimization provided little size reduction\. You can retry compression or upload the original video\./);
+  assert.match(pageSource, /The optimized video could not be verified\. You can retry compression or upload the original video\./);
 });
 
 test("lesson video compression starts for large files or footage above 1080p", () => {
@@ -226,15 +232,19 @@ test("coach upload stall warning only appears during an inactive file transfer",
     saveState: "saving",
     stage: "uploading",
     lastProgressAt: 1000,
-    now: 27000,
-    thresholdMs: 25000,
+    now: 31000,
   }), true);
+  assert.equal(shouldShowLessonUploadStallWarning({
+    saveState: "saving",
+    stage: "uploading",
+    lastProgressAt: 1000,
+    now: 27000,
+  }), false);
   assert.equal(shouldShowLessonUploadStallWarning({
     saveState: "saving",
     stage: "upload_complete",
     lastProgressAt: 1000,
     now: 27000,
-    thresholdMs: 25000,
   }), false);
 });
 

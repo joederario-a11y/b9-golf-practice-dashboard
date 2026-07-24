@@ -5731,10 +5731,66 @@ button:disabled {
   gap: 8px;
 }
 
+.coach-upload-transfer-status {
+  display: grid;
+  gap: 6px;
+}
+
 .coach-video-optimization-status small {
   color: var(--muted);
   font-size: 11px;
   font-weight: 800;
+}
+
+.coach-upload-transfer-status small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.coach-upload-debug-panel {
+  border: 1px dashed color-mix(in srgb, var(--green) 40%, var(--line));
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.coach-upload-debug-panel summary {
+  cursor: pointer;
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.coach-upload-debug-panel dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px;
+  margin: 10px 0 0;
+}
+
+.coach-upload-debug-panel div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.coach-upload-debug-panel dt {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.coach-upload-debug-panel dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .coach-upload-recovery-actions {
