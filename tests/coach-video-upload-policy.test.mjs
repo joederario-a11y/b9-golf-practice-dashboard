@@ -154,6 +154,13 @@ test("coach lesson upload source exposes browser video compression and recovery 
   assert.match(pageSource, /The optimized video could not be verified\. You can retry compression or upload the original video\./);
 });
 
+test("coach lesson upload preserves the selected source video for storage and transcription", async () => {
+  const pageSource = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(pageSource, /const shouldCompressVideo = false/);
+  assert.match(pageSource, /Original video will be uploaded unchanged so lesson audio is preserved for playback and transcription\./);
+  assert.match(pageSource, /forceOriginal: options\.skipCompression \|\| !shouldCompressVideo/);
+});
+
 test("lesson video audio preservation rejects silent optimized output when source had audio", () => {
   assert.equal(validateLessonVideoAudioPreservation({
     outputContainer: "mp4",

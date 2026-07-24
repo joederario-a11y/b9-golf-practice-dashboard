@@ -21,6 +21,10 @@ import {
   createVideoRecapProcessingJob,
   queueVideoRecapWorkflowAfterUpload,
 } from "@/lib/server/video-ai-recap";
+import {
+  mediaProbeHasAudio,
+  mediaProbeResultFromBytes,
+} from "@/lib/video-media-processing-policy.mjs";
 
 type VideoRow = {
   id: string;
@@ -43,6 +47,12 @@ type VideoRow = {
   file_name: string;
   file_size: number;
   mime_type: string;
+  source_storage_path: string | null;
+  source_file_name: string | null;
+  source_file_size: number | null;
+  source_mime_type: string | null;
+  source_media_probe_json: string;
+  playback_media_probe_json: string;
   duration: number;
   lesson_date: string | null;
   publication_status: string;
@@ -173,6 +183,65 @@ function defaultVideoTitleFromDate(...values: unknown[]) {
 }
 
 const HIDDEN_TEST_VIDEO_CLAUSE = "LOWER(COALESCE(videos.video_type, '')) NOT IN ('system_test', 'system test')";
+const MEDIA_PROBE_EDGE_BYTES = 4 * 1024 * 1024;
+
+function safeJson(value: string | null | undefined, fallback: unknown) {
+  try {
+    return value ? JSON.parse(value) as unknown : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function concatBytes(...parts: Uint8Array[]) {
+  const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  const combined = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    combined.set(part, offset);
+    offset += part.byteLength;
+  }
+  return combined;
+}
+
+async function readR2ProbeSample(bucket: R2Bucket, objectKey: string, objectSize: number) {
+  const safeSize = Number.isFinite(objectSize) && objectSize > 0 ? objectSize : 0;
+  if (!safeSize || safeSize <= MEDIA_PROBE_EDGE_BYTES * 2) {
+    const object = await bucket.get(objectKey);
+    return object ? new Uint8Array(await object.arrayBuffer()) : new Uint8Array();
+  }
+  const [head, tail] = await Promise.all([
+    bucket.get(objectKey, { range: { offset: 0, length: MEDIA_PROBE_EDGE_BYTES } }),
+    bucket.get(objectKey, { range: { offset: Math.max(0, safeSize - MEDIA_PROBE_EDGE_BYTES), length: MEDIA_PROBE_EDGE_BYTES } }),
+  ]);
+  return concatBytes(
+    head ? new Uint8Array(await head.arrayBuffer()) : new Uint8Array(),
+    tail ? new Uint8Array(await tail.arrayBuffer()) : new Uint8Array(),
+  );
+}
+
+async function probeStoredMediaObject(bucket: R2Bucket, values: {
+  durationSeconds: number;
+  mimeType: string;
+  objectKey: string;
+  objectSize: number;
+}) {
+  const bytes = await readR2ProbeSample(bucket, values.objectKey, values.objectSize);
+  return mediaProbeResultFromBytes(bytes, {
+    durationSeconds: values.durationSeconds,
+    mimeType: values.mimeType,
+    objectKey: values.objectKey,
+    objectSize: values.objectSize,
+  });
+}
+
+function stringifyJson(value: unknown) {
+  try {
+    return JSON.stringify(value ?? {});
+  } catch {
+    return "{}";
+  }
+}
 
 function stringList(value: unknown) {
   if (!Array.isArray(value)) return [];
@@ -228,6 +297,11 @@ function serializeVideo(row: VideoRow, viewerRole?: string) {
     fileName: row.file_name,
     fileSize: Number(row.file_size),
     mimeType: row.mime_type,
+    sourceFileName: row.source_file_name ?? row.file_name,
+    sourceFileSize: Number(row.source_file_size ?? row.file_size),
+    sourceMimeType: row.source_mime_type ?? row.mime_type,
+    sourceMediaProbe: safeJson(row.source_media_probe_json, {}),
+    playbackMediaProbe: safeJson(row.playback_media_probe_json, {}),
     lessonDate: row.lesson_date ?? undefined,
     publicationStatus: row.publication_status,
     uploadStatus: row.upload_status,
@@ -415,14 +489,16 @@ export async function POST(request: Request) {
           id, member_id, coach_id, uploaded_by_role, title, description,
           coach_notes, coach_private_notes, user_notes, video_type, focus_area,
           swing_type, club, tags_json, session_data_id, storage_path,
-          thumbnail_storage_path, file_name, file_size, mime_type, duration,
+          thumbnail_storage_path, file_name, file_size, mime_type,
+          source_storage_path, source_file_name, source_file_size, source_mime_type,
+          source_media_probe_json, playback_media_probe_json, duration,
           lesson_date, publication_status, upload_status, review_status,
           email_status, is_viewed_by_member, lesson_summary, worked_on,
           key_issue, improvement, practice_assignment, recommended_drill,
           member_facing_notes, next_session_goal, created_at, updated_at
         ) VALUES (
           ?, ?, ?, ?, ?, ?, '', ?, '', ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?,
-          ?, ?, 'pending', 'New', 'Not sent', ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+          ?, ?, ?, ?, '{}', '{}', ?, ?, ?, 'pending', 'New', 'Not sent', ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
         )`,
       )
       .bind(
@@ -439,6 +515,10 @@ export async function POST(request: Request) {
         text(payload.club, 80) || null,
         JSON.stringify(stringList(payload.tags)),
         text(payload.sessionId, 120) || null,
+        storagePath,
+        fileName,
+        fileSize,
+        mimeType,
         storagePath,
         fileName,
         fileSize,
@@ -530,14 +610,35 @@ export async function PUT(request: Request) {
         .bind(storagePath, video.id)
         .run();
     } else {
+      const mediaProbe = await probeStoredMediaObject(bucket, {
+        durationSeconds: video.duration,
+        mimeType,
+        objectKey: storagePath,
+        objectSize: stored.size,
+      });
+      const mediaProbeJson = stringifyJson(mediaProbe);
       await database
         .prepare(
           `UPDATE lesson_videos SET
-            file_name = ?, file_size = ?, mime_type = ?, upload_status = 'ready',
+            file_name = ?, file_size = ?, mime_type = ?,
+            source_storage_path = ?, source_file_name = ?, source_file_size = ?, source_mime_type = ?,
+            source_media_probe_json = ?, playback_media_probe_json = ?,
+            upload_status = 'ready',
             updated_at = CURRENT_TIMESTAMP
           WHERE id = ?`,
         )
-        .bind(fileName, stored.size, mimeType, video.id)
+        .bind(
+          fileName,
+          stored.size,
+          mimeType,
+          storagePath,
+          fileName,
+          stored.size,
+          mimeType,
+          mediaProbeJson,
+          mediaProbeJson,
+          video.id,
+        )
         .run();
       await recordActivity({
         action: "video_uploaded",
@@ -546,7 +647,16 @@ export async function PUT(request: Request) {
         entityId: video.id,
         entityType: "video",
         memberId: video.member_id,
-        metadata: { fileName, size: stored.size, mimeType },
+        metadata: {
+          audioCodec: mediaProbe.audioCodec ?? null,
+          audioTrackCount: mediaProbe.audioTrackCount,
+          container: mediaProbe.container,
+          fileName,
+          hasAudio: mediaProbeHasAudio(mediaProbe),
+          mimeType,
+          size: stored.size,
+          videoCodec: mediaProbe.videoCodec ?? null,
+        },
         summary: `${identity.displayName} uploaded ${fileName}.`,
         targetUserId: video.member_id,
       });
@@ -727,11 +837,12 @@ export async function DELETE(request: Request) {
       .bind(video.id)
       .all<{ audio_storage_path: string }>();
     const bucket = getRequiredVideoStorage();
-    const keys = [
+    const keys = Array.from(new Set([
       video.storage_path,
+      video.source_storage_path,
       video.thumbnail_storage_path,
       ...(aiAssets.results ?? []).flatMap((asset) => asset.audio_storage_path.split("\n")),
-    ].filter((key): key is string => Boolean(key));
+    ].filter((key): key is string => Boolean(key))));
     if (keys.length) await bucket.delete(keys);
     await database.batch([
       database.prepare("DELETE FROM video_views WHERE video_id = ?").bind(video.id),

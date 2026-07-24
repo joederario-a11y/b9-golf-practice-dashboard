@@ -7,6 +7,8 @@ import {
   MAX_AUDIO_EXTRACTION_TRANSCRIPTION_BYTES,
   MAX_DIRECT_MEDIA_TRANSCRIPTION_BYTES,
   mediaContainerFromMimeType,
+  mediaProbeHasAudio,
+  mediaProbeResultFromBytes,
   normalizeVideoProcessingSafeCode,
   transcriptionSizeLimitForMedia,
 } from "../lib/video-media-processing-policy.mjs";
@@ -33,6 +35,38 @@ test("video-only WebM is not treated as directly transcribable", () => {
     mimeType: "video/webm",
     size: 20 * 1024 * 1024,
   }), false);
+});
+
+test("MOV source probe detects H.264 video and AAC audio hints", () => {
+  const bytes = new TextEncoder().encode("ftypqt  moov trak mdia hdlr vide avc1 trak mdia hdlr soun mp4a");
+  const probe = mediaProbeResultFromBytes(bytes, {
+    durationSeconds: 130.9,
+    mimeType: "video/quicktime",
+    objectKey: "lesson-videos/member/video/source.mov",
+    objectSize: 178 * 1024 * 1024,
+  });
+
+  assert.equal(probe.container, "mov");
+  assert.equal(probe.videoTrackCount, 1);
+  assert.equal(probe.audioTrackCount, 1);
+  assert.equal(probe.videoCodec, "h264");
+  assert.equal(probe.audioCodec, "aac");
+  assert.equal(mediaProbeHasAudio(probe), true);
+});
+
+test("MOV source without audio markers is not treated as audio-bearing", () => {
+  const bytes = new TextEncoder().encode("ftypqt  moov trak mdia hdlr vide avc1");
+  const probe = mediaProbeResultFromBytes(bytes, {
+    durationSeconds: 130.9,
+    mimeType: "video/quicktime",
+    objectKey: "lesson-videos/member/video/source.mov",
+    objectSize: 178 * 1024 * 1024,
+  });
+
+  assert.equal(probe.container, "mov");
+  assert.equal(probe.videoTrackCount, 1);
+  assert.equal(probe.audioTrackCount, 0);
+  assert.equal(mediaProbeHasAudio(probe), false);
 });
 
 test("small supported WebM can use direct transcription fallback after Cloudflare failure", () => {

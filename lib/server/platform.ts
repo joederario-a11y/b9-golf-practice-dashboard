@@ -542,6 +542,12 @@ export async function ensureCoachFeedbackSchema(database = getRequiredDatabase()
 
 export async function ensureVideoAiProcessingSchema(database = getRequiredDatabase()) {
   await ensureColumn(database, "lesson_videos", "next_session_goal", "TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, "lesson_videos", "source_storage_path", "TEXT");
+  await ensureColumn(database, "lesson_videos", "source_file_name", "TEXT");
+  await ensureColumn(database, "lesson_videos", "source_file_size", "INTEGER");
+  await ensureColumn(database, "lesson_videos", "source_mime_type", "TEXT");
+  await ensureColumn(database, "lesson_videos", "source_media_probe_json", "TEXT NOT NULL DEFAULT '{}'");
+  await ensureColumn(database, "lesson_videos", "playback_media_probe_json", "TEXT NOT NULL DEFAULT '{}'");
   await database.batch([
     database.prepare(
       `CREATE TABLE IF NOT EXISTS video_ai_processing_jobs (
@@ -837,6 +843,12 @@ export async function ensurePlatformSchema(database = getRequiredDatabase()) {
         file_name TEXT NOT NULL,
         file_size INTEGER NOT NULL,
         mime_type TEXT NOT NULL,
+        source_storage_path TEXT,
+        source_file_name TEXT,
+        source_file_size INTEGER,
+        source_mime_type TEXT,
+        source_media_probe_json TEXT NOT NULL DEFAULT '{}',
+        playback_media_probe_json TEXT NOT NULL DEFAULT '{}',
         duration INTEGER NOT NULL DEFAULT 0,
         lesson_date TEXT,
         publication_status TEXT NOT NULL DEFAULT 'Draft',
@@ -941,6 +953,7 @@ export async function ensurePlatformSchema(database = getRequiredDatabase()) {
     database.prepare("CREATE INDEX IF NOT EXISTS member_invitations_member_idx ON member_invitations(member_id, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS lesson_videos_member_idx ON lesson_videos(member_id, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS lesson_videos_coach_idx ON lesson_videos(coach_id, created_at)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS lesson_videos_source_storage_idx ON lesson_videos(source_storage_path)"),
     database.prepare("CREATE INDEX IF NOT EXISTS member_content_member_idx ON member_content_items(member_id, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS member_content_created_by_idx ON member_content_items(created_by, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS member_activity_member_idx ON member_activity_log(member_id, created_at)"),

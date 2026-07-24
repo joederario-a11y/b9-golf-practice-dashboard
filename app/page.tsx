@@ -1056,6 +1056,11 @@ type VideoLibraryRecord = {
   fileName: string;
   fileSize?: number;
   mimeType: string;
+  sourceFileName?: string;
+  sourceFileSize?: number;
+  sourceMimeType?: string;
+  sourceMediaProbe?: Record<string, unknown>;
+  playbackMediaProbe?: Record<string, unknown>;
   objectUrl?: string;
   thumbnailObjectUrl?: string;
   uploadStatus?: string;
@@ -10808,7 +10813,10 @@ function CoachVideoWorkspace({
           height: videoMetadata.height,
           width: videoMetadata.width,
         });
-        const shouldCompressVideo = compressionEligible && compressionPlan.shouldCompress && !options.skipCompression;
+        const shouldCompressVideo = false;
+        const sourcePreservationReason = compressionEligible && compressionPlan.shouldCompress && !options.skipCompression
+          ? "Original video will be uploaded unchanged so lesson audio is preserved for playback and transcription."
+          : "";
         const estimatedOptimizedSize = shouldCompressVideo && videoMetadata.duration > 0
           ? Math.round(((compressionPlan.videoBitsPerSecond + compressionPlan.audioBitsPerSecond) / 8) * videoMetadata.duration)
           : null;
@@ -10829,7 +10837,7 @@ function CoachVideoWorkspace({
         setLessonVideoUploadDebug((current) => ({
           ...current,
           compressionStatus: shouldCompressVideo ? "eligible" : "skipped",
-          fallbackReason: options.skipCompression ? "user_selected_original" : compressionPlan.skipReason,
+          fallbackReason: options.skipCompression ? "user_selected_original" : sourcePreservationReason || compressionPlan.skipReason,
           originalHeight: videoMetadata.height || null,
           originalMimeType: videoFile.type,
           originalSize: videoFile.size,
@@ -10849,10 +10857,10 @@ function CoachVideoWorkspace({
             ? "Optimizing video before upload. This may take several minutes for large or 4K videos."
             : options.skipCompression
               ? "Uploading the original video without compression."
-              : compressionPlan.skipReason
-                ? `${compressionPlan.skipReason} The original file will be uploaded.`
+              : sourcePreservationReason || compressionPlan.skipReason
+                ? `${sourcePreservationReason || compressionPlan.skipReason} The original file will be uploaded.`
                 : "Video is already within the upload target, so the original file will be uploaded.",
-          warning: compressionPlan.skipReason,
+          warning: sourcePreservationReason || compressionPlan.skipReason,
         });
         setWorkspaceMessage(
           shouldCompressVideo
@@ -10870,7 +10878,7 @@ function CoachVideoWorkspace({
             }, 1000);
           }
           const preparedVideo = await prepareLessonVideoForUpload(videoFile, videoMetadata, {
-            forceOriginal: options.skipCompression,
+            forceOriginal: options.skipCompression || !shouldCompressVideo,
             plan: compressionPlan,
             signal: compressionController.signal,
             timeoutMs: compressionPlan.timeoutMs,

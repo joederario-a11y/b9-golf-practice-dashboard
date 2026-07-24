@@ -21,6 +21,8 @@ import {
   canDirectTranscribeStoredMedia,
   MAX_AUDIO_EXTRACTION_TRANSCRIPTION_BYTES,
   MAX_DIRECT_MEDIA_TRANSCRIPTION_BYTES,
+  mediaContainerFromMimeType,
+  mediaProbeHasAudio,
   normalizeVideoProcessingSafeCode,
   transcriptionSizeLimitForMedia,
 } from "@/lib/video-media-processing-policy.mjs";
@@ -73,6 +75,12 @@ type VideoRecapRow = {
   storage_path: string;
   file_name: string;
   mime_type: string;
+  source_storage_path: string | null;
+  source_file_name: string | null;
+  source_file_size: number | null;
+  source_mime_type: string | null;
+  source_media_probe_json: string;
+  playback_media_probe_json: string;
   duration: number;
   lesson_date: string | null;
   publication_status: string;
@@ -138,6 +146,9 @@ type TranscriptRow = {
 };
 
 type AudioExtractionResult = {
+  sourceAudioCodec?: string | null;
+  sourceContainer?: string | null;
+  sourceObjectKey?: string | null;
   paths: string[];
   source: "media_chunks" | "normalized_video_chunks" | "original_media";
   fallbackReason?: string;
@@ -227,6 +238,89 @@ function safeJson(value: string, fallback: unknown) {
   } catch {
     return fallback;
   }
+}
+
+type StoredMediaProbe = {
+  audioCodec?: string | null;
+  audioTrackCount?: number | null;
+  container?: string | null;
+  durationSeconds?: number | null;
+  mimeType?: string | null;
+  objectKey?: string | null;
+  objectSize?: number | null;
+  videoCodec?: string | null;
+  videoTrackCount?: number | null;
+};
+
+type VideoTranscriptionMediaSource = {
+  audioCodec: string | null;
+  container: string | null;
+  fileName: string;
+  label: "source" | "playback";
+  mimeType: string;
+  probe: StoredMediaProbe;
+  storagePath: string;
+};
+
+function storedMediaProbe(value: string | null | undefined): StoredMediaProbe {
+  const parsed = safeJson(value || "{}", {});
+  return parsed && typeof parsed === "object" ? parsed as StoredMediaProbe : {};
+}
+
+function mediaProbeIsConclusive(probe: StoredMediaProbe) {
+  return Boolean(probe.objectKey || probe.container || Number.isFinite(Number(probe.objectSize)) || Number.isFinite(Number(probe.audioTrackCount)));
+}
+
+function probeAudioCodec(probe: StoredMediaProbe) {
+  return typeof probe.audioCodec === "string" && probe.audioCodec.trim() ? probe.audioCodec.trim() : null;
+}
+
+function probeContainer(probe: StoredMediaProbe, mimeType: string) {
+  return typeof probe.container === "string" && probe.container.trim()
+    ? probe.container.trim()
+    : mediaContainerFromMimeType(mimeType) || null;
+}
+
+function videoWithTranscriptionSource(video: VideoRecapRow, source: VideoTranscriptionMediaSource): VideoRecapRow {
+  return {
+    ...video,
+    file_name: source.fileName,
+    mime_type: source.mimeType,
+    storage_path: source.storagePath,
+  };
+}
+
+function chooseVideoTranscriptionSource(video: VideoRecapRow): VideoTranscriptionMediaSource {
+  const sourceStoragePath = text(video.source_storage_path, 600) || video.storage_path;
+  const sourceMimeType = text(video.source_mime_type, 100) || video.mime_type;
+  const sourceFileName = text(video.source_file_name, 180) || video.file_name;
+  const sourceProbe = storedMediaProbe(video.source_media_probe_json);
+  if (sourceStoragePath && (mediaProbeHasAudio(sourceProbe) || !mediaProbeIsConclusive(sourceProbe))) {
+    return {
+      audioCodec: probeAudioCodec(sourceProbe),
+      container: probeContainer(sourceProbe, sourceMimeType),
+      fileName: sourceFileName,
+      label: "source",
+      mimeType: sourceMimeType,
+      probe: sourceProbe,
+      storagePath: sourceStoragePath,
+    };
+  }
+
+  const playbackProbe = storedMediaProbe(video.playback_media_probe_json);
+  if (video.storage_path && mediaProbeHasAudio(playbackProbe)) {
+    return {
+      audioCodec: probeAudioCodec(playbackProbe),
+      container: probeContainer(playbackProbe, video.mime_type),
+      fileName: video.file_name,
+      label: "playback",
+      mimeType: video.mime_type,
+      probe: playbackProbe,
+      storagePath: video.storage_path,
+    };
+  }
+
+  throw new RecapProcessingError("audio_track_missing", "The stored lesson video does not contain a detectable audio track.");
 }
 
 function displayName(row: { first_name?: string | null; last_name?: string | null; email?: string | null }) {
@@ -378,6 +472,16 @@ function assertRowsMatch(video: VideoRecapRow, draft?: DraftRow | null, transcri
 
 function transcriptionFileInfo(video: VideoRecapRow, storagePath: string) {
   if (storagePath.endsWith(".mp4")) return { name: "coach-video-clip.mp4", type: "video/mp4" };
+  const sourceStoragePath = text(video.source_storage_path, 600) || video.storage_path;
+  if (storagePath === sourceStoragePath) {
+    const rawSourceMimeType = text(video.source_mime_type, 100) || text(video.mime_type, 100) || "video/mp4";
+    const sourceMimeType = rawSourceMimeType.includes("quicktime") ? "video/mp4" : rawSourceMimeType;
+    const sourceExtension = rawSourceMimeType.includes("quicktime") ? "mp4" : rawSourceMimeType.includes("webm") ? "webm" : "mp4";
+    return {
+      name: text(video.source_file_name, 180) || text(video.file_name, 180) || `coach-video.${sourceExtension}`,
+      type: sourceMimeType,
+    };
+  }
   if (storagePath !== video.storage_path) return { name: "coach-voiceover.m4a", type: "audio/mp4" };
   const rawMimeType = text(video.mime_type, 100) || "video/mp4";
   const mimeType = rawMimeType.includes("quicktime") ? "video/mp4" : rawMimeType;
@@ -483,14 +587,21 @@ function shouldPreferVideoChunkFallback(video: VideoRecapRow, sourceSize: number
   return isQuickTimeVideo(video) || sourceSize > MAX_TRANSCRIPTION_BYTES;
 }
 
-function canUseOriginalMediaFallback(video: VideoRecapRow, sourceSize: number) {
+function canUseOriginalMediaFallback(video: VideoRecapRow, sourceSize: number, source: VideoTranscriptionMediaSource) {
   return canDirectTranscribeStoredMedia({
+    hasAudio: mediaProbeHasAudio(source.probe) || !mediaProbeIsConclusive(source.probe),
     mimeType: video.mime_type,
     size: sourceSize,
   });
 }
 
-async function useOriginalMediaForTranscription(database: D1Database, job: ProcessingJobRow, video: VideoRecapRow, source: string) {
+async function useOriginalMediaForTranscription(
+  database: D1Database,
+  job: ProcessingJobRow,
+  video: VideoRecapRow,
+  mediaSource: VideoTranscriptionMediaSource,
+  source: string,
+) {
   await markJob(database, job.id, {
     audioStoragePath: video.storage_path,
     status: "extracting_audio",
@@ -500,10 +611,22 @@ async function useOriginalMediaForTranscription(database: D1Database, job: Proce
     database,
     "direct_media_fallback_started",
     job,
-    "Media audio extraction failed, so MAI Coach will transcribe the original uploaded video directly.",
-    { source },
+    "Media audio extraction failed, so MAI Coach will transcribe the original uploaded source directly.",
+    {
+      source,
+      sourceAudioCodec: mediaSource.audioCodec,
+      sourceContainer: mediaSource.container,
+      sourceType: mediaSource.label,
+    },
   );
-  return { paths: [video.storage_path], source: "original_media", fallbackReason: source } satisfies AudioExtractionResult;
+  return {
+    fallbackReason: source,
+    paths: [video.storage_path],
+    source: "original_media",
+    sourceAudioCodec: mediaSource.audioCodec,
+    sourceContainer: mediaSource.container,
+    sourceObjectKey: video.storage_path,
+  } satisfies AudioExtractionResult;
 }
 
 function assertTemporaryAudioPath(video: VideoRecapRow, audioStoragePath: string) {
@@ -903,7 +1026,13 @@ async function normalizeVideoChunksForTranscription(
       "MAI Coach created temporary MP4 clips for transcription after audio extraction failed.",
       { chunks: normalizedVideoPaths.length },
     );
-    return { paths: normalizedVideoPaths, source: "normalized_video_chunks" } satisfies AudioExtractionResult;
+    return {
+      paths: normalizedVideoPaths,
+      source: "normalized_video_chunks",
+      sourceAudioCodec: "aac",
+      sourceContainer: "mp4",
+      sourceObjectKey: normalizedVideoPaths[0] ?? null,
+    } satisfies AudioExtractionResult;
   } catch (error) {
     await deleteTemporaryPaths(env, normalizedVideoPaths);
     if (error instanceof RecapProcessingError) throw error;
@@ -915,27 +1044,55 @@ async function extractAudio(env: RecapEnv, database: D1Database, job: Processing
   await assertWorkflowCanContinue(database, job.id, video);
   await markJob(database, job.id, { status: "extracting_audio", step: "extracting_coach_audio" });
   await recordProcessingEvent(database, "audio_extraction_started", job, "MAI Coach started extracting coach voiceover audio.");
-  if (!env.MEDIA) throw new RecapProcessingError("media_binding_missing", "Cloudflare Media binding MEDIA is not configured.");
-  const object = await env.VIDEO_STORAGE.get(video.storage_path);
-  if (!object?.body) throw new RecapProcessingError("video_missing_from_r2", "The source video could not be found in private R2.");
+  const selectedSource = chooseVideoTranscriptionSource(video);
+  const sourceVideo = videoWithTranscriptionSource(video, selectedSource);
+  const object = await env.VIDEO_STORAGE.get(sourceVideo.storage_path);
+  if (!object?.body) {
+    throw new RecapProcessingError(
+      selectedSource.label === "source" ? "source_object_missing" : "media_object_missing",
+      "The selected lesson media could not be found in private storage.",
+    );
+  }
+  await markJob(database, job.id, {
+    status: "extracting_audio",
+    step: `audio_source_confirmed_${selectedSource.label}`,
+  });
+  await recordProcessingEvent(
+    database,
+    "audio_source_confirmed",
+    job,
+    "MAI Coach confirmed the lesson media source for transcription.",
+    {
+      audioCodec: selectedSource.audioCodec,
+      container: selectedSource.container,
+      objectSize: object.size,
+      sourceType: selectedSource.label,
+    },
+  );
+  if (!env.MEDIA) {
+    if (canUseOriginalMediaFallback(sourceVideo, object.size, selectedSource)) {
+      return useOriginalMediaForTranscription(database, job, sourceVideo, selectedSource, "audio_extraction_failed");
+    }
+    throw new RecapProcessingError("audio_extraction_failed", "Cloudflare Media audio extraction is unavailable.");
+  }
   const audioStoragePaths: string[] = [];
   try {
-    if (shouldPreferVideoChunkFallback(video, object.size)) {
+    if (shouldPreferVideoChunkFallback(sourceVideo, object.size)) {
       try {
         await markJob(database, job.id, { status: "extracting_audio", step: "using_video_chunk_fallback_for_quicktime" });
-        return await normalizeVideoChunksForTranscription(env, database, job, video, object.size);
+        return await normalizeVideoChunksForTranscription(env, database, job, sourceVideo, object.size);
       } catch (error) {
-        if (canUseOriginalMediaFallback(video, object.size)) {
-          return useOriginalMediaForTranscription(database, job, video, error instanceof RecapProcessingError ? error.code : "media_normalization_failed");
+        if (canUseOriginalMediaFallback(sourceVideo, object.size, selectedSource)) {
+          return useOriginalMediaForTranscription(database, job, sourceVideo, selectedSource, error instanceof RecapProcessingError ? error.code : "media_normalization_failed");
         }
         throw error;
       }
     }
-    const { chunkCount, durationSeconds } = videoDurationChunks(video, MAX_MEDIA_AUDIO_CHUNK_SECONDS);
+    const { chunkCount, durationSeconds } = videoDurationChunks(sourceVideo, MAX_MEDIA_AUDIO_CHUNK_SECONDS);
     for (let index = 0; index < chunkCount; index += 1) {
-      await assertWorkflowCanContinue(database, job.id, video);
-      const chunkSource = index === 0 ? object : await env.VIDEO_STORAGE.get(video.storage_path);
-      if (!chunkSource?.body) throw new RecapProcessingError("video_missing_from_r2", "The source video could not be found in private R2.");
+      await assertWorkflowCanContinue(database, job.id, sourceVideo);
+      const chunkSource = index === 0 ? object : await env.VIDEO_STORAGE.get(sourceVideo.storage_path);
+      if (!chunkSource?.body) throw new RecapProcessingError("source_object_missing", "The source video could not be found in private R2.");
       const startSeconds = index * MAX_MEDIA_AUDIO_CHUNK_SECONDS;
       const chunkDuration = Math.max(1, Math.min(MAX_MEDIA_AUDIO_CHUNK_SECONDS, durationSeconds - startSeconds));
       await markJob(database, job.id, {
@@ -969,23 +1126,29 @@ async function extractAudio(env: RecapEnv, database: D1Database, job: Processing
     }
     await markJob(database, job.id, { audioStoragePath: audioStoragePaths.join("\n"), status: "extracting_audio", step: "audio_extraction_completed" });
     await recordProcessingEvent(database, "audio_extraction_completed", job, "MAI Coach extracted temporary coach voiceover audio.", { chunks: audioStoragePaths.length });
-    return { paths: audioStoragePaths, source: "media_chunks" } satisfies AudioExtractionResult;
+    return {
+      paths: audioStoragePaths,
+      source: "media_chunks",
+      sourceAudioCodec: "aac",
+      sourceContainer: "audio/mp4",
+      sourceObjectKey: audioStoragePaths[0] ?? null,
+    } satisfies AudioExtractionResult;
   } catch (error) {
     await deleteTemporaryPaths(env, audioStoragePaths);
-    if (isQuickTimeVideo(video)) {
+    if (isQuickTimeVideo(sourceVideo)) {
       try {
-        return await normalizeVideoChunksForTranscription(env, database, job, video, object.size);
+        return await normalizeVideoChunksForTranscription(env, database, job, sourceVideo, object.size);
       } catch (fallbackError) {
-        if (canUseOriginalMediaFallback(video, object.size)) {
-          return useOriginalMediaForTranscription(database, job, video, fallbackError instanceof RecapProcessingError ? fallbackError.code : "media_normalization_failed");
+        if (canUseOriginalMediaFallback(sourceVideo, object.size, selectedSource)) {
+          return useOriginalMediaForTranscription(database, job, sourceVideo, selectedSource, fallbackError instanceof RecapProcessingError ? fallbackError.code : "media_normalization_failed");
         }
         throw fallbackError;
       }
     }
-    if (canUseOriginalMediaFallback(video, object.size)) {
-      return useOriginalMediaForTranscription(database, job, video, error instanceof RecapProcessingError ? error.code : "audio_extraction_failed");
+    if (canUseOriginalMediaFallback(sourceVideo, object.size, selectedSource)) {
+      return useOriginalMediaForTranscription(database, job, sourceVideo, selectedSource, error instanceof RecapProcessingError ? error.code : "audio_extraction_failed");
     }
-    return normalizeVideoChunksForTranscription(env, database, job, video, object.size);
+    return normalizeVideoChunksForTranscription(env, database, job, sourceVideo, object.size);
   }
 }
 
@@ -1065,6 +1228,7 @@ async function transcribeAudio(env: RecapEnv, database: D1Database, job: Process
   await assertWorkflowCanContinue(database, job.id, video);
   await markJob(database, job.id, { status: "transcribing", step: "transcribing_coach_feedback" });
   await recordProcessingEvent(database, "transcription_started", job, "MAI Coach started transcribing coach voiceover audio.", { chunks: audio.paths.length, source: audio.source });
+  const transcriptionStartedAt = new Date().toISOString();
   const results: TranscriptionSegmentResult[] = [];
   for (const [index, audioStoragePath] of audio.paths.entries()) {
     await assertWorkflowCanContinue(database, job.id, video);
@@ -1111,9 +1275,13 @@ async function transcribeAudio(env: RecapEnv, database: D1Database, job: Process
         chunks: audio.paths.length,
         fallbackReason: audio.fallbackReason ?? null,
         source: "openai_audio_transcription",
+        transcriptionSourceAudioCodec: audio.sourceAudioCodec ?? null,
+        transcriptionSourceContainer: audio.sourceContainer ?? null,
+        transcriptionSourceObjectKey: audio.sourceObjectKey ?? audio.paths[0] ?? null,
         transcriptCharacterCount: transcriptText.length,
         transcriptionCompletedAt: new Date().toISOString(),
         transcriptionModel: model,
+        transcriptionStartedAt,
         transcriptionSource: audio.source,
         transcriptWordCount: transcriptText.split(/\s+/).filter(Boolean).length,
         usable: transcriptLooksUsable(transcriptText),

@@ -282,6 +282,12 @@ export const lessonVideos = sqliteTable(
     fileName: text("file_name").notNull(),
     fileSize: integer("file_size").notNull(),
     mimeType: text("mime_type").notNull(),
+    sourceStoragePath: text("source_storage_path"),
+    sourceFileName: text("source_file_name"),
+    sourceFileSize: integer("source_file_size"),
+    sourceMimeType: text("source_mime_type"),
+    sourceMediaProbeJson: text("source_media_probe_json").notNull().default("{}"),
+    playbackMediaProbeJson: text("playback_media_probe_json").notNull().default("{}"),
     duration: integer("duration").notNull().default(0),
     lessonDate: text("lesson_date"),
     publicationStatus: text("publication_status").notNull().default("Draft"),
@@ -307,6 +313,7 @@ export const lessonVideos = sqliteTable(
     index("lesson_videos_member_idx").on(table.memberId, table.createdAt),
     index("lesson_videos_coach_idx").on(table.coachId, table.createdAt),
     index("lesson_videos_status_idx").on(table.publicationStatus, table.uploadStatus),
+    index("lesson_videos_source_storage_idx").on(table.sourceStoragePath),
   ],
 );
 

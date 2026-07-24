@@ -9,8 +9,9 @@ import {
   responseFromError,
 } from "@/lib/server/platform";
 import {
-  inferCodecProbeFromBytes,
   mediaContainerFromMimeType,
+  mediaProbeHasAudio,
+  mediaProbeResultFromBytes,
 } from "@/lib/video-media-processing-policy.mjs";
 
 type RouteContext = {
@@ -23,9 +24,15 @@ type DiagnosticVideoRow = {
   coach_id: string | null;
   uploaded_by_role: string;
   storage_path: string;
+  source_storage_path: string | null;
   file_name: string;
   file_size: number;
   mime_type: string;
+  source_file_name: string | null;
+  source_file_size: number | null;
+  source_mime_type: string | null;
+  source_media_probe_json: string;
+  playback_media_probe_json: string;
   duration: number;
   publication_status: string;
   upload_status: string;
@@ -78,6 +85,35 @@ function safeJson(value: string | null | undefined) {
   }
 }
 
+const MEDIA_PROBE_EDGE_BYTES = 4 * 1024 * 1024;
+
+function concatBytes(...parts: Uint8Array[]) {
+  const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  const combined = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    combined.set(part, offset);
+    offset += part.byteLength;
+  }
+  return combined;
+}
+
+async function readR2ProbeSample(bucket: R2Bucket, objectKey: string, objectSize: number) {
+  const safeSize = Number.isFinite(objectSize) && objectSize > 0 ? objectSize : 0;
+  if (!safeSize || safeSize <= MEDIA_PROBE_EDGE_BYTES * 2) {
+    const object = await bucket.get(objectKey);
+    return object ? new Uint8Array(await object.arrayBuffer()) : new Uint8Array();
+  }
+  const [head, tail] = await Promise.all([
+    bucket.get(objectKey, { range: { offset: 0, length: MEDIA_PROBE_EDGE_BYTES } }),
+    bucket.get(objectKey, { range: { offset: Math.max(0, safeSize - MEDIA_PROBE_EDGE_BYTES), length: MEDIA_PROBE_EDGE_BYTES } }),
+  ]);
+  return concatBytes(
+    head ? new Uint8Array(await head.arrayBuffer()) : new Uint8Array(),
+    tail ? new Uint8Array(await tail.arrayBuffer()) : new Uint8Array(),
+  );
+}
+
 function likelyOriginalObjectKeys(video: DiagnosticVideoRow) {
   const directory = video.storage_path.split("/").slice(0, -1).join("/");
   if (!directory) return [];
@@ -90,19 +126,31 @@ function likelyOriginalObjectKeys(video: DiagnosticVideoRow) {
   ]));
 }
 
-async function probeStoredMedia(bucket: R2Bucket, video: DiagnosticVideoRow) {
+async function probeStoredMedia(bucket: R2Bucket, values: {
+  durationSeconds: number;
+  mimeType: string;
+  objectKey: string;
+  objectSize: number;
+}) {
   try {
-    const object = await bucket.get(video.storage_path, { range: { offset: 0, length: 1024 * 1024 } });
-    const bytes = object ? new Uint8Array(await object.arrayBuffer()) : null;
-    return inferCodecProbeFromBytes(bytes, video.mime_type, video.duration);
+    const bytes = await readR2ProbeSample(bucket, values.objectKey, values.objectSize);
+    return mediaProbeResultFromBytes(bytes, {
+      durationSeconds: values.durationSeconds,
+      mimeType: values.mimeType,
+      objectKey: values.objectKey,
+      objectSize: values.objectSize,
+    });
   } catch {
     return {
       audioCodec: undefined,
-      container: mediaContainerFromMimeType(video.mime_type),
-      durationSeconds: Number.isFinite(Number(video.duration)) && Number(video.duration) > 0 ? Number(video.duration) : null,
-      hasAudio: false,
-      hasVideo: false,
+      audioTrackCount: 0,
+      container: mediaContainerFromMimeType(values.mimeType),
+      durationSeconds: Number.isFinite(Number(values.durationSeconds)) && Number(values.durationSeconds) > 0 ? Number(values.durationSeconds) : null,
+      mimeType: values.mimeType,
+      objectKey: values.objectKey,
+      objectSize: values.objectSize,
       videoCodec: undefined,
+      videoTrackCount: 0,
     };
   }
 }
@@ -125,8 +173,10 @@ export async function GET(request: Request, context: RouteContext) {
     await ensurePlatformSchema(database);
     const video = await database
       .prepare(
-        `SELECT id, member_id, coach_id, uploaded_by_role, storage_path, file_size,
-          file_name, mime_type, duration, publication_status, upload_status, created_at, updated_at
+        `SELECT id, member_id, coach_id, uploaded_by_role, storage_path, source_storage_path, file_size,
+          file_name, source_file_name, mime_type, source_mime_type, source_file_size,
+          source_media_probe_json, playback_media_probe_json,
+          duration, publication_status, upload_status, created_at, updated_at
          FROM lesson_videos
          WHERE id = ?`,
       )
@@ -165,11 +215,29 @@ export async function GET(request: Request, context: RouteContext) {
     ]);
 
     const bucket = getRequiredVideoStorage();
-    const r2Head = await bucket.head(video.storage_path);
-    const probe = r2Head ? await probeStoredMedia(bucket, video) : null;
-    const originalMovObjectExists = r2Head
-      ? (await Promise.all(likelyOriginalObjectKeys(video).map((key) => bucket.head(key).catch(() => null)))).some(Boolean)
-      : false;
+    const playbackHead = await bucket.head(video.storage_path);
+    const sourceStoragePath = video.source_storage_path || video.storage_path;
+    const sourceMimeType = video.source_mime_type || video.mime_type;
+    const sourceHead = sourceStoragePath ? await bucket.head(sourceStoragePath) : null;
+    const sourceProbe = sourceHead
+      ? await probeStoredMedia(bucket, {
+        durationSeconds: video.duration,
+        mimeType: sourceMimeType,
+        objectKey: sourceStoragePath,
+        objectSize: sourceHead.size,
+      })
+      : safeJson(video.source_media_probe_json);
+    const playbackProbe = playbackHead
+      ? await probeStoredMedia(bucket, {
+        durationSeconds: video.duration,
+        mimeType: video.mime_type,
+        objectKey: video.storage_path,
+        objectSize: playbackHead.size,
+      })
+      : safeJson(video.playback_media_probe_json);
+    const originalMovObjectExists = sourceHead
+      ? true
+      : (await Promise.all(likelyOriginalObjectKeys(video).map((key) => bucket.head(key).catch(() => null)))).some(Boolean);
     const transcriptCharacterCount = transcript?.transcript_text?.length ?? 0;
     const transcriptQuality = safeJson(transcript?.quality_json);
     const audioStarted = stepReached(job ?? null, [/extract/, /audio/, /transcrib/, /recap/]);
@@ -177,35 +245,63 @@ export async function GET(request: Request, context: RouteContext) {
     const currentStep = job?.current_step ?? "";
     const jobErrorText = `${job?.error_code ?? ""} ${job?.error_message ?? ""} ${currentStep}`.toLowerCase();
     const directFallbackSucceeded = transcriptQuality.transcriptionSource === "original_media";
+    const selectedTranscriptionSource = transcriptQuality.transcriptionSourceObjectKey
+      ? transcriptQuality.transcriptionSourceObjectKey === sourceStoragePath ? "source" : "derived_or_audio"
+      : mediaProbeHasAudio(sourceProbe)
+        ? "source"
+        : mediaProbeHasAudio(playbackProbe)
+          ? "playback"
+          : null;
 
     return Response.json({
       videoId: video.id,
       memberId: video.member_id,
       coachId: video.coach_id,
-      objectExists: Boolean(r2Head),
-      objectSize: r2Head?.size ?? null,
+      sourceObjectExists: Boolean(sourceHead),
+      sourceObjectSize: sourceHead?.size ?? null,
+      sourceContainer: sourceProbe?.container || mediaContainerFromMimeType(sourceMimeType) || null,
+      sourceVideoCodec: sourceProbe?.videoCodec ?? null,
+      sourceVideoTrackCount: sourceProbe?.videoTrackCount ?? null,
+      sourceAudioTrackCount: sourceProbe?.audioTrackCount ?? null,
+      sourceAudioCodec: sourceProbe?.audioCodec ?? null,
+      sourceMimeType,
+      playbackObjectExists: Boolean(playbackHead),
+      playbackObjectSize: playbackHead?.size ?? null,
+      playbackContainer: playbackProbe?.container || mediaContainerFromMimeType(video.mime_type) || null,
+      playbackVideoCodec: playbackProbe?.videoCodec ?? null,
+      playbackVideoTrackCount: playbackProbe?.videoTrackCount ?? null,
+      playbackAudioTrackCount: playbackProbe?.audioTrackCount ?? null,
+      playbackAudioCodec: playbackProbe?.audioCodec ?? null,
+      selectedTranscriptionSource,
+      objectExists: Boolean(playbackHead),
+      objectSize: playbackHead?.size ?? null,
       storagePath: video.storage_path,
       originalUploadedFilename: video.file_name.replace(/-optimized\.webm$/i, ".mov"),
       storedFilename: video.file_name,
       storedMimeType: video.mime_type,
-      container: probe?.container || mediaContainerFromMimeType(video.mime_type) || null,
-      videoCodec: probe?.videoCodec ?? null,
-      audioTrackPresent: probe?.hasAudio ?? null,
-      audioCodec: probe?.audioCodec ?? null,
-      durationSeconds: probe?.durationSeconds ?? (video.duration || null),
+      container: playbackProbe?.container || mediaContainerFromMimeType(video.mime_type) || null,
+      videoCodec: playbackProbe?.videoCodec ?? null,
+      audioTrackPresent: mediaProbeHasAudio(playbackProbe),
+      audioCodec: playbackProbe?.audioCodec ?? null,
+      durationSeconds: playbackProbe?.durationSeconds ?? sourceProbe?.durationSeconds ?? (video.duration || null),
       originalMovObjectExists,
-      optimizedWebmExists: Boolean(r2Head && mediaContainerFromMimeType(video.mime_type) === "webm"),
-      r2ObjectExists: Boolean(r2Head),
+      optimizedWebmExists: Boolean(playbackHead && mediaContainerFromMimeType(video.mime_type) === "webm"),
+      r2ObjectExists: Boolean(playbackHead),
       expectedSize: Number(video.file_size ?? 0),
-      actualSize: r2Head?.size ?? null,
+      actualSize: playbackHead?.size ?? null,
       mimeType: video.mime_type,
-      uploadStatus: video.upload_status === "ready" && r2Head ? "stored" : video.upload_status,
+      uploadStatus: video.upload_status === "ready" && playbackHead ? "stored" : video.upload_status,
       publicationStatus: video.publication_status,
       processingStage: job?.current_step ?? "not_queued",
       cloudflareNormalizationAttempted: jobErrorText.includes("cloudflare") || jobErrorText.includes("audio") || jobErrorText.includes("normaliz"),
       cloudflareNormalizationSucceeded: Boolean(job?.audio_storage_path && String(job.audio_storage_path).startsWith("video-processing/")),
       directMediaFallbackAttempted: currentStep.includes("direct_media") || transcriptQuality.transcriptionSource === "original_media",
       directMediaFallbackSucceeded: directFallbackSucceeded,
+      transcriptionSourceObjectKey: transcriptQuality.transcriptionSourceObjectKey ?? null,
+      transcriptionSourceContainer: transcriptQuality.transcriptionSourceContainer ?? null,
+      transcriptionSourceAudioCodec: transcriptQuality.transcriptionSourceAudioCodec ?? null,
+      transcriptionStartedAtQuality: transcriptQuality.transcriptionStartedAt ?? null,
+      transcriptionCompletedAtQuality: transcriptQuality.transcriptionCompletedAt ?? null,
       transcriptionModel: transcript?.model ?? null,
       transcriptWordCount: transcript?.transcript_text ? transcript.transcript_text.split(/\s+/).filter(Boolean).length : 0,
       processingStatus: job?.status ?? "not_queued",
