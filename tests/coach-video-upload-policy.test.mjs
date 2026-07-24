@@ -14,6 +14,7 @@ import {
   getCoachDashboardActionState,
   LESSON_VIDEO_AUDIO_PRESERVATION_ERROR,
   LESSON_VIDEO_WEBM_AUDIO_COMPATIBILITY_ERROR,
+  shouldPrepareLessonVideoAudioSidecar,
   shouldPrepareLessonVideoCompression,
   shouldShowLessonUploadStallWarning,
   validateLessonVideoAudioPreservation,
@@ -114,6 +115,7 @@ test("coach upload status labels are plain language and never raw technical code
   assert.equal(coachLessonUploadStatusLabel("preparing_video"), "Preparing video");
   assert.equal(coachLessonUploadStatusLabel("compressing_video"), "Preparing video");
   assert.equal(coachLessonUploadStatusLabel("compression_failed"), "Compression failed");
+  assert.equal(coachLessonUploadStatusLabel("preparing_audio"), "Preparing audio");
   assert.equal(coachLessonUploadStatusLabel("uploading"), "Uploading video");
   assert.equal(coachLessonUploadStatusLabel("upload_complete"), "Upload complete");
   assert.equal(coachLessonUploadStatusLabel("upload_failed"), "Upload failed");
@@ -125,6 +127,29 @@ test("coach upload status labels are plain language and never raw technical code
   assert.equal(coachLessonUploadStatusLabel("importing_session_data"), "Importing session data");
   assert.equal(coachLessonUploadStatusLabel("ready_for_review"), "Ready for review");
   assert.equal(coachLessonUploadStatusLabel("failed"), "Needs attention");
+});
+
+test("large common phone videos prepare a private audio sidecar for transcription", () => {
+  assert.equal(shouldPrepareLessonVideoAudioSidecar({
+    fileSize: 178 * 1024 * 1024,
+    hasAudio: true,
+    mimeType: "video/quicktime",
+  }), true);
+  assert.equal(shouldPrepareLessonVideoAudioSidecar({
+    fileSize: 178 * 1024 * 1024,
+    hasAudio: false,
+    mimeType: "video/quicktime",
+  }), false);
+  assert.equal(shouldPrepareLessonVideoAudioSidecar({
+    fileSize: 20 * 1024 * 1024,
+    hasAudio: true,
+    mimeType: "video/mp4",
+  }), false);
+  assert.equal(shouldPrepareLessonVideoAudioSidecar({
+    fileSize: 178 * 1024 * 1024,
+    hasAudio: true,
+    mimeType: "video/webm",
+  }), false);
 });
 
 test("coach lesson upload source exposes browser video compression and recovery controls", async () => {
@@ -159,6 +184,10 @@ test("coach lesson upload preserves the selected source video for storage and tr
   assert.match(pageSource, /const shouldCompressVideo = false/);
   assert.match(pageSource, /Original video will be uploaded unchanged so lesson audio is preserved for playback and transcription\./);
   assert.match(pageSource, /forceOriginal: options\.skipCompression \|\| !shouldCompressVideo/);
+  assert.match(pageSource, /prepareLessonAudioSidecarForUpload/);
+  assert.match(pageSource, /"transcription-audio"/);
+  assert.match(pageSource, /uploadVideoAsset\(\s*pendingVideoId,\s*audioSidecar,\s*"transcription-audio"/);
+  assert.match(pageSource, /Original video will still upload unchanged for playback/);
 });
 
 test("large coach lesson uploads use multipart chunks without creating another lesson record", async () => {
@@ -171,6 +200,16 @@ test("large coach lesson uploads use multipart chunks without creating another l
   assert.match(pageSource, /file\.slice\(offset, end\)/);
   assert.match(pageSource, /uploadMultipartVideoAsset\(videoId, file, onProgress, signal\)/);
   assert.doesNotMatch(pageSource, /createVideoRecord\(metadata, uploadFile\)[\s\S]+createVideoRecord\(metadata, uploadFile\)/);
+});
+
+test("server accepts private transcription audio without replacing the source video", async () => {
+  const routeSource = await readFile(new URL("../app/api/videos/route.ts", import.meta.url), "utf8");
+  assert.match(routeSource, /parseVideoUploadAsset/);
+  assert.match(routeSource, /transcription-audio/);
+  assert.match(routeSource, /handleTranscriptionAudioUpload/);
+  assert.match(routeSource, /video-processing\/\$\{values\.video\.id\}\/audio\/source-sidecar/);
+  assert.match(routeSource, /current_step = 'audio_sidecar_uploaded'/);
+  assert.match(routeSource, /finalizeStoredVideoUpload/);
 });
 
 test("lesson video audio preservation rejects silent optimized output when source had audio", () => {

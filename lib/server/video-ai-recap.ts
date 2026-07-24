@@ -636,6 +636,52 @@ function assertTemporaryAudioPath(video: VideoRecapRow, audioStoragePath: string
   return normalizedPath;
 }
 
+function temporaryAudioPathsForJob(video: VideoRecapRow, job: ProcessingJobRow) {
+  if (job.audio_deleted_at || !job.audio_storage_path) return [];
+  return job.audio_storage_path
+    .split("\n")
+    .map((path) => assertTemporaryAudioPath(video, path))
+    .filter(Boolean);
+}
+
+async function usePreextractedAudioForTranscription(
+  env: RecapEnv,
+  database: D1Database,
+  job: ProcessingJobRow,
+  video: VideoRecapRow,
+) {
+  const audioStoragePaths = temporaryAudioPathsForJob(video, job);
+  if (!audioStoragePaths.length) return null;
+
+  for (const audioStoragePath of audioStoragePaths) {
+    const audioObject = await env.VIDEO_STORAGE.head(audioStoragePath);
+    if (!audioObject) {
+      throw new RecapProcessingError("audio_extraction_failed", "Prepared lesson audio could not be found.");
+    }
+    if (audioObject.size > MAX_TRANSCRIPTION_BYTES) {
+      throw new RecapProcessingError("transcription_file_too_large", "Prepared lesson audio is too large for transcription.");
+    }
+  }
+
+  await markJob(database, job.id, {
+    status: "extracting_audio",
+    step: "preextracted_audio_confirmed",
+  });
+  await recordProcessingEvent(
+    database,
+    "preextracted_audio_confirmed",
+    job,
+    "MAI Coach found private lesson audio prepared during upload.",
+    { chunks: audioStoragePaths.length },
+  );
+  return {
+    paths: audioStoragePaths,
+    source: "media_chunks",
+    sourceContainer: "audio",
+    sourceObjectKey: audioStoragePaths[0] ?? null,
+  } satisfies AudioExtractionResult;
+}
+
 async function loadCurrentTranscript(database: D1Database, video: VideoRecapRow) {
   return database
     .prepare(
@@ -1043,6 +1089,8 @@ async function extractAudio(env: RecapEnv, database: D1Database, job: Processing
   await assertWorkflowCanContinue(database, job.id, video);
   await markJob(database, job.id, { status: "extracting_audio", step: "extracting_coach_audio" });
   await recordProcessingEvent(database, "audio_extraction_started", job, "MAI Coach started extracting coach voiceover audio.");
+  const preparedAudio = await usePreextractedAudioForTranscription(env, database, job, video);
+  if (preparedAudio) return preparedAudio;
   const selectedSource = chooseVideoTranscriptionSource(video);
   const sourceVideo = videoWithTranscriptionSource(video, selectedSource);
   const object = await env.VIDEO_STORAGE.get(sourceVideo.storage_path);

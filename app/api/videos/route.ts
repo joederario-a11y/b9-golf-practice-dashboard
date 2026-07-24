@@ -22,6 +22,7 @@ import {
   queueVideoRecapWorkflowAfterUpload,
 } from "@/lib/server/video-ai-recap";
 import {
+  MAX_AUDIO_EXTRACTION_TRANSCRIPTION_BYTES,
   mediaProbeHasAudio,
   mediaProbeResultFromBytes,
 } from "@/lib/video-media-processing-policy.mjs";
@@ -187,6 +188,16 @@ const MEDIA_PROBE_EDGE_BYTES = 4 * 1024 * 1024;
 const LESSON_VIDEO_MULTIPART_PART_SIZE = 20 * 1024 * 1024;
 const LESSON_VIDEO_MULTIPART_PART_TOLERANCE_BYTES = 1024 * 1024;
 const LESSON_VIDEO_MULTIPART_MAX_PARTS = 10_000;
+const TRANSCRIPTION_AUDIO_MIME_TYPES = new Set([
+  "audio/aac",
+  "audio/mp4",
+  "audio/mpeg",
+  "audio/mp3",
+  "audio/ogg",
+  "audio/wav",
+  "audio/webm",
+  "audio/x-m4a",
+]);
 
 type R2MultipartUploadedPartLike = {
   etag: string;
@@ -204,6 +215,8 @@ type R2MultipartBucketLike = R2Bucket & {
   createMultipartUpload(key: string, options?: Parameters<R2Bucket["put"]>[2]): Promise<R2MultipartUploadLike>;
   resumeMultipartUpload(key: string, uploadId: string): R2MultipartUploadLike;
 };
+
+type VideoUploadAsset = "thumbnail" | "transcription-audio" | "video";
 
 function safeJson(value: string | null | undefined, fallback: unknown) {
   try {
@@ -465,12 +478,119 @@ async function handleMultipartVideoUpload(values: {
   return Response.json({ error: "Unsupported multipart upload action." }, { status: 400 });
 }
 
+async function handleTranscriptionAudioUpload(values: {
+  bucket: R2Bucket;
+  database: D1Database;
+  declaredSize: number;
+  fileName: string;
+  identity: Awaited<ReturnType<typeof requireIdentity>>;
+  mimeType: string;
+  request: Request;
+  video: VideoRow;
+}) {
+  const validationError = validateTranscriptionAudioFile(values.mimeType, values.declaredSize);
+  if (validationError) {
+    return Response.json({ error: validationError }, { status: validationError.includes("too large") ? 413 : 400 });
+  }
+  if (!values.request.body) {
+    return Response.json({ error: "The transcription audio upload body is empty." }, { status: 400 });
+  }
+
+  const extension = transcriptionAudioExtension(values.mimeType, values.fileName);
+  const storagePath = `video-processing/${values.video.id}/audio/source-sidecar-${crypto.randomUUID()}.${extension}`;
+  const stored = await values.bucket.put(storagePath, values.request.body, {
+    httpMetadata: { contentType: values.mimeType },
+    customMetadata: {
+      coachId: values.video.coach_id ?? "",
+      fileName: values.fileName,
+      memberId: values.video.member_id,
+      source: "browser_audio_sidecar",
+      uploadedBy: values.identity.id,
+      videoId: values.video.id,
+    },
+  });
+  const actualValidationError = validateTranscriptionAudioFile(values.mimeType, stored.size);
+  if (actualValidationError) {
+    await values.bucket.delete(storagePath);
+    return Response.json({ error: actualValidationError }, { status: actualValidationError.includes("too large") ? 413 : 400 });
+  }
+
+  await values.database
+    .prepare(
+      `UPDATE video_ai_processing_jobs
+       SET audio_storage_path = ?,
+           current_step = 'audio_sidecar_uploaded',
+           updated_at = CURRENT_TIMESTAMP
+       WHERE video_id = ?
+         AND processing_type = 'lesson_recap_voiceover'
+         AND status IN ('queued', 'extracting_audio', 'transcribing', 'generating_recap')`,
+    )
+    .bind(storagePath, values.video.id)
+    .run();
+
+  await recordActivity({
+    action: "video_audio_sidecar_uploaded",
+    actor: values.identity,
+    database: values.database,
+    entityId: values.video.id,
+    entityType: "video",
+    memberId: values.video.member_id,
+    metadata: {
+      audioStoragePath: storagePath,
+      mimeType: values.mimeType,
+      size: stored.size,
+    },
+    summary: `${values.identity.displayName} prepared private lesson audio for MAI Coach transcription.`,
+    targetUserId: values.video.member_id,
+  });
+
+  return Response.json({
+    asset: "transcription-audio",
+    audioStoragePath: storagePath,
+    ok: true,
+    size: stored.size,
+  });
+}
+
 function stringifyJson(value: unknown) {
   try {
     return JSON.stringify(value ?? {});
   } catch {
     return "{}";
   }
+}
+
+function parseVideoUploadAsset(value: string | null): VideoUploadAsset {
+  if (value === "thumbnail") return "thumbnail";
+  if (value === "transcription-audio") return "transcription-audio";
+  return "video";
+}
+
+function transcriptionAudioExtension(mimeType: string, fileName: string) {
+  const normalizedFileName = fileName.toLowerCase();
+  if (normalizedFileName.endsWith(".m4a")) return "m4a";
+  if (normalizedFileName.endsWith(".mp3")) return "mp3";
+  if (normalizedFileName.endsWith(".wav")) return "wav";
+  if (normalizedFileName.endsWith(".ogg")) return "ogg";
+  if (normalizedFileName.endsWith(".webm")) return "webm";
+  if (mimeType.includes("webm")) return "webm";
+  if (mimeType.includes("mpeg") || mimeType.includes("mp3")) return "mp3";
+  if (mimeType.includes("wav")) return "wav";
+  if (mimeType.includes("ogg")) return "ogg";
+  return "m4a";
+}
+
+function validateTranscriptionAudioFile(mimeType: string, declaredSize: number) {
+  if (!TRANSCRIPTION_AUDIO_MIME_TYPES.has(mimeType)) {
+    return "Upload a supported private audio file for MAI Coach transcription.";
+  }
+  if (!Number.isFinite(declaredSize) || declaredSize <= 0) {
+    return "The transcription audio file is empty.";
+  }
+  if (declaredSize > MAX_AUDIO_EXTRACTION_TRANSCRIPTION_BYTES) {
+    return "The transcription audio file is too large.";
+  }
+  return "";
 }
 
 function stringList(value: unknown) {
@@ -795,7 +915,7 @@ export async function PUT(request: Request) {
   try {
     const url = new URL(request.url);
     const videoId = url.searchParams.get("videoId")?.trim() || "";
-    const asset = url.searchParams.get("asset") === "thumbnail" ? "thumbnail" : "video";
+    const asset = parseVideoUploadAsset(url.searchParams.get("asset"));
     if (!videoId) {
       return Response.json({ error: "videoId is required." }, { status: 400 });
     }
@@ -818,6 +938,18 @@ export async function PUT(request: Request) {
         mimeType,
         request,
         url,
+        video,
+      });
+    }
+    if (asset === "transcription-audio") {
+      return handleTranscriptionAudioUpload({
+        bucket,
+        database,
+        declaredSize,
+        fileName,
+        identity,
+        mimeType,
+        request,
         video,
       });
     }

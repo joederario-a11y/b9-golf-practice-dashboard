@@ -54,6 +54,7 @@ import {
   LESSON_VIDEO_COMPRESSION_TIMEOUT_MS,
   LESSON_VIDEO_AUDIO_PRESERVATION_ERROR,
   LESSON_VIDEO_WEBM_AUDIO_COMPATIBILITY_ERROR,
+  shouldPrepareLessonVideoAudioSidecar,
   shouldPrepareLessonVideoCompression,
   shouldShowLessonUploadStallWarning,
   validateLessonVideoAudioPreservation,
@@ -91,6 +92,7 @@ type CoachLessonUploadStage =
   | "compressing_video"
   | "compression_complete"
   | "compression_failed"
+  | "preparing_audio"
   | "uploading"
   | "upload_complete"
   | "upload_failed"
@@ -142,6 +144,12 @@ type LessonVideoRecorderFormat = {
   container: "mp4" | "webm";
   extension: "mp4" | "webm";
   label: "MP4" | "WebM";
+  mimeType: string;
+};
+
+type LessonAudioRecorderFormat = {
+  extension: "m4a" | "webm";
+  label: "M4A" | "WebM";
   mimeType: string;
 };
 
@@ -4712,11 +4720,14 @@ async function createVideoRecord(
 const LESSON_VIDEO_MULTIPART_UPLOAD_THRESHOLD_BYTES = 50 * 1024 * 1024;
 
 type VideoAssetUploadResponse = {
+  audioStoragePath?: string;
   aiProcessing?: unknown;
   multipart?: boolean;
   size?: number;
   status?: number;
 };
+
+type VideoUploadAsset = "thumbnail" | "transcription-audio" | "video";
 
 type MultipartUploadPart = {
   etag: string;
@@ -4730,6 +4741,12 @@ function videoUploadHeaders(file: File, contentType = file.type || "application/
     "X-File-Name": encodeURIComponent(file.name),
     "X-File-Size": String(file.size),
   };
+}
+
+function videoAssetUploadCancelledMessage(asset: VideoUploadAsset) {
+  if (asset === "thumbnail") return "Thumbnail upload was cancelled.";
+  if (asset === "transcription-audio") return "Audio preparation upload was cancelled.";
+  return "Video upload was cancelled.";
 }
 
 async function abortMultipartVideoUpload(videoId: string, uploadId: string, file: File) {
@@ -4897,7 +4914,7 @@ async function uploadMultipartVideoAsset(
 function uploadSingleVideoAsset(
   videoId: string,
   file: File,
-  asset: "video" | "thumbnail",
+  asset: VideoUploadAsset,
   onProgress: (progress: number, event?: ProgressEvent<EventTarget>) => void,
   signal?: AbortSignal,
 ) {
@@ -4922,10 +4939,10 @@ function uploadSingleVideoAsset(
     };
     abortHandler = () => {
       request.abort();
-      fail(abortError(asset === "video" ? "Video upload was cancelled." : "Thumbnail upload was cancelled."));
+      fail(abortError(videoAssetUploadCancelledMessage(asset)));
     };
     if (signal?.aborted) {
-      fail(abortError(asset === "video" ? "Video upload was cancelled." : "Thumbnail upload was cancelled."));
+      fail(abortError(videoAssetUploadCancelledMessage(asset)));
       return;
     }
     signal?.addEventListener("abort", abortHandler, { once: true });
@@ -4960,7 +4977,7 @@ function uploadSingleVideoAsset(
     };
     request.onabort = () => {
       logLessonVideoDiagnostic("upload-aborted", { asset, route: uploadRoute });
-      fail(abortError(asset === "video" ? "Video upload was cancelled." : "Thumbnail upload was cancelled."));
+      fail(abortError(videoAssetUploadCancelledMessage(asset)));
     };
     request.onload = () => {
       let payload: { aiProcessing?: unknown; error?: string; size?: number } = {};
@@ -4979,7 +4996,7 @@ function uploadSingleVideoAsset(
         onProgress(100);
         succeed({ ...payload, status: request.status });
       } else {
-        fail(new Error(payload.error ?? "The video file could not be stored."));
+        fail(new Error(payload.error ?? (asset === "transcription-audio" ? "The lesson audio could not be stored." : "The video file could not be stored.")));
       }
     };
     request.send(file);
@@ -4989,7 +5006,7 @@ function uploadSingleVideoAsset(
 function uploadVideoAsset(
   videoId: string,
   file: File,
-  asset: "video" | "thumbnail",
+  asset: VideoUploadAsset,
   onProgress: (progress: number, event?: ProgressEvent<EventTarget>) => void,
   signal?: AbortSignal,
 ) {
@@ -5260,6 +5277,17 @@ function lessonVideoRecorderFormat(): LessonVideoRecorderFormat | null {
   return mp4Candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate.mimeType)) ?? null;
 }
 
+function lessonAudioRecorderFormat(): LessonAudioRecorderFormat | null {
+  if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") return null;
+  const candidates: LessonAudioRecorderFormat[] = [
+    { extension: "m4a", label: "M4A", mimeType: "audio/mp4;codecs=mp4a.40.2" },
+    { extension: "m4a", label: "M4A", mimeType: "audio/mp4" },
+    { extension: "webm", label: "WebM", mimeType: "audio/webm;codecs=opus" },
+    { extension: "webm", label: "WebM", mimeType: "audio/webm" },
+  ];
+  return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate.mimeType)) ?? null;
+}
+
 function lessonVideoRecorderSupportSnapshot() {
   if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") {
     return { mp4: false, webm: false };
@@ -5281,6 +5309,11 @@ function lessonVideoRecorderSupportSnapshot() {
 function lessonVideoOutputFileName(fileName: string, format: LessonVideoRecorderFormat) {
   const baseName = fileName.replace(/\.[^.]+$/, "") || "lesson-video";
   return `${baseName}-optimized.${format.extension}`;
+}
+
+function lessonAudioSidecarFileName(fileName: string, format: LessonAudioRecorderFormat) {
+  const baseName = fileName.replace(/\.[^.]+$/, "") || "lesson-video";
+  return `${baseName}-transcription-audio.${format.extension}`;
 }
 
 function fitLessonVideoDimensions(metadata: LessonVideoMetadata, maxShortEdge: number, maxLongEdge: number) {
@@ -5396,6 +5429,185 @@ function waitForVideoFrameData(video: HTMLVideoElement, signal: AbortSignal) {
     video.addEventListener("canplay", onReady, { once: true });
     video.addEventListener("error", onError, { once: true });
     signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function prepareLessonAudioSidecarForUpload(
+  file: File,
+  metadata: LessonVideoMetadata,
+  sourceAudioProbe: LessonVideoAudioProbe,
+  options: {
+    audioBitsPerSecond: number;
+    onProgress: (progress: number, message: string) => void;
+    signal: AbortSignal;
+    timeoutMs: number;
+  },
+) {
+  if (sourceAudioProbe.hasAudio === false) {
+    throw new Error("This video does not appear to include audio.");
+  }
+  if (typeof MediaRecorder === "undefined") {
+    throw new Error("This browser cannot prepare audio for MAI Coach transcription.");
+  }
+  const recorderFormat = lessonAudioRecorderFormat();
+  if (!recorderFormat) {
+    throw new Error("This browser cannot create supported transcription audio.");
+  }
+  const objectUrl = URL.createObjectURL(file);
+  const video = document.createElement("video");
+  const chunks: Blob[] = [];
+  let audioContext: AudioContext | null = null;
+  let audioDestination: MediaStreamAudioDestinationNode | null = null;
+  let audioSource: MediaElementAudioSourceNode | null = null;
+  let abortHandler: (() => void) | null = null;
+  let progressTimerId: number | null = null;
+  let recorder: MediaRecorder | null = null;
+  let sourceCaptureStream: MediaStream | null = null;
+  let stream: MediaStream | null = null;
+  let settled = false;
+  const startedAt = performance.now();
+  const AudioCtor = audioContextConstructor();
+  const timeoutMs = Math.max(options.timeoutMs, metadata.duration > 0 ? Math.round((metadata.duration + 60) * 1000) : 0);
+
+  const cleanup = () => {
+    if (progressTimerId) window.clearInterval(progressTimerId);
+    if (abortHandler) options.signal.removeEventListener("abort", abortHandler);
+    video.onended = null;
+    video.onerror = null;
+    video.onloadedmetadata = null;
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
+    URL.revokeObjectURL(objectUrl);
+    stream?.getTracks().forEach((track) => track.stop());
+    sourceCaptureStream?.getTracks().forEach((track) => track.stop());
+    audioSource?.disconnect();
+    audioDestination?.disconnect();
+    if (audioContext && audioContext.state !== "closed") void audioContext.close();
+    chunks.length = 0;
+  };
+
+  return new Promise<File>((resolve, reject) => {
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const done = (sidecar: File) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(sidecar);
+    };
+    const stopRecorder = () => {
+      try {
+        if (recorder && recorder.state !== "inactive") recorder.stop();
+      } catch {
+        // The rejection below is the source of truth.
+      }
+    };
+    abortHandler = () => {
+      stopRecorder();
+      fail(abortError("Audio preparation was cancelled."));
+    };
+    if (options.signal.aborted) {
+      abortHandler();
+      return;
+    }
+    options.signal.addEventListener("abort", abortHandler, { once: true });
+    video.preload = "auto";
+    video.playsInline = true;
+    video.volume = 0;
+    video.muted = false;
+    video.src = objectUrl;
+    video.onerror = () => fail(new Error("This video could not be opened for audio preparation."));
+    video.onloadedmetadata = async () => {
+      try {
+        if (options.signal.aborted) throw abortError("Audio preparation was cancelled.");
+        sourceCaptureStream = captureVideoElementStream(video);
+        let audioTracks = sourceCaptureStream
+          ? sourceCaptureStream.getAudioTracks().filter((track) => track.readyState !== "ended")
+          : [];
+        let audioTrackSource = audioTracks.length ? "media_capture_stream" : "none";
+        if (!audioTracks.length && AudioCtor && sourceAudioProbe.hasAudio !== false) {
+          audioContext = new AudioCtor();
+          audioSource = audioContext.createMediaElementSource(video);
+          audioDestination = audioContext.createMediaStreamDestination();
+          audioSource.connect(audioDestination);
+          audioTracks = audioDestination.stream.getAudioTracks();
+          audioTrackSource = "web_audio_destination";
+          if (audioContext.state === "suspended") await audioContext.resume();
+        }
+        if (!audioTracks.length) {
+          throw new Error("This browser could not extract audio from the lesson video.");
+        }
+        stream = new MediaStream(audioTracks);
+        logLessonVideoDiagnostic("audio-sidecar-stream", {
+          audioTrackSource,
+          recorderMimeType: recorderFormat.mimeType,
+          sourceAudioCodec: sourceAudioProbe.codec,
+          sourceAudioDetected: sourceAudioProbe.hasAudio,
+          sourceAudioProbe: sourceAudioProbe.method,
+          trackStates: audioTracks.map((track) => `${track.kind}:${track.readyState}:${track.enabled ? "enabled" : "disabled"}`).join(","),
+        });
+        recorder = new MediaRecorder(stream, {
+          audioBitsPerSecond: options.audioBitsPerSecond,
+          mimeType: recorderFormat.mimeType,
+        });
+        recorder.ondataavailable = (event) => {
+          if (event.data.size > 0) chunks.push(event.data);
+          const duration = metadata.duration || (Number.isFinite(video.duration) ? video.duration : 0);
+          const progress = duration > 0
+            ? Math.min(99, Math.max(1, Math.round((video.currentTime / duration) * 100)))
+            : 50;
+          options.onProgress(progress, "Preparing lesson audio for MAI Coach transcription...");
+        };
+        recorder.onerror = () => fail(new Error("Browser audio preparation failed."));
+        recorder.onstop = () => {
+          if (settled || options.signal.aborted) return;
+          const mimeType = recorderFormat.mimeType.split(";")[0] || recorderFormat.mimeType;
+          const blob = new Blob(chunks, { type: mimeType });
+          if (!blob.size) {
+            fail(new Error("Prepared lesson audio was empty."));
+            return;
+          }
+          const sidecar = new File([blob], lessonAudioSidecarFileName(file.name, recorderFormat), {
+            lastModified: Date.now(),
+            type: mimeType,
+          });
+          logLessonVideoDiagnostic("audio-sidecar-complete", {
+            durationMs: Math.round(performance.now() - startedAt),
+            mimeType: sidecar.type,
+            originalMimeType: file.type,
+            originalSize: file.size,
+            sidecarSize: sidecar.size,
+          });
+          done(sidecar);
+        };
+        recorder.start(1000);
+        options.onProgress(1, "Preparing lesson audio for MAI Coach transcription...");
+        progressTimerId = window.setInterval(() => {
+          if (!recorder || recorder.state === "inactive" || options.signal.aborted) return;
+          if (performance.now() - startedAt >= timeoutMs) {
+            stopRecorder();
+            fail(new Error("Audio preparation timed out. The original video will still upload."));
+            return;
+          }
+          const duration = metadata.duration || (Number.isFinite(video.duration) ? video.duration : 0);
+          const progress = duration > 0
+            ? Math.min(99, Math.max(1, Math.round((video.currentTime / duration) * 100)))
+            : 50;
+          options.onProgress(progress, "Preparing lesson audio for MAI Coach transcription...");
+        }, 1000);
+        await video.play();
+      } catch (error) {
+        fail(error);
+      }
+    };
+    video.onended = () => {
+      stopRecorder();
+    };
   });
 }
 
@@ -10989,6 +11201,9 @@ function CoachVideoWorkspace({
     try {
       let uploadFile = videoFile;
       let preparationController: AbortController | null = null;
+      let selectedCompressionPlan: ReturnType<typeof chooseLessonVideoCompressionPlan> | null = null;
+      let shouldPrepareTranscriptionAudio = false;
+      let videoSourceAudioProbe: LessonVideoAudioProbe | null = null;
       if (videoFile) {
         preparationController = new AbortController();
         compressionAbortRef.current = preparationController;
@@ -11004,10 +11219,31 @@ function CoachVideoWorkspace({
           height: videoMetadata.height,
           width: videoMetadata.width,
         });
+        selectedCompressionPlan = compressionPlan;
         const compressionEligible = shouldPrepareLessonVideoCompression({
           fileSize: videoFile.size,
           height: videoMetadata.height,
           width: videoMetadata.width,
+        });
+        const sourceAudioProbe = mergeLessonVideoAudioProbes(
+          {
+            codec: videoMetadata.audioCodec,
+            hasAudio: videoMetadata.hasAudio,
+            method: videoMetadata.audioProbeMethod,
+            trackCount: videoMetadata.audioTrackCount,
+          },
+          await probeLessonVideoFileAudio(videoFile, preparationController?.signal).catch(() => ({
+            codec: "",
+            hasAudio: null,
+            method: "container_probe_failed",
+            trackCount: null,
+          })),
+        );
+        videoSourceAudioProbe = sourceAudioProbe;
+        shouldPrepareTranscriptionAudio = shouldPrepareLessonVideoAudioSidecar({
+          fileSize: videoFile.size,
+          hasAudio: sourceAudioProbe.hasAudio,
+          mimeType: videoFile.type,
         });
         const shouldCompressVideo = false;
         const sourcePreservationReason = compressionEligible && compressionPlan.shouldCompress && !options.skipCompression
@@ -11027,13 +11263,18 @@ function CoachVideoWorkspace({
           originalMimeType: videoFile.type,
           originalSize: videoFile.size,
           originalWidth: videoMetadata.width,
+          prepareAudioSidecar: shouldPrepareTranscriptionAudio,
           skipReason: options.skipCompression ? "user_selected_original" : compressionPlan.skipReason,
+          sourceAudioDetected: sourceAudioProbe.hasAudio,
+          sourceAudioProbe: sourceAudioProbe.method,
           webmRecorderSupported: recorderSupport.webm,
         });
         setLessonVideoUploadDebug((current) => ({
           ...current,
           compressionStatus: shouldCompressVideo ? "eligible" : "skipped",
-          fallbackReason: options.skipCompression ? "user_selected_original" : sourcePreservationReason || compressionPlan.skipReason,
+          fallbackReason: shouldPrepareTranscriptionAudio
+            ? "Large audio-bearing video will use a private audio sidecar for MAI transcription."
+            : options.skipCompression ? "user_selected_original" : sourcePreservationReason || compressionPlan.skipReason,
           originalHeight: videoMetadata.height || null,
           originalMimeType: videoFile.type,
           originalSize: videoFile.size,
@@ -11053,10 +11294,14 @@ function CoachVideoWorkspace({
             ? "Optimizing video before upload. This may take several minutes for large or 4K videos."
             : options.skipCompression
               ? "Uploading the original video without compression."
+              : shouldPrepareTranscriptionAudio
+                ? "Original video will upload unchanged. MAI Coach will prepare a small private audio track for transcription."
               : sourcePreservationReason || compressionPlan.skipReason
                 ? `${sourcePreservationReason || compressionPlan.skipReason} The original file will be uploaded.`
                 : "Video is already within the upload target, so the original file will be uploaded.",
-          warning: sourcePreservationReason || compressionPlan.skipReason,
+          warning: shouldPrepareTranscriptionAudio
+            ? "Audio preparation prevents large MOV files from relying on Cloudflare video normalization."
+            : sourcePreservationReason || compressionPlan.skipReason,
         });
         setWorkspaceMessage(
           shouldCompressVideo
@@ -11229,6 +11474,126 @@ function CoachVideoWorkspace({
         setPendingUploadVideoId(created.id);
         setActiveUploadInfo((current) => current ? { ...current, videoId: created.id } : current);
         replaceItem(created);
+      }
+      if (videoFile && videoMetadata && shouldPrepareTranscriptionAudio && !options.skipCompression) {
+        const audioController = new AbortController();
+        compressionAbortRef.current = audioController;
+        const audioStartedAt = Date.now();
+        const audioPlan = selectedCompressionPlan ?? chooseLessonVideoCompressionPlan({
+          duration: videoMetadata.duration,
+          fileSize: videoFile.size,
+          height: videoMetadata.height,
+          width: videoMetadata.width,
+        });
+        let audioElapsedTimer: number | null = window.setInterval(() => {
+          setCompressionState((current) => current.status === "compressing"
+            ? { ...current, elapsedSeconds: Math.round((Date.now() - audioStartedAt) / 1000) }
+            : current);
+        }, 1000);
+        try {
+          setUploadStage("preparing_audio");
+          setCompressionState((current) => ({
+            ...current,
+            elapsedSeconds: 0,
+            message: "Preparing lesson audio for MAI Coach transcription...",
+            progress: 1,
+            status: "compressing",
+            targetLabel: "Audio",
+            warning: "Original video will still upload unchanged for playback.",
+          }));
+          setWorkspaceMessage("Preparing lesson audio for MAI Coach transcription before upload.");
+          const audioSidecar = await prepareLessonAudioSidecarForUpload(
+            videoFile,
+            videoMetadata,
+            videoSourceAudioProbe ?? {
+              codec: videoMetadata.audioCodec,
+              hasAudio: videoMetadata.hasAudio,
+              method: videoMetadata.audioProbeMethod,
+              trackCount: videoMetadata.audioTrackCount,
+            },
+            {
+              audioBitsPerSecond: audioPlan.audioBitsPerSecond,
+              signal: audioController.signal,
+              timeoutMs: audioPlan.timeoutMs,
+              onProgress: (progress, message) => {
+                setUploadStage("preparing_audio");
+                setCompressionState((current) => ({
+                  ...current,
+                  elapsedSeconds: Math.round((Date.now() - audioStartedAt) / 1000),
+                  message,
+                  progress,
+                  status: "compressing",
+                  targetLabel: "Audio",
+                }));
+                setWorkspaceMessage(message);
+              },
+            },
+          );
+          setLessonVideoUploadDebug((current) => ({
+            ...current,
+            compressionDurationMs: Math.round(Date.now() - audioStartedAt),
+            compressionStatus: "audio_sidecar_complete",
+            fallbackReason: "Private audio sidecar prepared for MAI transcription.",
+            outputMimeType: audioSidecar.type,
+            outputSize: audioSidecar.size,
+            uploadRoute: "/api/videos PUT transcription-audio",
+          }));
+          await uploadVideoAsset(
+            pendingVideoId,
+            audioSidecar,
+            "transcription-audio",
+            (progress) => {
+              setCompressionState((current) => ({
+                ...current,
+                message: `Uploading prepared lesson audio: ${progress}% transferred.`,
+                progress,
+                status: "compressing",
+              }));
+            },
+            audioController.signal,
+          );
+          setCompressionState((current) => ({
+            ...current,
+            compressionTimeMs: Math.round(Date.now() - audioStartedAt),
+            elapsedSeconds: Math.round((Date.now() - audioStartedAt) / 1000),
+            message: "Lesson audio is ready for MAI Coach transcription.",
+            optimizedSize: audioSidecar.size,
+            progress: 100,
+            status: "complete",
+            warning: "Original video will upload unchanged for playback.",
+          }));
+          logLessonVideoDiagnostic("audio-sidecar-uploaded", {
+            mimeType: audioSidecar.type,
+            sidecarSize: audioSidecar.size,
+            videoFileSize: videoFile.size,
+          });
+        } catch (error) {
+          const message = isAbortError(error)
+            ? "Audio preparation was cancelled."
+            : error instanceof Error ? error.message : "Audio preparation failed.";
+          logLessonVideoDiagnostic("audio-sidecar-failed", {
+            errorName: error instanceof Error ? error.name : "unknown",
+            reason: message,
+          });
+          if (isAbortError(error)) throw error;
+          setCompressionState((current) => ({
+            ...current,
+            canUploadOriginal: false,
+            message: "Audio preparation could not finish. The original video will upload and MAI Coach will try server processing.",
+            progress: 100,
+            status: "skipped",
+            warning: message,
+          }));
+          setLessonVideoUploadDebug((current) => ({
+            ...current,
+            compressionStatus: "audio_sidecar_failed",
+            fallbackReason: message,
+          }));
+        } finally {
+          if (audioElapsedTimer) window.clearInterval(audioElapsedTimer);
+          audioElapsedTimer = null;
+          if (compressionAbortRef.current === audioController) compressionAbortRef.current = null;
+        }
       }
       if (uploadFile) {
         const uploadController = new AbortController();
@@ -11495,7 +11860,7 @@ function CoachVideoWorkspace({
     memberId: selectedMemberId,
     saveState,
   }) && sessionAttachmentReady;
-  const canCancelCompression = saveState === "saving" && (uploadStage === "preparing_video" || uploadStage === "compressing_video");
+  const canCancelCompression = saveState === "saving" && (uploadStage === "preparing_video" || uploadStage === "compressing_video" || uploadStage === "preparing_audio");
   const canCancelUpload = saveState === "saving" && uploadStage === "uploading";
   const canRetryCoachUpload = saveState !== "saving" && Boolean(videoFile) && (uploadStage === "compression_failed" || uploadStage === "upload_failed" || uploadStage === "needs_attention");
   const uploadElapsedSeconds = uploadTransferState.startedAtMs && uploadTransferState.lastProgressAtMs
@@ -11775,7 +12140,7 @@ function CoachVideoWorkspace({
                     <span>Date</span><strong>{formatFullDate(lessonDate)}</strong>
                   </div>
                 )}
-                {(saveState === "saving" || uploadStage === "compression_failed") && (uploadStage === "preparing_video" || uploadStage === "compressing_video" || uploadStage === "compression_complete" || uploadStage === "compression_failed") && (
+                {(saveState === "saving" || uploadStage === "compression_failed") && (uploadStage === "preparing_video" || uploadStage === "compressing_video" || uploadStage === "compression_complete" || uploadStage === "compression_failed" || uploadStage === "preparing_audio") && (
                   <div className="coach-video-optimization-status">
                     <div className="coach-upload-progress" aria-label={`Preparing video: ${compressionState.progress}%`}>
                       <span style={{ width: `${compressionState.progress}%` }} />
@@ -11811,7 +12176,7 @@ function CoachVideoWorkspace({
                 )}
                 {(canCancelCompression || canCancelUpload || canRetryCoachUpload || compressionState.canUploadOriginal) && (
                   <div className="button-row coach-upload-recovery-actions">
-                    {canCancelCompression && <button className="secondary-action" onClick={cancelActiveVideoPreparation} type="button">Cancel compression</button>}
+                    {canCancelCompression && <button className="secondary-action" onClick={cancelActiveVideoPreparation} type="button">{uploadStage === "preparing_audio" ? "Cancel preparation" : "Cancel compression"}</button>}
                     {canCancelUpload && <button className="secondary-action" onClick={cancelActiveVideoUpload} type="button">Cancel upload</button>}
                     {canRetryCoachUpload && <button className="secondary-action" onClick={retryCoachVideoUpload} type="button">Retry upload</button>}
                     {compressionState.canUploadOriginal && videoFile && saveState !== "saving" && (

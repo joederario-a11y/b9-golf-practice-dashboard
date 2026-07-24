@@ -106,6 +106,15 @@ test("video recap source tries audio extraction before QuickTime video normaliza
   assert.match(source, /format: "m4a"/);
 });
 
+test("video recap source uses uploaded audio sidecar before Cloudflare media extraction", async () => {
+  const source = await readFile(new URL("../lib/server/video-ai-recap.ts", import.meta.url), "utf8");
+  assert.match(source, /function temporaryAudioPathsForJob/);
+  assert.match(source, /function usePreextractedAudioForTranscription/);
+  assert.match(source, /preextracted_audio_confirmed/);
+  assert.match(source, /const preparedAudio = await usePreextractedAudioForTranscription/);
+  assert.match(source, /if \(preparedAudio\) return preparedAudio/);
+});
+
 test("draft normalization never invents missing coach feedback", () => {
   const draft = normalizeLessonRecapDraft({
     confidence: 1.4,
