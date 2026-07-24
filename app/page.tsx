@@ -4709,14 +4709,47 @@ async function createVideoRecord(
   return payload.video as VideoLibraryRecord;
 }
 
-function uploadVideoAsset(
-  videoId: string,
-  file: File,
-  asset: "video" | "thumbnail",
-  onProgress: (progress: number, event?: ProgressEvent<EventTarget>) => void,
+const LESSON_VIDEO_MULTIPART_UPLOAD_THRESHOLD_BYTES = 50 * 1024 * 1024;
+
+type VideoAssetUploadResponse = {
+  aiProcessing?: unknown;
+  multipart?: boolean;
+  size?: number;
+  status?: number;
+};
+
+type MultipartUploadPart = {
+  etag: string;
+  partNumber: number;
+};
+
+function videoUploadHeaders(file: File, contentType = file.type || "application/octet-stream") {
+  return {
+    "Content-Type": contentType,
+    "X-File-Mime-Type": file.type || "application/octet-stream",
+    "X-File-Name": encodeURIComponent(file.name),
+    "X-File-Size": String(file.size),
+  };
+}
+
+async function abortMultipartVideoUpload(videoId: string, uploadId: string, file: File) {
+  await fetch(
+    `/api/videos?videoId=${encodeURIComponent(videoId)}&asset=video&multipart=abort&uploadId=${encodeURIComponent(uploadId)}`,
+    {
+      method: "PUT",
+      headers: videoUploadHeaders(file),
+    },
+  ).catch(() => undefined);
+}
+
+function uploadMultipartPart(
+  url: string,
+  blob: Blob,
+  headers: Record<string, string>,
+  onProgress: (loaded: number, total: number) => void,
   signal?: AbortSignal,
 ) {
-  return new Promise<{ aiProcessing?: unknown; size?: number; status?: number }>((resolve, reject) => {
+  return new Promise<{ part: MultipartUploadPart; status: number }>((resolve, reject) => {
     const request = new XMLHttpRequest();
     let settled = false;
     let abortHandler: (() => void) | null = null;
@@ -4729,7 +4762,159 @@ function uploadVideoAsset(
       removeAbortListener();
       reject(error);
     };
-    const succeed = (payload: { aiProcessing?: unknown; size?: number; status?: number }) => {
+    const succeed = (part: MultipartUploadPart) => {
+      if (settled) return;
+      settled = true;
+      removeAbortListener();
+      resolve({ part, status: request.status });
+    };
+    abortHandler = () => {
+      request.abort();
+      fail(abortError("Video upload was cancelled."));
+    };
+    if (signal?.aborted) {
+      fail(abortError("Video upload was cancelled."));
+      return;
+    }
+    signal?.addEventListener("abort", abortHandler, { once: true });
+    request.open("PUT", url);
+    Object.entries(headers).forEach(([key, value]) => request.setRequestHeader(key, value));
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(event.loaded, event.total);
+    };
+    request.onerror = () => fail(new Error("The upload connection was interrupted."));
+    request.onabort = () => fail(abortError("Video upload was cancelled."));
+    request.onload = () => {
+      let payload: { error?: string; part?: MultipartUploadPart } = {};
+      try {
+        payload = JSON.parse(request.responseText) as { error?: string; part?: MultipartUploadPart };
+      } catch {
+        // A non-JSON response is handled by the status check below.
+      }
+      if (request.status >= 200 && request.status < 300 && payload.part) {
+        succeed(payload.part);
+      } else {
+        fail(new Error(payload.error ?? "The video upload part could not be stored."));
+      }
+    };
+    request.send(blob);
+  });
+}
+
+async function uploadMultipartVideoAsset(
+  videoId: string,
+  file: File,
+  onProgress: (progress: number, event?: ProgressEvent<EventTarget>) => void,
+  signal?: AbortSignal,
+): Promise<VideoAssetUploadResponse> {
+  const uploadRoute = "/api/videos PUT video multipart";
+  logLessonVideoDiagnostic("multipart-upload-start", {
+    fileName: file.name,
+    mimeType: file.type,
+    route: uploadRoute,
+    size: file.size,
+  });
+  const initResponse = await fetch(
+    `/api/videos?videoId=${encodeURIComponent(videoId)}&asset=video&multipart=init`,
+    {
+      method: "PUT",
+      headers: videoUploadHeaders(file),
+      signal,
+    },
+  );
+  const initPayload = await readApiJson<{ partSize?: number; uploadId?: string }>(initResponse, "The large video upload could not be started.");
+  const uploadId = initPayload.uploadId;
+  if (!uploadId) throw new Error("The large video upload could not be started.");
+  const partSize = Math.max(5 * 1024 * 1024, Number(initPayload.partSize) || 20 * 1024 * 1024);
+  const uploadedParts: MultipartUploadPart[] = [];
+  const loadedByPart = new Map<number, number>();
+  let completedBytes = 0;
+  let uploadCompleted = false;
+  const emitAggregateProgress = () => {
+    const activeLoaded = Array.from(loadedByPart.values()).reduce((sum, loaded) => sum + loaded, 0);
+    const uploadedBytes = Math.min(file.size, completedBytes + activeLoaded);
+    const progress = Math.max(0, Math.min(99, Math.round((uploadedBytes / file.size) * 100)));
+    onProgress(progress);
+    logLessonVideoDiagnostic("multipart-upload-progress", {
+      loadedBytes: uploadedBytes,
+      partCount: Math.ceil(file.size / partSize),
+      progress,
+      totalBytes: file.size,
+    });
+  };
+
+  try {
+    for (let offset = 0, partNumber = 1; offset < file.size; offset += partSize, partNumber += 1) {
+      if (signal?.aborted) throw abortError("Video upload was cancelled.");
+      const end = Math.min(file.size, offset + partSize);
+      const partBlob = file.slice(offset, end);
+      loadedByPart.set(partNumber, 0);
+      const partResponse = await uploadMultipartPart(
+        `/api/videos?videoId=${encodeURIComponent(videoId)}&asset=video&multipart=part&uploadId=${encodeURIComponent(uploadId)}&partNumber=${partNumber}`,
+        partBlob,
+        videoUploadHeaders(file, "application/octet-stream"),
+        (loaded) => {
+          loadedByPart.set(partNumber, loaded);
+          emitAggregateProgress();
+        },
+        signal,
+      );
+      loadedByPart.delete(partNumber);
+      completedBytes += partBlob.size;
+      uploadedParts.push(partResponse.part);
+      emitAggregateProgress();
+    }
+    const completeResponse = await fetch(
+      `/api/videos?videoId=${encodeURIComponent(videoId)}&asset=video&multipart=complete&uploadId=${encodeURIComponent(uploadId)}`,
+      {
+        method: "PUT",
+        headers: videoUploadHeaders(file, "application/json"),
+        body: JSON.stringify({ parts: uploadedParts }),
+        signal,
+      },
+    );
+    const completePayload = await readApiJson<VideoAssetUploadResponse>(completeResponse, "The large video upload could not be completed.");
+    uploadCompleted = true;
+    onProgress(100);
+    logLessonVideoDiagnostic("multipart-upload-complete", {
+      fileName: file.name,
+      partCount: uploadedParts.length,
+      responseStatus: completeResponse.status,
+      size: completePayload.size ?? file.size,
+    });
+    return { ...completePayload, multipart: true, status: completeResponse.status };
+  } catch (error) {
+    logLessonVideoDiagnostic("multipart-upload-failed", {
+      errorName: error instanceof Error ? error.name : "unknown",
+      partCount: uploadedParts.length,
+      reason: error instanceof Error ? error.message : "unknown",
+    });
+    if (!uploadCompleted) await abortMultipartVideoUpload(videoId, uploadId, file);
+    throw error;
+  }
+}
+
+function uploadSingleVideoAsset(
+  videoId: string,
+  file: File,
+  asset: "video" | "thumbnail",
+  onProgress: (progress: number, event?: ProgressEvent<EventTarget>) => void,
+  signal?: AbortSignal,
+) {
+  return new Promise<VideoAssetUploadResponse>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    let settled = false;
+    let abortHandler: (() => void) | null = null;
+    const removeAbortListener = () => {
+      if (abortHandler) signal?.removeEventListener("abort", abortHandler);
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      removeAbortListener();
+      reject(error);
+    };
+    const succeed = (payload: VideoAssetUploadResponse) => {
       if (settled) return;
       settled = true;
       removeAbortListener();
@@ -4756,9 +4941,7 @@ function uploadVideoAsset(
       "PUT",
       `/api/videos?videoId=${encodeURIComponent(videoId)}&asset=${asset}`,
     );
-    request.setRequestHeader("Content-Type", file.type);
-    request.setRequestHeader("X-File-Name", encodeURIComponent(file.name));
-    request.setRequestHeader("X-File-Size", String(file.size));
+    Object.entries(videoUploadHeaders(file)).forEach(([key, value]) => request.setRequestHeader(key, value));
     request.upload.onprogress = (event) => {
       if (event.lengthComputable) {
         const progress = Math.round((event.loaded / event.total) * 100);
@@ -4801,6 +4984,19 @@ function uploadVideoAsset(
     };
     request.send(file);
   });
+}
+
+function uploadVideoAsset(
+  videoId: string,
+  file: File,
+  asset: "video" | "thumbnail",
+  onProgress: (progress: number, event?: ProgressEvent<EventTarget>) => void,
+  signal?: AbortSignal,
+) {
+  if (asset === "video" && file.size > LESSON_VIDEO_MULTIPART_UPLOAD_THRESHOLD_BYTES) {
+    return uploadMultipartVideoAsset(videoId, file, onProgress, signal);
+  }
+  return uploadSingleVideoAsset(videoId, file, asset, onProgress, signal);
 }
 
 async function finalizeVideoRecord(

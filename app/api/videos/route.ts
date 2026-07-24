@@ -184,6 +184,26 @@ function defaultVideoTitleFromDate(...values: unknown[]) {
 
 const HIDDEN_TEST_VIDEO_CLAUSE = "LOWER(COALESCE(videos.video_type, '')) NOT IN ('system_test', 'system test')";
 const MEDIA_PROBE_EDGE_BYTES = 4 * 1024 * 1024;
+const LESSON_VIDEO_MULTIPART_PART_SIZE = 20 * 1024 * 1024;
+const LESSON_VIDEO_MULTIPART_PART_TOLERANCE_BYTES = 1024 * 1024;
+const LESSON_VIDEO_MULTIPART_MAX_PARTS = 10_000;
+
+type R2MultipartUploadedPartLike = {
+  etag: string;
+  partNumber: number;
+};
+
+type R2MultipartUploadLike = {
+  abort(): Promise<void>;
+  complete(parts: R2MultipartUploadedPartLike[]): Promise<R2Object>;
+  uploadId: string;
+  uploadPart(partNumber: number, value: Parameters<R2Bucket["put"]>[1]): Promise<R2MultipartUploadedPartLike>;
+};
+
+type R2MultipartBucketLike = R2Bucket & {
+  createMultipartUpload(key: string, options?: Parameters<R2Bucket["put"]>[2]): Promise<R2MultipartUploadLike>;
+  resumeMultipartUpload(key: string, uploadId: string): R2MultipartUploadLike;
+};
 
 function safeJson(value: string | null | undefined, fallback: unknown) {
   try {
@@ -233,6 +253,216 @@ async function probeStoredMediaObject(bucket: R2Bucket, values: {
     objectKey: values.objectKey,
     objectSize: values.objectSize,
   });
+}
+
+async function finalizeStoredVideoUpload(values: {
+  bucket: R2Bucket;
+  database: D1Database;
+  fileName: string;
+  identity: Awaited<ReturnType<typeof requireIdentity>>;
+  mimeType: string;
+  storagePath: string;
+  storedSize: number;
+  video: VideoRow;
+}) {
+  const mediaProbe = await probeStoredMediaObject(values.bucket, {
+    durationSeconds: values.video.duration,
+    mimeType: values.mimeType,
+    objectKey: values.storagePath,
+    objectSize: values.storedSize,
+  });
+  const mediaProbeJson = stringifyJson(mediaProbe);
+  await values.database
+    .prepare(
+      `UPDATE lesson_videos SET
+        file_name = ?, file_size = ?, mime_type = ?,
+        source_storage_path = ?, source_file_name = ?, source_file_size = ?, source_mime_type = ?,
+        source_media_probe_json = ?, playback_media_probe_json = ?,
+        upload_status = 'ready',
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?`,
+    )
+    .bind(
+      values.fileName,
+      values.storedSize,
+      values.mimeType,
+      values.storagePath,
+      values.fileName,
+      values.storedSize,
+      values.mimeType,
+      mediaProbeJson,
+      mediaProbeJson,
+      values.video.id,
+    )
+    .run();
+  await recordActivity({
+    action: "video_uploaded",
+    actor: values.identity,
+    database: values.database,
+    entityId: values.video.id,
+    entityType: "video",
+    memberId: values.video.member_id,
+    metadata: {
+      audioCodec: mediaProbe.audioCodec ?? null,
+      audioTrackCount: mediaProbe.audioTrackCount,
+      container: mediaProbe.container,
+      fileName: values.fileName,
+      hasAudio: mediaProbeHasAudio(mediaProbe),
+      mimeType: values.mimeType,
+      size: values.storedSize,
+      videoCodec: mediaProbe.videoCodec ?? null,
+    },
+    summary: `${values.identity.displayName} uploaded ${values.fileName}.`,
+    targetUserId: values.video.member_id,
+  });
+  let aiProcessing: unknown = null;
+  try {
+    aiProcessing = await queueVideoRecapWorkflowAfterUpload(values.database, values.identity, values.video.id);
+  } catch {
+    aiProcessing = { queued: false };
+  }
+  return { aiProcessing, mediaProbe };
+}
+
+function requireMultipartBucket(bucket: R2Bucket) {
+  const maybeMultipartBucket = bucket as Partial<R2MultipartBucketLike>;
+  if (
+    typeof maybeMultipartBucket.createMultipartUpload !== "function" ||
+    typeof maybeMultipartBucket.resumeMultipartUpload !== "function"
+  ) {
+    throw new Response("Large video uploads are not available in this environment.", { status: 501 });
+  }
+  return bucket as R2MultipartBucketLike;
+}
+
+function parseMultipartPartNumber(value: string | null) {
+  const partNumber = Number(value);
+  return Number.isInteger(partNumber) && partNumber >= 1 && partNumber <= LESSON_VIDEO_MULTIPART_MAX_PARTS
+    ? partNumber
+    : null;
+}
+
+function parseUploadedParts(value: unknown) {
+  if (!Array.isArray(value)) return null;
+  const parts = value
+    .map((item) => {
+      const record = item && typeof item === "object" ? item as Record<string, unknown> : {};
+      const partNumber = Number(record.partNumber);
+      const etag = typeof record.etag === "string" ? record.etag.trim() : "";
+      return Number.isInteger(partNumber) && partNumber >= 1 && partNumber <= LESSON_VIDEO_MULTIPART_MAX_PARTS && etag
+        ? { etag, partNumber }
+        : null;
+    })
+    .filter((item): item is R2MultipartUploadedPartLike => Boolean(item))
+    .sort((a, b) => a.partNumber - b.partNumber);
+  if (!parts.length || parts.length !== value.length) return null;
+  const seen = new Set<number>();
+  for (const part of parts) {
+    if (seen.has(part.partNumber)) return null;
+    seen.add(part.partNumber);
+  }
+  return parts;
+}
+
+async function handleMultipartVideoUpload(values: {
+  bucket: R2Bucket;
+  database: D1Database;
+  declaredSize: number;
+  fileName: string;
+  identity: Awaited<ReturnType<typeof requireIdentity>>;
+  mimeType: string;
+  request: Request;
+  url: URL;
+  video: VideoRow;
+}) {
+  const action = values.url.searchParams.get("multipart")?.trim().toLowerCase();
+  const bucket = requireMultipartBucket(values.bucket);
+  const storagePath = values.video.storage_path;
+  const validationError = validateVideoFile(values.mimeType, values.declaredSize);
+  if (validationError) {
+    return Response.json({ error: validationError }, { status: 400 });
+  }
+
+  if (action === "init") {
+    const upload = await bucket.createMultipartUpload(storagePath, {
+      httpMetadata: { contentType: values.mimeType },
+      customMetadata: {
+        fileName: values.fileName,
+        memberId: values.video.member_id,
+        uploadedBy: values.identity.id,
+      },
+    });
+    return Response.json({
+      ok: true,
+      multipart: true,
+      uploadId: upload.uploadId,
+      partSize: LESSON_VIDEO_MULTIPART_PART_SIZE,
+    });
+  }
+
+  const uploadId = values.url.searchParams.get("uploadId")?.trim() || "";
+  if (!uploadId) {
+    return Response.json({ error: "Multipart uploadId is required." }, { status: 400 });
+  }
+  const upload = bucket.resumeMultipartUpload(storagePath, uploadId);
+
+  if (action === "abort") {
+    await upload.abort();
+    return Response.json({ ok: true, multipart: true, aborted: true });
+  }
+
+  if (action === "part") {
+    const partNumber = parseMultipartPartNumber(values.url.searchParams.get("partNumber"));
+    if (!partNumber) {
+      return Response.json({ error: "A valid multipart partNumber is required." }, { status: 400 });
+    }
+    if (!values.request.body) {
+      return Response.json({ error: "The upload part body is empty." }, { status: 400 });
+    }
+    const partLength = Number(values.request.headers.get("content-length") || 0);
+    if (
+      Number.isFinite(partLength) &&
+      partLength > LESSON_VIDEO_MULTIPART_PART_SIZE + LESSON_VIDEO_MULTIPART_PART_TOLERANCE_BYTES
+    ) {
+      return Response.json({ error: "Upload part is too large." }, { status: 400 });
+    }
+    const part = await upload.uploadPart(partNumber, values.request.body);
+    return Response.json({ ok: true, multipart: true, part });
+  }
+
+  if (action === "complete") {
+    const payload = await values.request.json().catch(() => ({})) as { parts?: unknown };
+    const parts = parseUploadedParts(payload.parts);
+    if (!parts) {
+      return Response.json({ error: "Valid uploaded parts are required." }, { status: 400 });
+    }
+    const stored = await upload.complete(parts);
+    const actualValidationError = validateVideoFile(values.mimeType, stored.size);
+    if (actualValidationError) {
+      await values.bucket.delete(storagePath);
+      return Response.json({ error: actualValidationError }, { status: 400 });
+    }
+    const finalized = await finalizeStoredVideoUpload({
+      bucket: values.bucket,
+      database: values.database,
+      fileName: values.fileName,
+      identity: values.identity,
+      mimeType: values.mimeType,
+      storagePath,
+      storedSize: stored.size,
+      video: values.video,
+    });
+    return Response.json({
+      ok: true,
+      aiProcessing: finalized.aiProcessing,
+      asset: "video",
+      mediaProbe: finalized.mediaProbe,
+      multipart: true,
+      size: stored.size,
+    });
+  }
+
+  return Response.json({ error: "Unsupported multipart upload action." }, { status: 400 });
 }
 
 function stringifyJson(value: unknown) {
@@ -570,9 +800,27 @@ export async function PUT(request: Request) {
       return Response.json({ error: "videoId is required." }, { status: 400 });
     }
     const { database, identity, video } = await requireVideoAccess(videoId, "manage");
-    const mimeType = (request.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    const multipartAction = url.searchParams.get("multipart")?.trim().toLowerCase() || "";
+    const rawMimeType = multipartAction
+      ? request.headers.get("x-file-mime-type") || request.headers.get("content-type") || ""
+      : request.headers.get("content-type") || "";
+    const mimeType = rawMimeType.split(";")[0].trim().toLowerCase();
     const fileName = decodeURIComponent(request.headers.get("x-file-name") || video.file_name);
     const declaredSize = Number(request.headers.get("x-file-size") || request.headers.get("content-length"));
+    const bucket = getRequiredVideoStorage();
+    if (asset === "video" && multipartAction) {
+      return handleMultipartVideoUpload({
+        bucket,
+        database,
+        declaredSize,
+        fileName,
+        identity,
+        mimeType,
+        request,
+        url,
+        video,
+      });
+    }
     const validationError = asset === "thumbnail"
       ? validateThumbnailFile(mimeType, declaredSize)
       : validateVideoFile(mimeType, declaredSize);
@@ -583,7 +831,6 @@ export async function PUT(request: Request) {
       return Response.json({ error: "The upload body is empty." }, { status: 400 });
     }
 
-    const bucket = getRequiredVideoStorage();
     const storagePath = asset === "thumbnail"
       ? `lesson-videos/${video.member_id}/${video.id}/thumbnail`
       : video.storage_path;
@@ -610,61 +857,17 @@ export async function PUT(request: Request) {
         .bind(storagePath, video.id)
         .run();
     } else {
-      const mediaProbe = await probeStoredMediaObject(bucket, {
-        durationSeconds: video.duration,
-        mimeType,
-        objectKey: storagePath,
-        objectSize: stored.size,
-      });
-      const mediaProbeJson = stringifyJson(mediaProbe);
-      await database
-        .prepare(
-          `UPDATE lesson_videos SET
-            file_name = ?, file_size = ?, mime_type = ?,
-            source_storage_path = ?, source_file_name = ?, source_file_size = ?, source_mime_type = ?,
-            source_media_probe_json = ?, playback_media_probe_json = ?,
-            upload_status = 'ready',
-            updated_at = CURRENT_TIMESTAMP
-          WHERE id = ?`,
-        )
-        .bind(
-          fileName,
-          stored.size,
-          mimeType,
-          storagePath,
-          fileName,
-          stored.size,
-          mimeType,
-          mediaProbeJson,
-          mediaProbeJson,
-          video.id,
-        )
-        .run();
-      await recordActivity({
-        action: "video_uploaded",
-        actor: identity,
+      const finalized = await finalizeStoredVideoUpload({
+        bucket,
         database,
-        entityId: video.id,
-        entityType: "video",
-        memberId: video.member_id,
-        metadata: {
-          audioCodec: mediaProbe.audioCodec ?? null,
-          audioTrackCount: mediaProbe.audioTrackCount,
-          container: mediaProbe.container,
-          fileName,
-          hasAudio: mediaProbeHasAudio(mediaProbe),
-          mimeType,
-          size: stored.size,
-          videoCodec: mediaProbe.videoCodec ?? null,
-        },
-        summary: `${identity.displayName} uploaded ${fileName}.`,
-        targetUserId: video.member_id,
+        fileName,
+        identity,
+        mimeType,
+        storagePath,
+        storedSize: stored.size,
+        video,
       });
-      try {
-        aiProcessing = await queueVideoRecapWorkflowAfterUpload(database, identity, video.id);
-      } catch {
-        aiProcessing = { queued: false };
-      }
+      aiProcessing = finalized.aiProcessing;
     }
     return Response.json({ ok: true, aiProcessing, asset, size: stored.size });
   } catch (error) {

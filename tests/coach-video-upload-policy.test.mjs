@@ -161,6 +161,18 @@ test("coach lesson upload preserves the selected source video for storage and tr
   assert.match(pageSource, /forceOriginal: options\.skipCompression \|\| !shouldCompressVideo/);
 });
 
+test("large coach lesson uploads use multipart chunks without creating another lesson record", async () => {
+  const pageSource = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(pageSource, /LESSON_VIDEO_MULTIPART_UPLOAD_THRESHOLD_BYTES = 50 \* 1024 \* 1024/);
+  assert.match(pageSource, /multipart=init/);
+  assert.match(pageSource, /multipart=part/);
+  assert.match(pageSource, /multipart=complete/);
+  assert.match(pageSource, /multipart=abort/);
+  assert.match(pageSource, /file\.slice\(offset, end\)/);
+  assert.match(pageSource, /uploadMultipartVideoAsset\(videoId, file, onProgress, signal\)/);
+  assert.doesNotMatch(pageSource, /createVideoRecord\(metadata, uploadFile\)[\s\S]+createVideoRecord\(metadata, uploadFile\)/);
+});
+
 test("lesson video audio preservation rejects silent optimized output when source had audio", () => {
   assert.equal(validateLessonVideoAudioPreservation({
     outputContainer: "mp4",
