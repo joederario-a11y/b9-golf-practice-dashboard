@@ -52,8 +52,11 @@ import {
   formatLessonUploadFileSize,
   getCoachDashboardActionState,
   LESSON_VIDEO_COMPRESSION_TIMEOUT_MS,
+  LESSON_VIDEO_AUDIO_PRESERVATION_ERROR,
+  LESSON_VIDEO_WEBM_AUDIO_COMPATIBILITY_ERROR,
   shouldPrepareLessonVideoCompression,
   shouldShowLessonUploadStallWarning,
+  validateLessonVideoAudioPreservation,
 } from "@/lib/coach-video-upload-policy.mjs";
 import {
   buildLessonPublishConfirmation,
@@ -100,9 +103,20 @@ type CoachSessionDataMode = "none" | "existing" | "upload";
 type CoachSessionUploadKind = "csv" | "photos";
 
 type LessonVideoMetadata = {
+  audioCodec: string;
+  audioProbeMethod: string;
+  audioTrackCount: number | null;
   duration: number;
+  hasAudio: boolean | null;
   height: number;
   width: number;
+};
+
+type LessonVideoAudioProbe = {
+  codec: string;
+  hasAudio: boolean | null;
+  method: string;
+  trackCount: number | null;
 };
 
 type LessonVideoCompressionState = {
@@ -4861,6 +4875,99 @@ function getVideoPublicationStatus(video: VideoLibraryRecord): VideoPublicationS
   return video.publicationStatus ?? "Published";
 }
 
+function mediaElementAudioProbe(media: HTMLVideoElement): LessonVideoAudioProbe {
+  const extendedMedia = media as HTMLVideoElement & {
+    audioTracks?: { length: number };
+    mozHasAudio?: boolean;
+    webkitAudioDecodedByteCount?: number;
+  };
+  if (typeof extendedMedia.audioTracks?.length === "number") {
+    return {
+      codec: "",
+      hasAudio: extendedMedia.audioTracks.length > 0,
+      method: "html_audio_tracks",
+      trackCount: extendedMedia.audioTracks.length,
+    };
+  }
+  if (typeof extendedMedia.mozHasAudio === "boolean") {
+    return {
+      codec: "",
+      hasAudio: extendedMedia.mozHasAudio,
+      method: "moz_has_audio",
+      trackCount: extendedMedia.mozHasAudio ? 1 : 0,
+    };
+  }
+  if (typeof extendedMedia.webkitAudioDecodedByteCount === "number" && extendedMedia.webkitAudioDecodedByteCount > 0) {
+    return {
+      codec: "",
+      hasAudio: true,
+      method: "webkit_decoded_audio",
+      trackCount: 1,
+    };
+  }
+  return {
+    codec: "",
+    hasAudio: null,
+    method: "unavailable",
+    trackCount: null,
+  };
+}
+
+function inferLessonVideoAudioFromSample(sample: string, mimeType: string): LessonVideoAudioProbe {
+  const normalizedMimeType = mimeType.toLowerCase();
+  if (sample.includes("A_OPUS") || sample.includes("OpusHead")) {
+    return { codec: "opus", hasAudio: true, method: "container_sample", trackCount: 1 };
+  }
+  if (sample.includes("A_VORBIS")) {
+    return { codec: "vorbis", hasAudio: true, method: "container_sample", trackCount: 1 };
+  }
+  if (sample.includes("A_AAC") || sample.includes("mp4a") || sample.includes("soun")) {
+    return { codec: sample.includes("mp4a") || normalizedMimeType.includes("mp4") || normalizedMimeType.includes("quicktime") ? "aac" : "audio", hasAudio: true, method: "container_sample", trackCount: 1 };
+  }
+  if (normalizedMimeType.includes("webm") && sample.includes("CodecID") && !sample.includes("A_")) {
+    return { codec: "", hasAudio: false, method: "container_sample", trackCount: 0 };
+  }
+  return { codec: "", hasAudio: null, method: "container_sample", trackCount: null };
+}
+
+async function probeLessonVideoFileAudio(file: File, signal?: AbortSignal): Promise<LessonVideoAudioProbe> {
+  if (signal?.aborted) throw abortError("Video preparation was cancelled.");
+  const sampleSize = Math.min(file.size, 4 * 1024 * 1024);
+  if (!sampleSize) return { codec: "", hasAudio: false, method: "empty_file", trackCount: 0 };
+  const headSample = await file.slice(0, sampleSize).arrayBuffer();
+  if (signal?.aborted) throw abortError("Video preparation was cancelled.");
+  const tailSample = file.size > sampleSize
+    ? await file.slice(Math.max(0, file.size - sampleSize), file.size).arrayBuffer()
+    : null;
+  if (signal?.aborted) throw abortError("Video preparation was cancelled.");
+  const decoder = new TextDecoder("latin1", { fatal: false });
+  return inferLessonVideoAudioFromSample(
+    `${decoder.decode(headSample)}${tailSample ? decoder.decode(tailSample) : ""}`,
+    file.type,
+  );
+}
+
+function mergeLessonVideoAudioProbes(...probes: LessonVideoAudioProbe[]): LessonVideoAudioProbe {
+  const confirmed = probes.find((probe) => probe.hasAudio === true);
+  if (confirmed) return confirmed;
+  const confirmedSilent = probes.find((probe) => probe.hasAudio === false);
+  if (confirmedSilent) return confirmedSilent;
+  return probes.find(Boolean) ?? { codec: "", hasAudio: null, method: "unavailable", trackCount: null };
+}
+
+function captureVideoElementStream(video: HTMLVideoElement) {
+  const capture = (video as HTMLVideoElement & {
+    captureStream?: () => MediaStream;
+    mozCaptureStream?: () => MediaStream;
+  }).captureStream ?? (video as HTMLVideoElement & { mozCaptureStream?: () => MediaStream }).mozCaptureStream;
+  if (typeof capture !== "function") return null;
+  try {
+    return capture.call(video);
+  } catch {
+    return null;
+  }
+}
+
 function readVideoMetadata(file: File, signal?: AbortSignal) {
   return new Promise<LessonVideoMetadata>((resolve, reject) => {
     const objectUrl = URL.createObjectURL(file);
@@ -4878,8 +4985,13 @@ function readVideoMetadata(file: File, signal?: AbortSignal) {
     const finish = () => {
       if (settled) return;
       settled = true;
+      const audioProbe = mediaElementAudioProbe(media);
       const metadata = {
+        audioCodec: audioProbe.codec,
+        audioProbeMethod: audioProbe.method,
+        audioTrackCount: audioProbe.trackCount,
         duration: Number.isFinite(media.duration) ? media.duration : 0,
+        hasAudio: audioProbe.hasAudio,
         height: Number.isFinite(media.videoHeight) ? media.videoHeight : 0,
         width: Number.isFinite(media.videoWidth) ? media.videoWidth : 0,
       };
@@ -4904,16 +5016,16 @@ function readVideoMetadata(file: File, signal?: AbortSignal) {
       if (settled) return;
       settled = true;
       const metadata = {
+        audioCodec: "",
+        audioProbeMethod: "metadata_error",
+        audioTrackCount: null,
         duration: 0,
+        hasAudio: null,
         height: 0,
         width: 0,
       };
       cleanup();
-      resolve({
-        duration: metadata.duration,
-        height: metadata.height,
-        width: metadata.width,
-      });
+      resolve(metadata);
     };
     media.src = objectUrl;
   });
@@ -4944,15 +5056,7 @@ function lessonVideoRecorderFormat(): LessonVideoRecorderFormat | null {
     { container: "mp4", extension: "mp4", label: "MP4", mimeType: "video/mp4;codecs=h264,aac" },
     { container: "mp4", extension: "mp4", label: "MP4", mimeType: "video/mp4" },
   ];
-  const webmCandidates: LessonVideoRecorderFormat[] = [
-    { container: "webm", extension: "webm", label: "WebM", mimeType: "video/webm;codecs=vp8,opus" },
-    { container: "webm", extension: "webm", label: "WebM", mimeType: "video/webm;codecs=vp9,opus" },
-    { container: "webm", extension: "webm", label: "WebM", mimeType: "video/webm" },
-  ];
-  const userAgent = typeof navigator === "undefined" ? "" : navigator.userAgent;
-  const chromiumRecorder = /\b(?:Chrome|Chromium|Edg|OPR|CriOS)\b|HeadlessChrome/i.test(userAgent);
-  const candidates = chromiumRecorder ? [...webmCandidates, ...mp4Candidates] : [...mp4Candidates, ...webmCandidates];
-  return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate.mimeType)) ?? null;
+  return mp4Candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate.mimeType)) ?? null;
 }
 
 function lessonVideoRecorderSupportSnapshot() {
@@ -5031,11 +5135,25 @@ function validatePreparedLessonVideo(
   optimizedFile: File,
   originalMetadata: LessonVideoMetadata,
   outputMetadata: LessonVideoMetadata,
+  sourceAudioProbe: LessonVideoAudioProbe,
+  outputAudioProbe: LessonVideoAudioProbe,
+  recorderFormat: LessonVideoRecorderFormat,
 ) {
   if (!optimizedFile.size) return "Optimized video was empty.";
-  if (!["video/mp4", "video/webm"].includes(optimizedFile.type)) {
+  if (optimizedFile.type !== "video/mp4") {
     return "Optimized video format is not supported by the lesson library.";
   }
+  const audioIssue = validateLessonVideoAudioPreservation({
+    outputContainer: recorderFormat.container,
+    outputHasAudio: mergeLessonVideoAudioProbes(outputAudioProbe, {
+      codec: outputMetadata.audioCodec,
+      hasAudio: outputMetadata.hasAudio,
+      method: outputMetadata.audioProbeMethod,
+      trackCount: outputMetadata.audioTrackCount,
+    }).hasAudio,
+    sourceHasAudio: sourceAudioProbe.hasAudio,
+  });
+  if (audioIssue) return audioIssue;
   if (optimizedFile.size >= originalFile.size * 0.95) {
     return "Optimization provided little size reduction.";
   }
@@ -5117,22 +5235,40 @@ async function prepareLessonVideoForUpload(
   }
 
   if (options.signal.aborted) throw abortError("Video preparation was cancelled.");
+  const sourceAudioProbe = mergeLessonVideoAudioProbes(
+    {
+      codec: metadata.audioCodec,
+      hasAudio: metadata.hasAudio,
+      method: metadata.audioProbeMethod,
+      trackCount: metadata.audioTrackCount,
+    },
+    await probeLessonVideoFileAudio(file, options.signal).catch(() => ({
+      codec: "",
+      hasAudio: null,
+      method: "container_probe_failed",
+      trackCount: null,
+    })),
+  );
   const recorderFormat = lessonVideoRecorderFormat();
   if (!recorderFormat || typeof MediaRecorder === "undefined") {
+    const recorderSupport = lessonVideoRecorderSupportSnapshot();
+    const webmOnlyWarning = recorderSupport.webm && !recorderSupport.mp4
+      ? LESSON_VIDEO_WEBM_AUDIO_COMPATIBILITY_ERROR
+      : "Browser video recording unavailable";
     return {
       container: "original",
       compressionTimeMs: 0,
       file,
       metadata,
-      message: "This browser cannot optimize the video before upload, so the original file will be uploaded.",
+      message: `${webmOnlyWarning} The original file will be uploaded.`,
       mimeType: file.type,
       outputMetadata: metadata,
       skipped: true,
-      warning: "Browser video recording unavailable",
+      warning: webmOnlyWarning,
     };
   }
   const AudioCtor = audioContextConstructor();
-  if (!AudioCtor) {
+  if (!AudioCtor && sourceAudioProbe.hasAudio === true) {
     return {
       container: "original",
       compressionTimeMs: 0,
@@ -5159,6 +5295,7 @@ async function prepareLessonVideoForUpload(
   let animationFrame = 0;
   let abortHandler: (() => void) | null = null;
   let recorder: MediaRecorder | null = null;
+  let sourceCaptureStream: MediaStream | null = null;
   let stream: MediaStream | null = null;
   let settled = false;
   const startedAt = performance.now();
@@ -5179,6 +5316,7 @@ async function prepareLessonVideoForUpload(
     video.load();
     URL.revokeObjectURL(objectUrl);
     stream?.getTracks().forEach((track) => track.stop());
+    sourceCaptureStream?.getTracks().forEach((track) => track.stop());
     audioSource?.disconnect();
     audioDestination?.disconnect();
     if (audioContext && audioContext.state !== "closed") void audioContext.close();
@@ -5235,7 +5373,8 @@ async function prepareLessonVideoForUpload(
     }, timeoutMs);
     video.preload = "auto";
     video.playsInline = true;
-    video.muted = true;
+    video.muted = false;
+    video.volume = 1;
     video.src = objectUrl;
     video.onerror = () => fail(new Error("This video could not be opened for browser compression."));
     video.onloadedmetadata = async () => {
@@ -5246,19 +5385,41 @@ async function prepareLessonVideoForUpload(
         await waitForVideoFrameData(video, options.signal);
         context.drawImage(video, 0, 0, dimensions.width, dimensions.height);
         const canvasStream = canvas.captureStream(30);
-        const tracks = [...canvasStream.getVideoTracks()];
+        const tracks: MediaStreamTrack[] = [...canvasStream.getVideoTracks()];
+        sourceCaptureStream = captureVideoElementStream(video);
+        const capturedAudioTracks = sourceCaptureStream
+          ? sourceCaptureStream.getAudioTracks().filter((track) => track.readyState !== "ended")
+          : [];
+        let audioTrackSource = capturedAudioTracks.length ? "media_capture_stream" : "none";
+        capturedAudioTracks.forEach((track) => tracks.push(track));
 
-        if (AudioCtor) {
+        if (!capturedAudioTracks.length && AudioCtor && sourceAudioProbe.hasAudio !== false) {
           audioContext = new AudioCtor();
           audioSource = audioContext.createMediaElementSource(video);
           audioDestination = audioContext.createMediaStreamDestination();
           audioSource.connect(audioDestination);
           audioDestination.stream.getAudioTracks().forEach((track) => tracks.push(track));
+          audioTrackSource = "web_audio_destination";
           if (audioContext.state === "suspended") await audioContext.resume();
         }
 
         if (!tracks.length) throw new Error("This browser did not provide a video track for compression.");
+        const streamVideoTrackCount = tracks.filter((track) => track.kind === "video").length;
+        const streamAudioTracks = tracks.filter((track) => track.kind === "audio");
+        if (sourceAudioProbe.hasAudio === true && streamAudioTracks.length === 0) {
+          throw new Error(LESSON_VIDEO_AUDIO_PRESERVATION_ERROR);
+        }
         stream = new MediaStream(tracks);
+        logLessonVideoDiagnostic("prepare-stream", {
+          audioTrackSource,
+          outputAudioTracks: streamAudioTracks.length,
+          outputVideoTracks: streamVideoTrackCount,
+          recorderMimeType: mimeType,
+          sourceAudioCodec: sourceAudioProbe.codec,
+          sourceAudioDetected: sourceAudioProbe.hasAudio,
+          sourceAudioProbe: sourceAudioProbe.method,
+          trackStates: tracks.map((track) => `${track.kind}:${track.readyState}:${track.enabled ? "enabled" : "disabled"}`).join(","),
+        });
         recorder = new MediaRecorder(stream, {
           audioBitsPerSecond: plan.audioBitsPerSecond,
           mimeType,
@@ -5288,7 +5449,15 @@ async function prepareLessonVideoForUpload(
             lastModified: file.lastModified,
             type: mimeType.split(";")[0] || mimeType,
           });
-          let outputMetadata = { duration: metadata.duration, height: dimensions.height, width: dimensions.width };
+          let outputMetadata: LessonVideoMetadata = {
+            audioCodec: "",
+            audioProbeMethod: "pending",
+            audioTrackCount: null,
+            duration: metadata.duration,
+            hasAudio: null,
+            height: dimensions.height,
+            width: dimensions.width,
+          };
           try {
             outputMetadata = await readVideoMetadata(optimizedFile, options.signal);
           } catch (error) {
@@ -5299,11 +5468,40 @@ async function prepareLessonVideoForUpload(
             fail(new Error("The optimized video could not be verified. You can retry compression or upload the original video."));
             return;
           }
-          const validationIssue = validatePreparedLessonVideo(file, optimizedFile, metadata, outputMetadata);
+          const outputAudioProbe = mergeLessonVideoAudioProbes(
+            {
+              codec: outputMetadata.audioCodec,
+              hasAudio: outputMetadata.hasAudio,
+              method: outputMetadata.audioProbeMethod,
+              trackCount: outputMetadata.audioTrackCount,
+            },
+            await probeLessonVideoFileAudio(optimizedFile, options.signal).catch(() => ({
+              codec: "",
+              hasAudio: null,
+              method: "container_probe_failed",
+              trackCount: null,
+            })),
+          );
+          const validationIssue = validatePreparedLessonVideo(
+            file,
+            optimizedFile,
+            metadata,
+            outputMetadata,
+            sourceAudioProbe,
+            outputAudioProbe,
+            recorderFormat,
+          );
           if (validationIssue) {
             fail(new Error(`${validationIssue} You can retry compression or upload the original video.`));
             return;
           }
+          logLessonVideoDiagnostic("prepare-output-audio", {
+            outputAudioCodec: outputAudioProbe.codec,
+            outputAudioDetected: outputAudioProbe.hasAudio,
+            outputAudioProbe: outputAudioProbe.method,
+            sourceAudioCodec: sourceAudioProbe.codec,
+            sourceAudioDetected: sourceAudioProbe.hasAudio,
+          });
           done({
             container: recorderFormat.container,
             compressionTimeMs,
@@ -5312,7 +5510,11 @@ async function prepareLessonVideoForUpload(
             metadata,
             mimeType,
             outputMetadata: {
+              audioCodec: outputAudioProbe.codec || outputMetadata.audioCodec,
+              audioProbeMethod: outputAudioProbe.method || outputMetadata.audioProbeMethod,
+              audioTrackCount: outputAudioProbe.trackCount ?? outputMetadata.audioTrackCount,
               duration: outputMetadata.duration || metadata.duration,
+              hasAudio: outputAudioProbe.hasAudio ?? outputMetadata.hasAudio,
               height: outputMetadata.height || dimensions.height,
               width: outputMetadata.width || dimensions.width,
             },
@@ -12156,6 +12358,55 @@ function VideoPlaybackUnavailable({ message }: { message: string }) {
   );
 }
 
+function LessonVideoPlayer({ className = "video-player", src }: { className?: string; src: string }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [isMuted, setIsMuted] = useState(false);
+
+  function syncAudioState(element: HTMLVideoElement) {
+    setIsMuted(Boolean(element.muted || element.volume === 0));
+    const probe = mediaElementAudioProbe(element);
+    logLessonVideoDiagnostic("playback-audio-state", {
+      audioDetected: probe.hasAudio,
+      audioProbe: probe.method,
+      muted: element.muted,
+      volume: element.volume,
+    });
+  }
+
+  function unmuteVideo() {
+    const element = videoRef.current;
+    if (!element) return;
+    element.muted = false;
+    element.volume = Math.max(element.volume || 0, 1);
+    syncAudioState(element);
+  }
+
+  return (
+    <div className="lesson-video-player-shell">
+      <video
+        className={className}
+        controls
+        onLoadedMetadata={(event) => {
+          event.currentTarget.muted = false;
+          if (event.currentTarget.volume === 0) event.currentTarget.volume = 1;
+          syncAudioState(event.currentTarget);
+        }}
+        onVolumeChange={(event) => syncAudioState(event.currentTarget)}
+        playsInline
+        preload="metadata"
+        ref={videoRef}
+        src={src}
+      />
+      {isMuted && (
+        <div className="lesson-video-audio-banner" role="status">
+          <span>This video is muted.</span>
+          <button className="text-button" onClick={unmuteVideo} type="button">Unmute</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function VideoThumbnail({ video }: { video: VideoLibraryItem }) {
   const playbackMessage = videoUploadPlaybackMessage(video);
   return (
@@ -12757,7 +13008,7 @@ function AiLessonRecapReviewModal({
             {playbackMessage ? (
               <VideoPlaybackUnavailable message={playbackMessage} />
             ) : (
-              <video className="video-player" controls playsInline preload="metadata" src={video.objectUrl} />
+              <LessonVideoPlayer src={video.objectUrl} />
             )}
             <dl className="coach-review-list">
               <div><dt>Video</dt><dd>{video.title}<small>{video.fileName}</small></dd></div>
@@ -12935,7 +13186,7 @@ function VideoDetailView({
           {playbackMessage ? (
             <VideoPlaybackUnavailable message={playbackMessage} />
           ) : (
-            <video className="video-player" controls playsInline preload="metadata" src={video.objectUrl} />
+            <LessonVideoPlayer src={video.objectUrl} />
           )}
           <div className="video-detail-title">
             <div>
@@ -13076,7 +13327,7 @@ function VideoComparisonView({
               {playbackMessage ? (
                 <VideoPlaybackUnavailable message={playbackMessage} />
               ) : (
-                <video controls playsInline preload="metadata" src={video.objectUrl} />
+                <LessonVideoPlayer src={video.objectUrl} />
               )}
               <div>
                 <span>{formatVideoUploadDate(video.uploadedAt)} · {video.type}</span>

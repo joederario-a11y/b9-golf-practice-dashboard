@@ -5130,6 +5130,32 @@ button:disabled {
   object-fit: contain;
 }
 
+.lesson-video-player-shell {
+  position: relative;
+  width: 100%;
+}
+
+.lesson-video-audio-banner {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  left: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid rgba(151, 210, 46, 0.48);
+  border-radius: 6px;
+  background: rgba(5, 11, 9, 0.88);
+  color: var(--ink);
+  padding: 10px 12px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+}
+
+.lesson-video-audio-banner .text-button {
+  color: var(--green);
+}
+
 .video-player-unavailable {
   display: grid;
   min-height: 260px;
@@ -5338,9 +5364,14 @@ button:disabled {
   gap: 16px;
 }
 
+.comparison-video > .lesson-video-player-shell,
 .comparison-video > video {
   display: block;
   width: 100%;
+}
+
+.comparison-video > .lesson-video-player-shell video,
+.comparison-video > video {
   aspect-ratio: 16 / 9;
   border-radius: 6px;
   background: #111820;

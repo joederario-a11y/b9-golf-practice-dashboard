@@ -12,8 +12,11 @@ import {
   filterCoachUploadMembers,
   formatLessonUploadFileSize,
   getCoachDashboardActionState,
+  LESSON_VIDEO_AUDIO_PRESERVATION_ERROR,
+  LESSON_VIDEO_WEBM_AUDIO_COMPATIBILITY_ERROR,
   shouldPrepareLessonVideoCompression,
   shouldShowLessonUploadStallWarning,
+  validateLessonVideoAudioPreservation,
 } from "../lib/coach-video-upload-policy.mjs";
 
 const members = [
@@ -134,14 +137,64 @@ test("coach lesson upload source exposes browser video compression and recovery 
   assert.match(pageSource, /Upload original file/);
   assert.match(pageSource, /compression_failed/);
   assert.match(pageSource, /video\/webm;codecs=vp9,opus/);
+  assert.match(pageSource, /video\/mp4;codecs=avc1\.42E01E,mp4a\.40\.2/);
   assert.match(pageSource, /lessonVideoOutputFileName/);
   assert.match(pageSource, /validatePreparedLessonVideo/);
+  assert.match(pageSource, /validateLessonVideoAudioPreservation/);
+  assert.match(pageSource, /captureVideoElementStream/);
+  assert.match(pageSource, /getAudioTracks/);
+  assert.match(pageSource, /createMediaStreamDestination/);
+  assert.match(pageSource, /LESSON_VIDEO_AUDIO_PRESERVATION_ERROR/);
+  assert.match(pageSource, /video\.muted = false/);
   assert.match(pageSource, /waitForVideoFrameData/);
   assert.match(pageSource, /canvas\.captureStream\(30\)/);
   assert.match(pageSource, /Development upload diagnostics/);
   assert.match(pageSource, /Video preparation timed out/);
   assert.match(pageSource, /Optimization provided little size reduction\. You can retry compression or upload the original video\./);
   assert.match(pageSource, /The optimized video could not be verified\. You can retry compression or upload the original video\./);
+});
+
+test("lesson video audio preservation rejects silent optimized output when source had audio", () => {
+  assert.equal(validateLessonVideoAudioPreservation({
+    outputContainer: "mp4",
+    outputHasAudio: false,
+    sourceHasAudio: true,
+  }), LESSON_VIDEO_AUDIO_PRESERVATION_ERROR);
+  assert.equal(validateLessonVideoAudioPreservation({
+    outputContainer: "mp4",
+    outputHasAudio: null,
+    sourceHasAudio: true,
+  }), LESSON_VIDEO_AUDIO_PRESERVATION_ERROR);
+});
+
+test("lesson video audio preservation allows video-only sources and original fallback", () => {
+  assert.equal(validateLessonVideoAudioPreservation({
+    outputContainer: "mp4",
+    outputHasAudio: false,
+    sourceHasAudio: false,
+  }), "");
+  assert.equal(validateLessonVideoAudioPreservation({
+    outputContainer: "original",
+    outputHasAudio: true,
+    sourceHasAudio: true,
+  }), "");
+});
+
+test("lesson video audio preservation blocks WebM optimized lessons for member compatibility", () => {
+  assert.equal(validateLessonVideoAudioPreservation({
+    outputContainer: "webm",
+    outputHasAudio: true,
+    sourceHasAudio: true,
+  }), LESSON_VIDEO_WEBM_AUDIO_COMPATIBILITY_ERROR);
+});
+
+test("member lesson player exposes controls and does not default to permanently muted", async () => {
+  const pageSource = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(pageSource, /function LessonVideoPlayer/);
+  assert.match(pageSource, /controls/);
+  assert.match(pageSource, /event\.currentTarget\.muted = false/);
+  assert.match(pageSource, /This video is muted\./);
+  assert.doesNotMatch(pageSource, /<LessonVideoPlayer[^>]+muted/);
 });
 
 test("lesson video compression starts for large files or footage above 1080p", () => {
