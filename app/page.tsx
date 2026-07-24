@@ -55,6 +55,13 @@ import {
   shouldPrepareLessonVideoCompression,
   shouldShowLessonUploadStallWarning,
 } from "@/lib/coach-video-upload-policy.mjs";
+import {
+  canShowVideoInLibrary,
+  lessonProcessingStatus,
+  lessonProcessingSteps,
+  transcriptProof,
+  videoLibraryVisibleCount,
+} from "@/lib/video-processing-status-policy.mjs";
 
 type Tab = "dashboard" | "sessions" | "clubs" | "videos" | "coach" | "admin" | "practice" | "import";
 type AccountMode = "pending" | "user" | "guest";
@@ -4469,24 +4476,32 @@ function simplifiedFieldsFromVideoRecapDraft(draft: VideoRecapDraft) {
   };
 }
 
-function videoRecapProcessingStatusText(status: string) {
-  if (status === "queued") return "Video uploaded";
-  if (status === "extracting_audio") return "Checking for coach audio";
-  if (status === "transcribing") return "Transcribing coach feedback";
-  if (status === "transcribing_coach_feedback") return "Transcribing coach feedback";
-  if (status === "generating_recap") return "Creating lesson recap";
-  if (status === "ready_for_review") return "Ready for coach review";
-  if (status === "no_usable_audio") return "No clear coach voiceover was detected.";
-  if (status === "published") return "Coach-approved recap published";
-  if (status === "failed") return "Audio processing needs attention";
-  return status || "Not queued";
-}
-
 function videoRecapProcessingStepText(step?: string | null) {
   if (!step) return "No workflow step yet";
+  if (step === "waiting_for_video_upload") return "Waiting for video upload to finish";
+  if (step === "queued_for_transcription") return "Waiting to start audio processing";
   if (step === "transcribing_coach_feedback") return "Transcribing coach feedback";
   if (step === "retry_requeued_stale_job") return "Previous job retired for retry";
   return step.replaceAll("_", " ");
+}
+
+function videoUploadPlaybackMessage(video: Pick<VideoLibraryRecord, "uploadStatus">) {
+  const uploadStatus = (video.uploadStatus ?? "ready").toLowerCase();
+  if (uploadStatus === "ready") return "";
+  if (uploadStatus.includes("fail") || uploadStatus.includes("attention")) {
+    return "The lesson record exists, but the video file was not confirmed in storage. Retry the upload before playback.";
+  }
+  return "Video upload is still completing.";
+}
+
+function formatLessonProcessingTimestamp(value?: string | null) {
+  if (!value) return "NA";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "NA";
+  return new Intl.DateTimeFormat("en", {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
 }
 
 function videoPatchPayload(video: VideoLibraryRecord) {
@@ -12068,16 +12083,29 @@ function videoDateTitleFromFile(file: File) {
 }
 
 function canViewLibraryVideo(video: VideoLibraryRecord, ownerId: string, viewerRole: VideoViewerRole) {
-  if (video.ownerId !== ownerId) return false;
-  if (viewerRole === "admin") return true;
-  if (viewerRole === "coach") return video.visibility === "Coach + User";
-  return getVideoPublicationStatus(video) === "Published" && video.visibility !== "Admin only";
+  return canShowVideoInLibrary(video, ownerId, viewerRole);
+}
+
+function VideoPlaybackUnavailable({ message }: { message: string }) {
+  return (
+    <div className="video-player-unavailable" role="status">
+      <span aria-hidden="true">▶</span>
+      <strong>{message}</strong>
+      <p>The video will play here after storage confirms the uploaded file.</p>
+    </div>
+  );
 }
 
 function VideoThumbnail({ video }: { video: VideoLibraryItem }) {
+  const playbackMessage = videoUploadPlaybackMessage(video);
   return (
     <div className="video-thumbnail">
-      {video.thumbnailObjectUrl ? (
+      {playbackMessage ? (
+        <div className="video-thumbnail-placeholder">
+          <span aria-hidden="true">↥</span>
+          <small>Upload pending</small>
+        </div>
+      ) : video.thumbnailObjectUrl ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img alt="" aria-hidden="true" src={video.thumbnailObjectUrl} />
       ) : (
@@ -12111,6 +12139,7 @@ function VideoLibraryCard({
   session?: Session;
   video: VideoLibraryItem;
 }) {
+  const deliveryStatus = coachVideoDeliveryStatusLabel(video);
   const hasPublishedLessonRecap = Boolean(
     video.lessonSummary ||
     getLessonMainFocus(video) ||
@@ -12127,7 +12156,11 @@ function VideoLibraryCard({
         <div className="video-card-copy">
           <div className="video-card-heading">
             <span className="video-type-tag">{video.type}</span>
-            {getVideoPublicationStatus(video) !== "Published" ? (
+            {deliveryStatus !== "Published to member" ? (
+              <span className={cls("video-status", deliveryStatus.toLowerCase().replaceAll(" ", "-"))}>
+                {deliveryStatus}
+              </span>
+            ) : getVideoPublicationStatus(video) !== "Published" ? (
               <span className={cls("video-status", getVideoPublicationStatus(video).toLowerCase())}>
                 {getVideoPublicationStatus(video)}
               </span>
@@ -12205,6 +12238,45 @@ function VideoSessionMetrics({ session, video }: { session?: Session; video: Vid
   );
 }
 
+function LessonProcessingTracker({ state, video }: { state: VideoRecapState | null; video: VideoLibraryItem }) {
+  const status = lessonProcessingStatus({
+    draft: state?.draft,
+    job: state?.job,
+    transcript: state?.transcript,
+    video,
+  });
+  const steps = lessonProcessingSteps({
+    draft: state?.draft,
+    job: state?.job,
+    transcript: state?.transcript,
+    video,
+  });
+  const proof = transcriptProof(state?.transcript);
+
+  return (
+    <section className={cls("lesson-processing-tracker", status.code)}>
+      <div className="lesson-processing-heading">
+        <div>
+          <span>Lesson processing</span>
+          <strong>{status.title}</strong>
+          <p>{status.explanation}</p>
+        </div>
+        <small>Last updated: {formatLessonProcessingTimestamp(status.lastUpdatedAt)}</small>
+      </div>
+      <ol className="lesson-processing-steps">
+        {steps.map((step: { key: string; label: string; state: string }) => (
+          <li className={cls("lesson-processing-step", step.state)} key={step.key}>
+            <span aria-hidden="true">{step.state === "done" ? "✓" : step.state === "active" ? "●" : step.state === "attention" ? "!" : "○"}</span>
+            <strong>{step.label}</strong>
+          </li>
+        ))}
+      </ol>
+      {proof && <p className="lesson-transcript-proof">{proof}</p>}
+      {status.safeFailureCode && <p className="lesson-safe-error">Safe code: {status.safeFailureCode}</p>}
+    </section>
+  );
+}
+
 function AiLessonRecapReviewModal({
   onClose,
   onPublished,
@@ -12249,7 +12321,7 @@ function AiLessonRecapReviewModal({
         setFields(simplifiedFieldsFromVideoRecapDraft(payload.draft));
         setMessage(payload.draft.status === "published" ? "Published and locked. Regenerate from video audio to create a new draft revision." : "Generated from your video voiceover. Review before publishing.");
       } else if (payload.job) {
-        setMessage(payload.job.errorMessage || videoRecapProcessingStatusText(payload.job.status));
+        setMessage(payload.job.errorMessage || lessonProcessingStatus({ draft: payload.draft, job: payload.job, transcript: payload.transcript, video }).title);
       } else {
         setMessage("No AI recap has been generated yet. Generate Notes From Video Audio will queue this video for processing.");
       }
@@ -12286,7 +12358,7 @@ function AiLessonRecapReviewModal({
             setFields(simplifiedFieldsFromVideoRecapDraft(payload.draft));
             setMessage(payload.draft.status === "published" ? "Published and locked. Regenerate from video audio to create a new draft revision." : "Generated from your video voiceover. Review before publishing.");
           } else if (payload.job) {
-            setMessage(payload.job.errorMessage || videoRecapProcessingStatusText(payload.job.status));
+            setMessage(payload.job.errorMessage || lessonProcessingStatus({ draft: payload.draft, job: payload.job, transcript: payload.transcript, video }).title);
           }
         })
         .catch((error) => {
@@ -12405,7 +12477,13 @@ function AiLessonRecapReviewModal({
   const jobUpdatedAt = state?.job?.updatedAt ? new Date(state.job.updatedAt).getTime() : Number.NaN;
   const isStaleProcessing = isProcessingActive && Number.isFinite(jobUpdatedAt) && Date.now() - jobUpdatedAt > 15 * 60 * 1000;
   const canRetryProcessing = (!isProcessingActive || isStaleProcessing) && (jobStatus === "failed" || noUsableAudio || !state?.job || isStaleProcessing);
-  const statusLabel = videoRecapProcessingStatusText(draftStatus === "published" ? "published" : jobStatus);
+  const processingStatus = lessonProcessingStatus({
+    draft: state?.draft,
+    job: state?.job,
+    transcript: state?.transcript,
+    video,
+  });
+  const playbackMessage = videoUploadPlaybackMessage(video);
 
   return (
     <div className="video-modal-overlay">
@@ -12420,12 +12498,16 @@ function AiLessonRecapReviewModal({
 
         <div className="ai-recap-review-layout">
           <div className="ai-recap-video-column">
-            <video className="video-player" controls playsInline preload="metadata" src={video.objectUrl} />
+            {playbackMessage ? (
+              <VideoPlaybackUnavailable message={playbackMessage} />
+            ) : (
+              <video className="video-player" controls playsInline preload="metadata" src={video.objectUrl} />
+            )}
             <dl className="coach-review-list">
               <div><dt>Video</dt><dd>{video.title}<small>{video.fileName}</small></dd></div>
               <div><dt>Member</dt><dd>{video.memberName ?? "Member"}<small>{video.memberEmail ?? "No email"}</small></dd></div>
               <div><dt>Coach</dt><dd>{video.coachName ?? video.uploadedBy}<small>{video.lessonDate ? formatFullDate(video.lessonDate) : formatVideoUploadDate(video.uploadedAt)}</small></dd></div>
-              <div><dt>Audio status</dt><dd>{statusLabel}<small>{videoRecapProcessingStepText(state?.job?.currentStep)}</small></dd></div>
+              <div><dt>Processing</dt><dd>{processingStatus.title}<small>{videoRecapProcessingStepText(state?.job?.currentStep)}</small></dd></div>
             </dl>
             {state?.job?.errorMessage && <p className="coach-inline-warning">{state.job.errorMessage}</p>}
             {noUsableAudio && (
@@ -12436,13 +12518,7 @@ function AiLessonRecapReviewModal({
           </div>
 
           <div className="ai-recap-editor-column">
-            <section className="ai-recap-status-card">
-              <div>
-                <span>{hasDraft ? "AI Draft" : "Audio processing"}</span>
-                <strong>{statusLabel}</strong>
-                <p>{hasDraft ? "Generated from your video voiceover. Review before publishing." : "MAI Coach is listening to your coaching feedback and organizing the lesson recap."}</p>
-              </div>
-            </section>
+            <LessonProcessingTracker state={state} video={video} />
             <details className="approved-transcript ai-transcript-disclosure">
               <summary>View Video Transcript</summary>
               <textarea disabled={draftLocked} onChange={(event) => setTranscriptText(event.target.value)} placeholder="Transcript will appear here after processing." value={transcriptText} />
@@ -12564,6 +12640,8 @@ function VideoDetailView({
     approvedPracticeNext ||
     video.nextSessionGoal,
   );
+  const playbackMessage = videoUploadPlaybackMessage(video);
+  const deliveryStatus = coachVideoDeliveryStatusLabel(video);
 
   return (
     <section className="view-stack">
@@ -12589,7 +12667,11 @@ function VideoDetailView({
 
       <div className="video-detail-layout">
         <section className="panel video-player-panel">
-          <video className="video-player" controls playsInline preload="metadata" src={video.objectUrl} />
+          {playbackMessage ? (
+            <VideoPlaybackUnavailable message={playbackMessage} />
+          ) : (
+            <video className="video-player" controls playsInline preload="metadata" src={video.objectUrl} />
+          )}
           <div className="video-detail-title">
             <div>
               <p className="eyebrow">{video.type}</p>
@@ -12599,7 +12681,7 @@ function VideoDetailView({
                 Uploaded by {video.coachName ?? video.uploadedBy} · {formatVideoDuration(video.duration)}
               </span>
             </div>
-            <span className={cls("video-status", video.status.toLowerCase().replace(" ", "-"))}>{video.status}</span>
+            <span className={cls("video-status", deliveryStatus.toLowerCase().replaceAll(" ", "-"))}>{deliveryStatus}</span>
           </div>
           {video.description && <p className="video-description">{video.description}</p>}
           <div className="video-tag-row">
@@ -12723,9 +12805,14 @@ function VideoComparisonView({
       <div className="video-comparison-grid">
         {videos.map((video) => {
           const session = sessions.find((item) => item.id === video.sessionId);
+          const playbackMessage = videoUploadPlaybackMessage(video);
           return (
             <article className="panel comparison-video" key={video.id}>
-              <video controls playsInline preload="metadata" src={video.objectUrl} />
+              {playbackMessage ? (
+                <VideoPlaybackUnavailable message={playbackMessage} />
+              ) : (
+                <video controls playsInline preload="metadata" src={video.objectUrl} />
+              )}
               <div>
                 <span>{formatVideoUploadDate(video.uploadedAt)} · {video.type}</span>
                 <h2>{video.title}</h2>
@@ -12810,7 +12897,8 @@ function VideosView({
         if (requestedVideoId && items.some((item) => item.id === requestedVideoId && canViewLibraryVideo(item, ownerId, viewerRole))) {
           setSelectedVideoId(requestedVideoId);
         }
-        setLibraryMessage(items.length ? `${items.length} saved ${items.length === 1 ? "video" : "videos"}` : "Your library is ready.");
+        const visibleCount = videoLibraryVisibleCount(items, ownerId, viewerRole);
+        setLibraryMessage(visibleCount ? `${visibleCount} saved ${visibleCount === 1 ? "video" : "videos"}` : "Your library is ready.");
       })
       .catch((error) => {
         if (!cancelled) setLibraryMessage(error instanceof Error ? error.message : "Video storage is unavailable.");

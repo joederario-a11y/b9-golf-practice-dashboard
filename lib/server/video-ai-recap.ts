@@ -1349,7 +1349,9 @@ export async function readVideoRecapState(identity: AuthIdentity, videoId: strin
     .first<DraftRow>();
   const transcript = draft
     ? await database.prepare("SELECT * FROM video_transcripts WHERE id = ?").bind(draft.transcript_id).first<TranscriptRow>()
-    : null;
+    : canReview
+      ? await loadCurrentTranscript(database, video)
+      : null;
   if (draft || transcript || job) assertRowsMatch(video, draft ?? null, transcript ?? null, job ?? null);
   if (draft && draft.status !== "published" && identity.role === "coach" && !canReview) {
     throw new Response("You do not have access to this lesson recap.", { status: 403 });
@@ -1394,7 +1396,7 @@ export async function updateVideoRecapState(identity: AuthIdentity, payload: Rec
   }
   const transcript = draft
     ? await database.prepare("SELECT * FROM video_transcripts WHERE id = ?").bind(draft.transcript_id).first<TranscriptRow>()
-    : null;
+    : await loadCurrentTranscript(database, video);
   const draftJob = draft ? await loadJob(database, draft.processing_job_id) : null;
   if (draft || transcript || draftJob) assertRowsMatch(video, draft ?? null, transcript ?? null, draftJob ?? null);
 
