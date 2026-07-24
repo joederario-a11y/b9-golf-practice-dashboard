@@ -498,7 +498,7 @@ export async function POST(request: Request) {
           member_facing_notes, next_session_goal, created_at, updated_at
         ) VALUES (
           ?, ?, ?, ?, ?, ?, '', ?, '', ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?,
-          ?, ?, ?, ?, '{}', '{}', ?, ?, ?, 'pending', 'New', 'Not sent', ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+          ?, ?, ?, '{}', '{}', ?, ?, ?, 'pending', 'New', 'Not sent', ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
         )`,
       )
       .bind(
