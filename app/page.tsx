@@ -75,6 +75,12 @@ import {
   lessonSessionCardStatus,
   lessonSessionLinkCountLabel,
 } from "@/lib/lesson-session-link-policy.mjs";
+import {
+  hasNewerProcessingCoachLesson,
+  isCoachLessonCandidate,
+  isPlayablePublishedCoachLesson,
+  selectLatestPlayableCoachLesson,
+} from "@/lib/student-dashboard-video-policy.mjs";
 
 type Tab = "dashboard" | "sessions" | "clubs" | "videos" | "coach" | "admin" | "practice" | "import";
 type AccountMode = "pending" | "user" | "guest";
@@ -7745,29 +7751,47 @@ function CoachedStudentDashboardPriority({
 }) {
   if (!coaches.length) return null;
   const coach = coaches[0];
-  const publishedLessons = videos
-    .filter((video) => video.uploadedBy !== "User" && getVideoPublicationStatus(video) === "Published")
-    .sort((left, right) => {
-      const leftDate = new Date(left.lessonDate ?? left.uploadedAt).getTime();
-      const rightDate = new Date(right.lessonDate ?? right.uploadedAt).getTime();
-      return rightDate - leftDate;
-    });
-  const latestLesson = publishedLessons[0];
+  const latestLesson = selectLatestPlayableCoachLesson(videos) as VideoLibraryItem | null;
+  const playableLessons = videos.filter((video) => isPlayablePublishedCoachLesson(video));
   const coachName = coach.name || "Your Coach";
   const mainFocus = latestLesson ? getLessonMainFocus(latestLesson) : "";
   const lessonSummary = latestLesson?.lessonSummary || latestLesson?.memberFacingNotes || "";
   const practiceNext = latestLesson ? getLessonPracticeNext(latestLesson) : "";
   const nextGoal = latestLesson?.nextSessionGoal ?? "";
   const primaryLink = latestLesson ? primaryLessonSessionLink(latestLesson) : null;
-  const linkedSessionTotal = publishedLessons.reduce((count, video) => count + linkedSessionCount(video), 0);
+  const linkedSessionTotal = playableLessons.reduce((count, video) => count + linkedSessionCount(video), 0);
   const currentFocus = mainFocus || latestLesson?.focusArea || "Your next lesson";
-  const actionCopy = !latestLesson
-    ? "Your Coach has not published a lesson yet. You can upload a session or continue with your MAI Coach practice."
-    : !linkedSessionCount(latestLesson)
-      ? `Add your session data to ${latestLesson.lessonDate ? formatVideoUploadDate(latestLesson.lessonDate) : "the latest lesson"} so ${coachName} can review your numbers.`
-      : practiceNext
-        ? "Complete your assigned practice focus before your next session."
-        : "Review your latest Coach feedback and linked session data.";
+  const newerLessonProcessing = latestLesson ? hasNewerProcessingCoachLesson(videos, latestLesson) : false;
+  const hasAnyCoachLesson = videos.some((video) => isCoachLessonCandidate(video));
+  const hasProcessingOnlyLesson = !latestLesson && videos.some((video) => (
+    isCoachLessonCandidate(video) &&
+    getVideoPublicationStatus(video) !== "Archived" &&
+    (String(video.uploadStatus ?? "").toLowerCase() !== "ready" || !video.objectUrl)
+  ));
+  const lessonDateLabel = latestLesson
+    ? formatVideoUploadDate(latestLesson.lessonDate || latestLesson.uploadedAt)
+    : "";
+  const showLessonTitle = Boolean(latestLesson?.title && latestLesson.title !== lessonDateLabel);
+  const actionNeeded = latestLesson && !primaryLink
+    ? {
+        body: `Connect launch-monitor results to ${lessonDateLabel || "the latest lesson"} so ${coachName} can review your numbers.`,
+        cta: "Add Session Data",
+        title: "Add your session data",
+      }
+    : latestLesson && !latestLesson.isViewedByMember
+      ? {
+          body: `${coachName} published a lesson for you. Watch the video and review the feedback before your next practice.`,
+          cta: "Open Lesson",
+          title: "Review your new lesson",
+        }
+      : latestLesson && practiceNext
+        ? {
+            body: "Work through the assigned practice focus before your next session.",
+            cta: "Start Practice",
+            title: "Complete your practice focus",
+          }
+        : null;
+  const videoFeedbackReady = Boolean(lessonSummary || mainFocus || nextGoal || latestLesson?.improvement);
 
   return (
     <section className="coached-student-dashboard" aria-labelledby="coached-dashboard-title">
@@ -7779,7 +7803,7 @@ function CoachedStudentDashboardPriority({
         </div>
         <CoachAvatar coach={coach} />
         <div className="coached-student-actions">
-          {latestLesson && <button className="primary-action" onClick={() => onOpenLatestLesson(latestLesson.id)} type="button">View Latest Lesson</button>}
+          {latestLesson && <button className="primary-action" onClick={() => onOpenLatestLesson(latestLesson.id)} type="button">Open Full Lesson</button>}
           <button className="secondary-action" onClick={onOpenPractice} type="button">View Practice Plan</button>
           <button className="secondary-action" onClick={onOpenVideos} type="button">View All Lessons</button>
         </div>
@@ -7787,21 +7811,48 @@ function CoachedStudentDashboardPriority({
 
       {latestLesson ? (
         <>
-          <div className="coach-priority-card-grid">
-            {(lessonSummary || mainFocus || latestLesson.improvement || nextGoal) && (
-              <article className="panel coach-priority-card coach-feedback-card">
-                <p className="eyebrow">Coach Feedback</p>
-                {mainFocus && <div><span>Main Focus</span><strong>{mainFocus}</strong></div>}
+          <div className="coach-primary-dashboard-row">
+            <article className="panel coach-latest-video-card">
+              <p className="eyebrow">Latest Lesson</p>
+              <div className="dashboard-lesson-video-frame">
+                <LessonVideoPlayer
+                  className="dashboard-lesson-video"
+                  src={latestLesson.objectUrl}
+                  title={`${latestLesson.title || lessonDateLabel || "Latest coach"} lesson video`}
+                />
+              </div>
+              <div className="coach-latest-video-meta">
                 <div>
-                  <span>What {coachName} noticed</span>
-                  <p>{lessonSummary || latestLesson.improvement || "Your Coach is preparing feedback for your latest lesson."}</p>
+                  <strong>{lessonDateLabel}</strong>
+                  {showLessonTitle && <span>{latestLesson.title}</span>}
                 </div>
-                {nextGoal && <div><span>Next Goal</span><p>{nextGoal}</p></div>}
-                <button className="secondary-action" onClick={() => onOpenLatestLesson(latestLesson.id)} type="button">View Full Feedback</button>
-              </article>
-            )}
+                <p>Coach: {latestLesson.coachName ?? coachName}</p>
+                <p>{videoFeedbackReady ? "Video and lesson recap available" : "Video available. Coach feedback is being prepared."}</p>
+                <div className="lesson-video-status-row" aria-label="Lesson video status">
+                  <span>{coachVideoDeliveryStatusLabel(latestLesson)}</span>
+                  <span>{formatVideoDuration(latestLesson.duration)}</span>
+                  <span>{linkedSessionStatusLabel(latestLesson)}</span>
+                </div>
+                {newerLessonProcessing && <small>A newer lesson is still processing.</small>}
+              </div>
+              <button className="secondary-action" onClick={() => onOpenLatestLesson(latestLesson.id)} type="button">View Full Lesson</button>
+            </article>
 
-            {practiceNext && (
+            <article className="panel coach-priority-card coach-feedback-card">
+              <p className="eyebrow">Coach Feedback</p>
+              {mainFocus && <div><span>Main Focus</span><strong>{mainFocus}</strong></div>}
+              <div>
+                <span>What {coachName} noticed</span>
+                <p className="coach-feedback-preview">{lessonSummary || latestLesson.improvement || "Coach feedback is being prepared."}</p>
+              </div>
+              {nextGoal && <div><span>Next Goal</span><p className="coach-feedback-preview">{nextGoal}</p></div>}
+              <button className="secondary-action" onClick={() => onOpenLatestLesson(latestLesson.id)} type="button">View Full Feedback</button>
+            </article>
+          </div>
+
+          {(practiceNext || actionNeeded) && (
+            <div className={cls("coach-secondary-dashboard-row", practiceNext && !actionNeeded && "single-card")}>
+              {practiceNext && (
               <article className="panel coach-priority-card practice-next-card">
                 <p className="eyebrow">Practice Next</p>
                 <strong>{practiceNext}</strong>
@@ -7812,55 +7863,61 @@ function CoachedStudentDashboardPriority({
                   <button className="secondary-action" onClick={() => onOpenLatestLesson(latestLesson.id)} type="button">View Drill Details</button>
                 </div>
               </article>
-            )}
-          </div>
+              )}
+
+              {actionNeeded && (
+                <article className="panel action-needed-card">
+                  <p className="eyebrow">Action Needed</p>
+                  <strong>{actionNeeded.title}</strong>
+                  <p>{actionNeeded.body}</p>
+                  <button
+                    className="secondary-action"
+                    onClick={actionNeeded.cta === "Start Practice" ? onOpenPractice : () => onOpenLatestLesson(latestLesson.id)}
+                    type="button"
+                  >
+                    {actionNeeded.cta}
+                  </button>
+                </article>
+              )}
+            </div>
+          )}
 
           <div className="coached-student-detail-grid">
-            <article className="panel latest-lesson-card">
-              <p className="eyebrow">Latest Lesson</p>
-              <h3>{latestLesson.title}</h3>
-              <p>
-                {latestLesson.lessonDate ? formatVideoUploadDate(latestLesson.lessonDate) : formatVideoUploadDate(latestLesson.uploadedAt)}
-                {" · Coach: "}
-                {latestLesson.coachName ?? coachName}
-              </p>
-              <strong>Video and lesson recap available</strong>
-              <span>
-                Session Data: {primaryLink
-                  ? `${primaryLink.session.clubLabel} · ${primaryLink.session.shotCount} shots`
-                  : "Session data not added"}
-              </span>
-              <div className="button-row">
-                <button className="primary-action" onClick={() => onOpenLatestLesson(latestLesson.id)} type="button">Review Lesson</button>
-                {!primaryLink && <button className="secondary-action" onClick={() => onOpenLatestLesson(latestLesson.id)} type="button">Add Session Data</button>}
-              </div>
-            </article>
-
-            <article className="panel action-needed-card">
-              <p className="eyebrow">Action Needed</p>
-              <strong>{!primaryLink ? "Add your session data" : practiceNext ? "Complete your practice focus" : "Review your lesson"}</strong>
-              <p>{actionCopy}</p>
-              <button className="secondary-action" onClick={() => onOpenLatestLesson(latestLesson.id)} type="button">
-                {!primaryLink ? "Add Session Data" : "Open Lesson"}
-              </button>
-            </article>
-
             <article className="panel coach-progress-card">
               <p className="eyebrow">Progress With {coachName}</p>
               <dl>
-                <div><dt>Lessons</dt><dd>{publishedLessons.length}</dd></div>
+                <div><dt>Lessons</dt><dd>{playableLessons.length}</dd></div>
                 <div><dt>Sessions linked</dt><dd>{linkedSessionTotal}</dd></div>
                 <div><dt>Current focus</dt><dd>{currentFocus}</dd></div>
                 {nextGoal && <div><dt>Next Coach goal</dt><dd>{nextGoal}</dd></div>}
               </dl>
             </article>
+
+            <article className="panel lesson-session-summary-card">
+              <p className="eyebrow">Session Data</p>
+              <strong>{primaryLink ? `${primaryLink.session.clubLabel} · ${primaryLink.session.shotCount} shots` : "Session data not added"}</strong>
+              <p>{primaryLink ? `${linkedSessionStatusLabel(latestLesson)} from ${primaryLink.session.source || "session data"}.` : "Add launch-monitor numbers to connect the video with measured swing data."}</p>
+              <button className="secondary-action" onClick={() => onOpenLatestLesson(latestLesson.id)} type="button">
+                {primaryLink ? "View Full Session" : "Add Session Data"}
+              </button>
+            </article>
           </div>
         </>
+      ) : hasProcessingOnlyLesson ? (
+        <article className="panel coached-empty-lesson-card">
+          <p className="eyebrow">Latest Lesson</p>
+          <h3>Your latest lesson is processing</h3>
+          <p>MAI Coach is preparing the video and coaching recap.</p>
+          <div className="button-row">
+            <button className="primary-action" onClick={onOpenVideos} type="button">View Lessons</button>
+            <button className="secondary-action" onClick={onOpenPractice} type="button">Continue Practice</button>
+          </div>
+        </article>
       ) : (
         <article className="panel coached-empty-lesson-card">
           <p className="eyebrow">Latest Lesson</p>
           <h3>{`You're connected with ${coachName}`}</h3>
-          <p>Your Coach has not published a lesson yet. You can upload a session or continue with your MAI Coach practice.</p>
+          <p>{hasAnyCoachLesson ? "Your Coach has not published a playable lesson yet." : "Your Coach has not published a lesson yet."}</p>
           <div className="button-row">
             <button className="primary-action" onClick={onOpenVideos} type="button">View Lessons</button>
             <button className="secondary-action" onClick={onOpenPractice} type="button">Continue Practice</button>
@@ -13215,7 +13272,7 @@ function VideoPlaybackUnavailable({ message }: { message: string }) {
   );
 }
 
-function LessonVideoPlayer({ className = "video-player", src }: { className?: string; src: string }) {
+function LessonVideoPlayer({ className = "video-player", src, title = "Lesson video" }: { className?: string; src: string; title?: string }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [isMuted, setIsMuted] = useState(false);
 
@@ -13241,6 +13298,7 @@ function LessonVideoPlayer({ className = "video-player", src }: { className?: st
   return (
     <div className="lesson-video-player-shell">
       <video
+        aria-label={title}
         className={className}
         controls
         onLoadedMetadata={(event) => {

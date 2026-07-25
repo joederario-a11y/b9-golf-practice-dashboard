@@ -5415,10 +5415,11 @@ button:disabled {
 }
 
 .coached-student-hero,
+.coach-latest-video-card,
 .coach-priority-card,
-.latest-lesson-card,
 .action-needed-card,
 .coach-progress-card,
+.lesson-session-summary-card,
 .coached-empty-lesson-card,
 .coached-more-ways {
   border-color: rgba(47, 235, 118, 0.22);
@@ -5453,26 +5454,29 @@ button:disabled {
   gap: 8px;
 }
 
-.coach-priority-card-grid,
+.coach-primary-dashboard-row,
+.coach-secondary-dashboard-row,
 .coached-student-detail-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
 }
 
-.coached-student-detail-grid {
-  grid-template-columns: 1.2fr 1fr 1fr;
+.coach-secondary-dashboard-row.single-card {
+  grid-template-columns: 1fr;
 }
 
+.coach-latest-video-card,
 .coach-priority-card {
   display: grid;
   gap: 12px;
 }
 
 .coach-priority-card div,
-.latest-lesson-card,
+.coach-latest-video-meta,
 .action-needed-card,
 .coach-progress-card,
+.lesson-session-summary-card,
 .coached-empty-lesson-card,
 .coached-more-ways {
   display: grid;
@@ -5480,7 +5484,7 @@ button:disabled {
 }
 
 .coach-priority-card span,
-.latest-lesson-card span,
+.coach-latest-video-card span,
 .coach-progress-card dt {
   color: var(--muted);
   font-size: 11px;
@@ -5489,20 +5493,60 @@ button:disabled {
 }
 
 .coach-priority-card strong,
-.latest-lesson-card strong,
+.coach-latest-video-card strong,
+.lesson-session-summary-card strong,
 .action-needed-card strong {
   color: var(--ink);
   font-size: 20px;
 }
 
 .coach-priority-card p,
-.latest-lesson-card p,
+.coach-latest-video-card p,
 .action-needed-card p,
 .coach-progress-card dd,
+.lesson-session-summary-card p,
 .coached-empty-lesson-card p,
 .coached-more-ways p {
   margin: 0;
   color: var(--muted);
+}
+
+.dashboard-lesson-video-frame {
+  overflow: hidden;
+  border: 1px solid rgba(47, 235, 118, 0.22);
+  border-radius: 8px;
+  aspect-ratio: 16 / 9;
+  background: #050b08;
+}
+
+.dashboard-lesson-video-frame .lesson-video-player-shell {
+  height: 100%;
+}
+
+.dashboard-lesson-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #050b08;
+}
+
+.lesson-video-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.lesson-video-status-row span {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 5px 8px;
+}
+
+.coach-feedback-preview {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
 }
 
 .coach-progress-card dl {
@@ -7253,7 +7297,8 @@ button:disabled {
   }
 
   .coached-student-hero,
-  .coach-priority-card-grid,
+  .coach-primary-dashboard-row,
+  .coach-secondary-dashboard-row,
   .coached-student-detail-grid,
   .lesson-session-link-card {
     grid-template-columns: 1fr;

@@ -80,5 +80,15 @@ test("lesson and dashboard source expose post-upload session linking and coached
   assert.match(pageSource, /CoachedStudentDashboardPriority/);
   assert.match(pageSource, /Coach Feedback/);
   assert.match(pageSource, /Practice Next/);
+  assert.match(pageSource, /coach-primary-dashboard-row/);
+  assert.match(pageSource, /coach-latest-video-card/);
+  assert.match(pageSource, /dashboard-lesson-video-frame/);
+  assert.match(pageSource, /LessonVideoPlayer/);
+  assert.match(pageSource, /coach-feedback-card/);
+  assert.match(pageSource, /coach-secondary-dashboard-row/);
+  assert.match(pageSource, /practice-next-card/);
   assert.match(pageSource, /More ways to improve with MAI Coach/);
+  assert.doesNotMatch(pageSource, /latest-lesson-card/);
+  assert.ok(pageSource.indexOf("coach-latest-video-card") < pageSource.indexOf("coach-feedback-card"));
+  assert.ok(pageSource.indexOf("coach-feedback-card") < pageSource.indexOf("practice-next-card"));
 });
