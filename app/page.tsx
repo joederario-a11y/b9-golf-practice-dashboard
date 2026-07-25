@@ -5419,16 +5419,22 @@ async function readVideoDuration(file: File) {
   return (await readVideoMetadata(file)).duration;
 }
 
-function captureLessonVideoFrame(file: File, metadata?: Partial<LessonVideoMetadata> | null, signal?: AbortSignal) {
+function captureLessonVideoFrameFromSource(
+  sourceUrl: string,
+  outputName: string,
+  lastModified: number,
+  metadata?: Partial<LessonVideoMetadata> | null,
+  signal?: AbortSignal,
+  revokeSourceUrl = false,
+) {
   return new Promise<File | null>((resolve) => {
-    const objectUrl = URL.createObjectURL(file);
     const video = document.createElement("video");
     let settled = false;
     let abortHandler: (() => void) | null = null;
     const timeout = window.setTimeout(() => finish(null), 15000);
     const cleanup = () => {
       window.clearTimeout(timeout);
-      URL.revokeObjectURL(objectUrl);
+      if (revokeSourceUrl) URL.revokeObjectURL(sourceUrl);
       if (abortHandler) signal?.removeEventListener("abort", abortHandler);
       video.onloadedmetadata = null;
       video.onseeked = null;
@@ -5489,17 +5495,41 @@ function captureLessonVideoFrame(file: File, metadata?: Partial<LessonVideoMetad
           finish(null);
           return;
         }
-        const stem = file.name.replace(/\.[^.]+$/, "") || "lesson-video";
+        const stem = outputName.replace(/\.[^.]+$/, "") || "lesson-video";
         finish(new File([blob], `${stem}-swing-frame.jpg`, {
-          lastModified: file.lastModified || Date.now(),
+          lastModified,
           type: "image/jpeg",
         }));
       } catch {
         finish(null);
       }
     };
-    video.src = objectUrl;
+    video.src = sourceUrl;
   });
+}
+
+function captureLessonVideoFrame(file: File, metadata?: Partial<LessonVideoMetadata> | null, signal?: AbortSignal) {
+  const objectUrl = URL.createObjectURL(file);
+  return captureLessonVideoFrameFromSource(
+    objectUrl,
+    file.name,
+    file.lastModified || Date.now(),
+    metadata,
+    signal,
+    true,
+  );
+}
+
+function captureStoredLessonVideoFrame(video: VideoLibraryItem, signal?: AbortSignal) {
+  if (!video.objectUrl) return Promise.resolve(null);
+  return captureLessonVideoFrameFromSource(
+    video.objectUrl,
+    video.fileName || video.title || "lesson-video",
+    Date.now(),
+    { duration: video.duration },
+    signal,
+    false,
+  );
 }
 
 function abortError(message: string) {
@@ -14362,7 +14392,7 @@ function AiLessonRecapReviewModal({
     return () => {
       cancelled = true;
     };
-  }, [video.id]);
+  }, [video.id, video.thumbnailObjectUrl]);
 
   const isProcessingActive = Boolean(state?.job && activeJobStatuses.has(state.job.status));
 
@@ -14810,9 +14840,11 @@ function VideoVisualAnalysisPanel({
   const [state, setState] = useState<VideoVisualAnalysisState | null>(null);
   const [message, setMessage] = useState("Loading MAI visual swing analysis...");
   const [saving, setSaving] = useState(false);
+  const [storedFrameAvailable, setStoredFrameAvailable] = useState(Boolean(video.thumbnailObjectUrl));
 
   useEffect(() => {
     let cancelled = false;
+    setStoredFrameAvailable(Boolean(video.thumbnailObjectUrl));
     readVideoVisualAnalysis(video.id)
       .then((payload) => {
         if (cancelled) return;
@@ -14842,6 +14874,22 @@ function VideoVisualAnalysisPanel({
   async function submit(action: string, extra: Record<string, unknown> = {}) {
     setSaving(true);
     try {
+      const shouldPrepareExistingVideoFrame = (
+        (action === "request" || action === "retry")
+        && !storedFrameAvailable
+        && Boolean(video.objectUrl)
+      );
+      if (shouldPrepareExistingVideoFrame) {
+        setMessage("Preparing a swing frame from this saved video...");
+        const frame = await captureStoredLessonVideoFrame(video);
+        if (frame) {
+          setMessage("Saving swing frame for MAI analysis...");
+          await uploadVideoAsset(video.id, frame, "thumbnail", (progress) => {
+            setMessage(`Saving swing frame for MAI analysis... ${progress}%`);
+          });
+          setStoredFrameAvailable(true);
+        }
+      }
       const payload = await updateVideoVisualAnalysis({ action, videoId: video.id, ...extra });
       setState(payload);
       setMessage(payload.analysis ? visualAnalysisStatusLabel(payload.analysis.status) : "Visual analysis updated.");
