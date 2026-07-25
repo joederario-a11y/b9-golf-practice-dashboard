@@ -12,6 +12,7 @@ import {
   validatePasswordConfirmation,
 } from "@/lib/admin-user-policy.mjs";
 import { sanitizeSession, sanitizeSessionList } from "@/lib/session-data-policy.mjs";
+import { upsertLessonSessionLink } from "@/lib/server/lesson-session-links";
 import {
   ensurePlatformSchema,
   ensureUserDataOwnershipSchema,
@@ -1062,9 +1063,29 @@ async function importSession(database: D1Database, identity: AuthIdentity, paylo
   const videoId = text(payload.videoId, 80);
   if (videoId) {
     const video = await database
-      .prepare("SELECT id, member_id, coach_id, uploaded_by_role FROM lesson_videos WHERE id = ?")
+      .prepare(
+        `SELECT
+          id, member_id, coach_id, uploaded_by_role, publication_status,
+          lesson_summary, worked_on, key_issue, improvement, practice_assignment,
+          recommended_drill, member_facing_notes, next_session_goal
+         FROM lesson_videos WHERE id = ?`,
+      )
       .bind(videoId)
-      .first<{ id: string; member_id: string; coach_id: string | null; uploaded_by_role: string }>();
+      .first<{
+        id: string;
+        member_id: string;
+        coach_id: string | null;
+        uploaded_by_role: string;
+        publication_status: string;
+        lesson_summary: string;
+        worked_on: string;
+        key_issue: string;
+        improvement: string;
+        practice_assignment: string;
+        recommended_drill: string;
+        member_facing_notes: string;
+        next_session_goal: string;
+      }>();
     if (!video) throw new Response("Video not found.", { status: 404 });
     if (video.member_id !== memberId) {
       throw new Response("Session data and video must belong to the same member.", { status: 409 });
@@ -1111,6 +1132,47 @@ async function importSession(database: D1Database, identity: AuthIdentity, paylo
       .prepare("UPDATE lesson_videos SET session_data_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .bind(sessionId, videoId)
       .run();
+    const video = await database
+      .prepare(
+        `SELECT
+          id, member_id, coach_id, uploaded_by_role, publication_status,
+          lesson_summary, worked_on, key_issue, improvement, practice_assignment,
+          recommended_drill, member_facing_notes, next_session_goal
+         FROM lesson_videos WHERE id = ?`,
+      )
+      .bind(videoId)
+      .first<{
+        id: string;
+        member_id: string;
+        coach_id: string | null;
+        uploaded_by_role: string;
+        publication_status: string;
+        lesson_summary: string;
+        worked_on: string;
+        key_issue: string;
+        improvement: string;
+        practice_assignment: string;
+        recommended_drill: string;
+        member_facing_notes: string;
+        next_session_goal: string;
+      }>();
+    if (video) {
+      await upsertLessonSessionLink({
+        assignedMemberIds: await getAssignedMemberIds(identity, database),
+        database,
+        identity,
+        isPrimary: true,
+        sessionId,
+        sourceType: text(payload.source, 80).toLowerCase().includes("photo")
+          ? "photo_upload"
+          : text(payload.source, 80).toLowerCase().includes("manual")
+            ? "manual_entry"
+            : text(payload.source, 80).toLowerCase().includes("csv")
+              ? "csv_upload"
+              : "coach_lesson_upload",
+        video,
+      });
+    }
   }
 
   await recordActivity({
@@ -1292,6 +1354,7 @@ async function deleteUser(database: D1Database, identity: AuthIdentity, payload:
     database.prepare("DELETE FROM member_content_items WHERE member_id = ? OR created_by = ?").bind(userId, userId),
     database.prepare("DELETE FROM video_email_notifications WHERE member_id = ? OR requested_by = ?").bind(userId, userId),
     database.prepare("DELETE FROM video_views WHERE member_id = ?").bind(userId),
+    database.prepare("DELETE FROM lesson_session_links WHERE member_id = ? OR coach_id = ? OR attached_by_user_id = ?").bind(userId, userId, userId),
     database.prepare("DELETE FROM golf_practice_profiles WHERE user_id = ? OR LOWER(user_email) = ?").bind(userId, target.email.toLowerCase()),
     database.prepare("DELETE FROM golf_session_snapshots WHERE user_id = ? OR LOWER(user_email) = ?").bind(userId, target.email.toLowerCase()),
     database.prepare("DELETE FROM user_profile_images WHERE user_id = ?").bind(userId),

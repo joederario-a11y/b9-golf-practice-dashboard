@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MaiCoachLogoFull, MaiCoachLogoMark } from "@/components/brand/mai-coach-logo";
 import { APP_BUILD_INFO } from "@/lib/build-info";
 import { accountPayloadConfirmsUser } from "@/lib/auth-session-policy.mjs";
@@ -70,6 +70,11 @@ import {
   transcriptProof,
   videoLibraryVisibleCount,
 } from "@/lib/video-processing-status-policy.mjs";
+import {
+  choosePrimaryLessonSessionLink,
+  lessonSessionCardStatus,
+  lessonSessionLinkCountLabel,
+} from "@/lib/lesson-session-link-policy.mjs";
 
 type Tab = "dashboard" | "sessions" | "clubs" | "videos" | "coach" | "admin" | "practice" | "import";
 type AccountMode = "pending" | "user" | "guest";
@@ -1043,6 +1048,32 @@ type VideoEmailNotificationLog = {
   failureReason?: string;
 };
 
+type LessonSessionLink = {
+  id: string;
+  videoId: string;
+  sessionId: string;
+  memberId: string;
+  coachId?: string;
+  attachedByUserId: string;
+  attachedByRole: "admin" | "coach" | "member";
+  attachedByName: string;
+  sourceType: string;
+  reviewStatus: string;
+  isPrimary: boolean;
+  recapUpdateStatus: string;
+  createdAt: string;
+  updatedAt: string;
+  session: {
+    id: string;
+    title: string;
+    date: string;
+    source: string;
+    clubLabel: string;
+    shotCount: number;
+    reviewStatus: string;
+  };
+};
+
 type VideoLibraryRecord = {
   id: string;
   ownerId: string;
@@ -1053,6 +1084,7 @@ type VideoLibraryRecord = {
   type: VideoType;
   tags: string[];
   sessionId?: string;
+  sessionLinks?: LessonSessionLink[];
   club?: string;
   swingType?: VideoSwingType;
   visibility: VideoVisibility;
@@ -4611,6 +4643,48 @@ async function saveVideoRecord(video: VideoLibraryRecord) {
   return payload.video;
 }
 
+async function addLessonSessionData(payload: {
+  videoId: string;
+  sessionId?: string;
+  session?: Session;
+  sourceType?: string;
+  submissionType?: LastImport["submissionType"];
+  isPrimary?: boolean;
+}) {
+  const response = await fetch("/api/lesson-session-links", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return readApiJson<{
+    created?: boolean;
+    links?: LessonSessionLink[];
+    recapUpdateRecommended?: boolean;
+  }>(response, "Session data could not be attached to this lesson.");
+}
+
+async function removeLessonSessionData(videoId: string, linkId: string) {
+  const response = await fetch(
+    `/api/lesson-session-links?videoId=${encodeURIComponent(videoId)}&linkId=${encodeURIComponent(linkId)}`,
+    {
+      method: "DELETE",
+      credentials: "same-origin",
+    },
+  );
+  return readApiJson<{ links?: LessonSessionLink[] }>(response, "Session data could not be removed from this lesson.");
+}
+
+async function markLessonSessionPrimary(videoId: string, linkId: string) {
+  const response = await fetch("/api/lesson-session-links", {
+    method: "PATCH",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ videoId, linkId }),
+  });
+  return readApiJson<{ links?: LessonSessionLink[] }>(response, "Primary lesson session could not be updated.");
+}
+
 async function deleteVideoRecord(videoId: string) {
   const response = await fetch(`/api/videos?videoId=${encodeURIComponent(videoId)}`, {
     method: "DELETE",
@@ -5086,7 +5160,23 @@ function createVideoLibraryItem(record: VideoLibraryRecord): VideoLibraryItem {
     ...record,
     objectUrl: record.objectUrl ?? "",
     thumbnailObjectUrl: record.thumbnailObjectUrl,
+    sessionLinks: record.sessionLinks ?? [],
   };
+}
+
+function primaryLessonSessionLink(video: Pick<VideoLibraryRecord, "sessionLinks">) {
+  return choosePrimaryLessonSessionLink(video.sessionLinks ?? []) as LessonSessionLink | null;
+}
+
+function linkedSessionCount(video: Pick<VideoLibraryRecord, "sessionLinks" | "sessionId">) {
+  return video.sessionLinks?.length ?? (video.sessionId ? 1 : 0);
+}
+
+function linkedSessionStatusLabel(video: Pick<VideoLibraryRecord, "sessionLinks" | "sessionId">) {
+  return lessonSessionCardStatus(
+    linkedSessionCount(video),
+    (video.sessionLinks ?? []).map((link) => link.reviewStatus),
+  );
 }
 
 function getVideoPublicationStatus(video: VideoLibraryRecord): VideoPublicationStatus {
@@ -6221,6 +6311,8 @@ export default function Home() {
   const [lastImport, setLastImport] = useState<LastImport>(EMPTY_LAST_IMPORT);
   const [userName, setUserName] = useState<string | null>(null);
   const [accountUser, setAccountUser] = useState<AccountUser | null>(null);
+  const [dashboardCoaches, setDashboardCoaches] = useState<CoachSummary[]>([]);
+  const [dashboardVideos, setDashboardVideos] = useState<VideoLibraryItem[]>([]);
   const [devAuthEnabled, setDevAuthEnabled] = useState(false);
   const [showDevBuildInfo, setShowDevBuildInfo] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
@@ -6503,6 +6595,31 @@ export default function Home() {
     window.addEventListener("storage", syncImportState);
     return () => window.removeEventListener("storage", syncImportState);
   }, [accountMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (accountMode !== "user" || accountUser?.role !== "member") {
+      setDashboardCoaches([]);
+      setDashboardVideos([]);
+      return () => {
+        cancelled = true;
+      };
+    }
+    Promise.all([readMyCoaches(), readVideoLibrary()])
+      .then(([coaches, records]) => {
+        if (cancelled) return;
+        setDashboardCoaches(coaches);
+        setDashboardVideos(records.map((record) => createVideoLibraryItem(record)));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setDashboardCoaches([]);
+        setDashboardVideos([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountMode, accountUser?.id, accountUser?.role]);
 
   async function saveUserSessions(nextSessions: Session[]) {
     if (accountMode !== "user") return;
@@ -7404,6 +7521,26 @@ export default function Home() {
             avgDispersion={performanceAvgDispersion}
             avgSmash={performanceAvgSmash}
             clubs={performanceClubs}
+            coachedPriority={
+              accountMode === "user" && workspaceRole === "user" ? (
+                <CoachedStudentDashboardPriority
+                  coaches={dashboardCoaches}
+                  onOpenLatestLesson={(videoId) => {
+                    setRequestedVideoId(videoId);
+                    setActiveTab("videos");
+                    if (typeof window !== "undefined") {
+                      const url = new URL(window.location.href);
+                      url.pathname = pathForTab("videos");
+                      url.searchParams.set("video", videoId);
+                      window.history.pushState(null, "", `${url.pathname}${url.search}${url.hash}`);
+                    }
+                  }}
+                  onOpenPractice={() => setActiveTab("practice")}
+                  onOpenVideos={() => setActiveTab("videos")}
+                  videos={dashboardVideos}
+                />
+              ) : undefined
+            }
             hasAnySessions={sessions.length > 0}
             insights={performanceInsights}
             onTimeframeChange={setPerformanceTimeframe}
@@ -7593,11 +7730,159 @@ export default function Home() {
   );
 }
 
+function CoachedStudentDashboardPriority({
+  coaches,
+  onOpenLatestLesson,
+  onOpenPractice,
+  onOpenVideos,
+  videos,
+}: {
+  coaches: CoachSummary[];
+  onOpenLatestLesson: (videoId: string) => void;
+  onOpenPractice: () => void;
+  onOpenVideos: () => void;
+  videos: VideoLibraryItem[];
+}) {
+  if (!coaches.length) return null;
+  const coach = coaches[0];
+  const publishedLessons = videos
+    .filter((video) => video.uploadedBy !== "User" && getVideoPublicationStatus(video) === "Published")
+    .sort((left, right) => {
+      const leftDate = new Date(left.lessonDate ?? left.uploadedAt).getTime();
+      const rightDate = new Date(right.lessonDate ?? right.uploadedAt).getTime();
+      return rightDate - leftDate;
+    });
+  const latestLesson = publishedLessons[0];
+  const coachName = coach.name || "Your Coach";
+  const mainFocus = latestLesson ? getLessonMainFocus(latestLesson) : "";
+  const lessonSummary = latestLesson?.lessonSummary || latestLesson?.memberFacingNotes || "";
+  const practiceNext = latestLesson ? getLessonPracticeNext(latestLesson) : "";
+  const nextGoal = latestLesson?.nextSessionGoal ?? "";
+  const primaryLink = latestLesson ? primaryLessonSessionLink(latestLesson) : null;
+  const linkedSessionTotal = publishedLessons.reduce((count, video) => count + linkedSessionCount(video), 0);
+  const currentFocus = mainFocus || latestLesson?.focusArea || "Your next lesson";
+  const actionCopy = !latestLesson
+    ? "Your Coach has not published a lesson yet. You can upload a session or continue with your MAI Coach practice."
+    : !linkedSessionCount(latestLesson)
+      ? `Add your session data to ${latestLesson.lessonDate ? formatVideoUploadDate(latestLesson.lessonDate) : "the latest lesson"} so ${coachName} can review your numbers.`
+      : practiceNext
+        ? "Complete your assigned practice focus before your next session."
+        : "Review your latest Coach feedback and linked session data.";
+
+  return (
+    <section className="coached-student-dashboard" aria-labelledby="coached-dashboard-title">
+      <div className="coached-student-hero">
+        <div>
+          <p className="eyebrow">Your Coach</p>
+          <h2 id="coached-dashboard-title">{coachName}</h2>
+          <p>{latestLesson ? "Your latest coaching feedback and practice focus are ready below." : `You're connected with ${coachName}.`}</p>
+        </div>
+        <CoachAvatar coach={coach} />
+        <div className="coached-student-actions">
+          {latestLesson && <button className="primary-action" onClick={() => onOpenLatestLesson(latestLesson.id)} type="button">View Latest Lesson</button>}
+          <button className="secondary-action" onClick={onOpenPractice} type="button">View Practice Plan</button>
+          <button className="secondary-action" onClick={onOpenVideos} type="button">View All Lessons</button>
+        </div>
+      </div>
+
+      {latestLesson ? (
+        <>
+          <div className="coach-priority-card-grid">
+            {(lessonSummary || mainFocus || latestLesson.improvement || nextGoal) && (
+              <article className="panel coach-priority-card coach-feedback-card">
+                <p className="eyebrow">Coach Feedback</p>
+                {mainFocus && <div><span>Main Focus</span><strong>{mainFocus}</strong></div>}
+                <div>
+                  <span>What {coachName} noticed</span>
+                  <p>{lessonSummary || latestLesson.improvement || "Your Coach is preparing feedback for your latest lesson."}</p>
+                </div>
+                {nextGoal && <div><span>Next Goal</span><p>{nextGoal}</p></div>}
+                <button className="secondary-action" onClick={() => onOpenLatestLesson(latestLesson.id)} type="button">View Full Feedback</button>
+              </article>
+            )}
+
+            {practiceNext && (
+              <article className="panel coach-priority-card practice-next-card">
+                <p className="eyebrow">Practice Next</p>
+                <strong>{practiceNext}</strong>
+                {mainFocus && <p>Why this matters: {mainFocus}</p>}
+                {nextGoal && <p>Goal: {nextGoal}</p>}
+                <div className="button-row">
+                  <button className="primary-action" onClick={onOpenPractice} type="button">Start Practice</button>
+                  <button className="secondary-action" onClick={() => onOpenLatestLesson(latestLesson.id)} type="button">View Drill Details</button>
+                </div>
+              </article>
+            )}
+          </div>
+
+          <div className="coached-student-detail-grid">
+            <article className="panel latest-lesson-card">
+              <p className="eyebrow">Latest Lesson</p>
+              <h3>{latestLesson.title}</h3>
+              <p>
+                {latestLesson.lessonDate ? formatVideoUploadDate(latestLesson.lessonDate) : formatVideoUploadDate(latestLesson.uploadedAt)}
+                {" · Coach: "}
+                {latestLesson.coachName ?? coachName}
+              </p>
+              <strong>Video and lesson recap available</strong>
+              <span>
+                Session Data: {primaryLink
+                  ? `${primaryLink.session.clubLabel} · ${primaryLink.session.shotCount} shots`
+                  : "Session data not added"}
+              </span>
+              <div className="button-row">
+                <button className="primary-action" onClick={() => onOpenLatestLesson(latestLesson.id)} type="button">Review Lesson</button>
+                {!primaryLink && <button className="secondary-action" onClick={() => onOpenLatestLesson(latestLesson.id)} type="button">Add Session Data</button>}
+              </div>
+            </article>
+
+            <article className="panel action-needed-card">
+              <p className="eyebrow">Action Needed</p>
+              <strong>{!primaryLink ? "Add your session data" : practiceNext ? "Complete your practice focus" : "Review your lesson"}</strong>
+              <p>{actionCopy}</p>
+              <button className="secondary-action" onClick={() => onOpenLatestLesson(latestLesson.id)} type="button">
+                {!primaryLink ? "Add Session Data" : "Open Lesson"}
+              </button>
+            </article>
+
+            <article className="panel coach-progress-card">
+              <p className="eyebrow">Progress With {coachName}</p>
+              <dl>
+                <div><dt>Lessons</dt><dd>{publishedLessons.length}</dd></div>
+                <div><dt>Sessions linked</dt><dd>{linkedSessionTotal}</dd></div>
+                <div><dt>Current focus</dt><dd>{currentFocus}</dd></div>
+                {nextGoal && <div><dt>Next Coach goal</dt><dd>{nextGoal}</dd></div>}
+              </dl>
+            </article>
+          </div>
+        </>
+      ) : (
+        <article className="panel coached-empty-lesson-card">
+          <p className="eyebrow">Latest Lesson</p>
+          <h3>{`You're connected with ${coachName}`}</h3>
+          <p>Your Coach has not published a lesson yet. You can upload a session or continue with your MAI Coach practice.</p>
+          <div className="button-row">
+            <button className="primary-action" onClick={onOpenVideos} type="button">View Lessons</button>
+            <button className="secondary-action" onClick={onOpenPractice} type="button">Continue Practice</button>
+          </div>
+        </article>
+      )}
+
+      <section className="panel coached-more-ways">
+        <p className="eyebrow">More ways to improve with MAI Coach</p>
+        <h3>Self-guided tools are still available</h3>
+        <p>Upload independent sessions, review club data, and build additional practice around your Coach's direction.</p>
+      </section>
+    </section>
+  );
+}
+
 function DashboardView({
   avgCarry,
   avgDispersion,
   avgSmash,
   clubs,
+  coachedPriority,
   hasAnySessions,
   insights,
   onTimeframeChange,
@@ -7620,6 +7905,7 @@ function DashboardView({
   avgDispersion: number;
   avgSmash: number;
   clubs: ClubSummary[];
+  coachedPriority?: ReactNode;
   hasAnySessions: boolean;
   insights: Insight[];
   onTimeframeChange: (timeframe: PerformanceTimeframe) => void;
@@ -7665,6 +7951,7 @@ function DashboardView({
   if (!sessions.length) {
     return (
       <div className="view-stack">
+        {coachedPriority}
         <PerformanceReviewControls
           clubs={clubs}
           onTimeframeChange={onTimeframeChange}
@@ -7689,6 +7976,7 @@ function DashboardView({
 
   return (
     <div className="view-stack">
+      {coachedPriority}
       <PerformanceReviewControls
         clubs={clubs}
         onTimeframeChange={onTimeframeChange}
@@ -13008,12 +13296,14 @@ function VideoThumbnail({ video }: { video: VideoLibraryItem }) {
 
 function VideoLibraryCard({
   comparisonSelected,
+  onAddSessionData,
   onCompare,
   onOpen,
   session,
   video,
 }: {
   comparisonSelected: boolean;
+  onAddSessionData: () => void;
   onCompare: () => void;
   onOpen: () => void;
   session?: Session;
@@ -13057,12 +13347,16 @@ function VideoLibraryCard({
             Uploaded by {video.coachName ?? video.uploadedBy}
           </p>
           <div className="video-card-meta">
-            <span>{session ? session.title : "No session attached"}</span>
+            <span>{linkedSessionStatusLabel(video)}</span>
+            {session && <span>{session.title}</span>}
             {video.focusArea && <span>{video.focusArea}</span>}
             {video.club && <span>{getClubDisplayName(video.club)}</span>}
             {hasPublishedLessonRecap && <span>Lesson recap</span>}
           </div>
         </div>
+      </button>
+      <button className="video-session-quick-action" onClick={onAddSessionData} type="button">
+        + Session Data
       </button>
       <button
         aria-label={`${comparisonSelected ? "Remove" : "Add"} ${video.title} ${comparisonSelected ? "from" : "to"} comparison`}
@@ -13114,6 +13408,513 @@ function VideoSessionMetrics({ session, video }: { session?: Session; video: Vid
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function LessonSessionDataModal({
+  onClose,
+  onLinked,
+  sessions,
+  video,
+  viewerRole,
+}: {
+  onClose: () => void;
+  onLinked: (values: { links: LessonSessionLink[]; session?: Session; recapUpdateRecommended?: boolean }) => void;
+  sessions: Session[];
+  video: VideoLibraryItem;
+  viewerRole: VideoViewerRole;
+}) {
+  const [mode, setMode] = useState<"existing" | "photos" | "csv" | "manual">("existing");
+  const [selectedSessionId, setSelectedSessionId] = useState("");
+  const [notes, setNotes] = useState("");
+  const [clubDraft, setClubDraft] = useState(video.club ? getClubDisplayName(video.club) : "");
+  const [csvFileName, setCsvFileName] = useState("");
+  const [csvTextDraft, setCsvTextDraft] = useState("");
+  const [photoFiles, setPhotoFiles] = useState<SelectedImportPhoto[]>([]);
+  const [photoProgress, setPhotoProgress] = useState(0);
+  const [status, setStatus] = useState("Choose how you want to connect session data.");
+  const [saving, setSaving] = useState(false);
+  const [manualForm, setManualForm] = useState<Record<string, string>>({
+    date: getTodayDateString(),
+    location: "",
+    club: video.club ?? "Unknown Club",
+    carry: "",
+    total: "",
+    ballSpeed: "",
+    clubSpeed: "",
+    smash: "",
+    launch: "",
+    spin: "",
+    offline: "",
+    apex: "",
+    descent: "",
+    faceAngle: "",
+    clubPath: "",
+    faceToPath: "",
+  });
+  const photoFilesRef = useRef(photoFiles);
+  const modalTitle = viewerRole === "user" ? "Add your session data" : "Add session data to this lesson";
+  const modalCopy = viewerRole === "user"
+    ? "Did you hit shots during this lesson? Add your launch-monitor results so your Coach and MAI Coach can connect the numbers to the video."
+    : "Connect launch-monitor results to this video so your Coach and MAI Coach can provide more complete feedback.";
+
+  useEffect(() => {
+    photoFilesRef.current = photoFiles;
+  }, [photoFiles]);
+
+  useEffect(() => () => {
+    photoFilesRef.current.forEach((photo) => URL.revokeObjectURL(photo.previewUrl));
+  }, []);
+
+  function updateManualField(key: string, value: string) {
+    setManualForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function manualNumber(key: string) {
+    const value = manualForm[key]?.trim();
+    if (!value) return Number.NaN;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : Number.NaN;
+  }
+
+  function normalizeLessonModalShots(shots: Shot[]) {
+    const requestedClub = clubDraft.trim() ? normalizeReviewClubInput(clubDraft) : "";
+    if (!requestedClub) return shots;
+    return shots.map((shot) => setImportShotClub(shot, requestedClub, true));
+  }
+
+  function sessionFromShots(
+    shots: Shot[],
+    submissionType: LastImport["submissionType"],
+    simulator: string,
+    metadata: PhotoImportMetadata,
+  ) {
+    const normalizedShots = normalizeLessonModalShots(shots);
+    const review = buildImportReview(normalizedShots, submissionType, simulator, metadata, notes);
+    const blockingIssues = nonClubBlockingIssues(review.blockingIssues);
+    if (blockingIssues.length) {
+      throw new Error(`Resolve before saving: ${blockingIssues.join(" ")}`);
+    }
+    const finalShots = review.shots.map((shot) => (
+      isUnknownReviewClub(shot.club) ? setImportShotClub(shot, UNKNOWN_IMPORT_CLUB, true) : shot
+    ));
+    return buildImportedSession(
+      finalShots,
+      submissionType,
+      review.simulator,
+      {
+        ...review.metadata,
+        blockingIssues,
+        clubs: Array.from(new Set(finalShots.map((shot) => shot.club))),
+        clubCount: new Set(finalShots.map((shot) => shot.club)).size,
+      },
+      review.notes,
+      review.missingMetrics,
+    );
+  }
+
+  async function linkExistingSession(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedSessionId) {
+      setStatus("Choose an existing session first.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const result = await addLessonSessionData({
+        videoId: video.id,
+        sessionId: selectedSessionId,
+        sourceType: "existing_session",
+      });
+      onLinked({
+        links: result.links ?? [],
+        recapUpdateRecommended: result.recapUpdateRecommended,
+      });
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Session data could not be attached.");
+      setSaving(false);
+    }
+  }
+
+  async function uploadCsvSession(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!csvTextDraft.trim()) {
+      setStatus("Choose a CSV file or paste exported launch-monitor rows first.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const parsed = parseCsvForImport(csvTextDraft, csvFileName || "Lesson session CSV");
+      if (!parsed.shots.length) throw new Error("No recognizable shot rows were found in this CSV.");
+      const session = sessionFromShots(parsed.shots, "CSV / Excel", parsed.metadata.simulator ?? "CSV", parsed.metadata);
+      const result = await addLessonSessionData({
+        videoId: video.id,
+        session,
+        submissionType: "CSV / Excel",
+        sourceType: "csv_upload",
+        isPrimary: linkedSessionCount(video) === 0,
+      });
+      onLinked({
+        links: result.links ?? [],
+        session,
+        recapUpdateRecommended: result.recapUpdateRecommended,
+      });
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "CSV session data could not be attached.");
+      setSaving(false);
+    }
+  }
+
+  function addPhotoFiles(files: File[]) {
+    if (!files.length) return;
+    const accepted: SelectedImportPhoto[] = [];
+    const rejected: string[] = [];
+    for (const file of files.slice(0, PHOTO_IMPORT_MAX_FILES)) {
+      const validation = sessionPhotoValidationMessage(file);
+      if (validation) {
+        rejected.push(`${file.name}: ${validation}`);
+        continue;
+      }
+      accepted.push({
+        id: `lesson-photo-${Date.now()}-${accepted.length}-${file.name}`,
+        file,
+        previewUrl: URL.createObjectURL(file),
+      });
+    }
+    setPhotoFiles((current) => [...current, ...accepted].slice(0, PHOTO_IMPORT_MAX_FILES));
+    setStatus(rejected.length ? rejected.join(" ") : `${accepted.length} ${accepted.length === 1 ? "photo" : "photos"} ready.`);
+  }
+
+  function clearPhotoFiles() {
+    photoFiles.forEach((photo) => URL.revokeObjectURL(photo.previewUrl));
+    setPhotoFiles([]);
+    setPhotoProgress(0);
+    setStatus("Choose photos to connect session data.");
+  }
+
+  async function uploadPhotoSession() {
+    if (!photoFiles.length) {
+      setStatus("Choose at least one session photo first.");
+      return;
+    }
+    setSaving(true);
+    setPhotoProgress(5);
+    try {
+      const files = photoFiles.map((photo) => photo.file);
+      const metadataList = await Promise.all(files.map(readPhotoMetadata));
+      const combinedMetadata = metadataList.reduce<PhotoImportMetadata>(
+        (combined, metadata, index) => ({
+          fileNames: [...(combined.fileNames ?? []), files[index].name],
+          location: combined.location ?? metadata.location,
+          capturedAt: combined.capturedAt ?? metadata.capturedAt,
+          latitude: combined.latitude ?? metadata.latitude,
+          longitude: combined.longitude ?? metadata.longitude,
+        }),
+        {},
+      );
+      setPhotoProgress(18);
+      const perPhotoTargetBytes = Math.max(
+        120 * 1024,
+        Math.floor((PHOTO_UPLOAD_REQUEST_BUDGET_BYTES - 16 * 1024) / files.length),
+      );
+      const prepared = await Promise.all(files.map((file) => preparePhotoForPrivateImport(file, perPhotoTargetBytes)));
+      const uploadBytes = prepared.reduce((sum, photo) => sum + photo.uploadSize, 0);
+      if (uploadBytes > PHOTO_UPLOAD_REQUEST_BUDGET_BYTES) {
+        throw new Error("These photos are too large for one private read. Try fewer photos or upload a CSV.");
+      }
+      const formData = new FormData();
+      prepared.forEach((photo) => formData.append("images", photo.file, photo.file.name));
+      formData.append("notes", notes);
+      formData.append("sessionDate", combinedMetadata.capturedAt ?? getTodayDateString());
+      setPhotoProgress(45);
+      const response = await fetch("/api/import/photos", {
+        method: "POST",
+        body: formData,
+        credentials: "same-origin",
+      });
+      const payload = await readApiJson<PhotoBatchImportResult>(response, "The private photo reader could not complete this batch.");
+      if (!payload.shots?.length) {
+        throw new Error("No readable shot rows were found in these photos. Try a cropped photo, CSV, or manual entry.");
+      }
+      setPhotoProgress(82);
+      const normalizedCsv = payload.csvText || generateNormalizedPhotoImportCsv({
+        sessionId: payload.jobId || `photo-import-${Date.now()}`,
+        sessionDate: combinedMetadata.capturedAt ?? getTodayDateString(),
+        simulator: payload.simulator || "Simulator photos",
+        club: payload.clubDisplay ?? payload.club ?? UNKNOWN_IMPORT_CLUB,
+        shots: payload.shots,
+        notes,
+      });
+      const metadata: PhotoImportMetadata = {
+        ...combinedMetadata,
+        averageValidation: payload.averages,
+        blockingIssues: payload.blockingIssues,
+        csvSchemaVersion: payload.csvSchemaVersion ?? PHOTO_IMPORT_CSV_SCHEMA_VERSION,
+        duplicateShotNumbers: payload.duplicateShotNumbers,
+        normalizedCsv,
+        pageCounts: payload.pageCounts,
+        photoImportJobId: payload.jobId,
+        photoImportSummary: payload.summary,
+        sourcePaths: payload.sourcePaths,
+      };
+      const session = sessionFromShots(payload.shots, "Photo", payload.simulator || "Simulator photos", metadata);
+      const result = await addLessonSessionData({
+        videoId: video.id,
+        session,
+        submissionType: "Photo",
+        sourceType: "photo_upload",
+        isPrimary: linkedSessionCount(video) === 0,
+      });
+      setPhotoProgress(100);
+      onLinked({
+        links: result.links ?? [],
+        session,
+        recapUpdateRecommended: result.recapUpdateRecommended,
+      });
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Photo session data could not be attached.");
+      setSaving(false);
+    }
+  }
+
+  async function submitManualSession(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const shot: Shot = {
+      id: `manual-shot-${Date.now()}`,
+      club: manualForm.club || UNKNOWN_IMPORT_CLUB,
+      carry: manualNumber("carry"),
+      total: manualNumber("total"),
+      ballSpeed: manualNumber("ballSpeed"),
+      clubSpeed: manualNumber("clubSpeed"),
+      smash: manualNumber("smash"),
+      launch: manualNumber("launch"),
+      spin: manualNumber("spin"),
+      offline: manualNumber("offline"),
+      shape: "Not recorded",
+      apex: manualNumber("apex"),
+      descent: manualNumber("descent"),
+      faceAngle: manualNumber("faceAngle"),
+      clubPath: manualNumber("clubPath"),
+      faceToPath: manualNumber("faceToPath"),
+    };
+    const detectedMetrics = MANUAL_SHOT_FIELDS
+      .map((field) => field.key)
+      .filter((metric) => typeof shot[metric] === "number" && Number.isFinite(shot[metric] as number));
+    if (!detectedMetrics.length) {
+      setStatus("Enter at least one launch-monitor number before saving.");
+      return;
+    }
+    if (Number.isFinite(shot.offline)) {
+      shot.shape = shot.offline < -8 ? "Draw" : shot.offline > 8 ? "Fade" : "Straight";
+    }
+    shot.detectedMetrics = detectedMetrics;
+    setSaving(true);
+    try {
+      const session = sessionFromShots([shot], "Manual entry", "Manual entry", {
+        capturedAt: manualForm.date || getTodayDateString(),
+        location: manualForm.location.trim() || LOCATION_UNAVAILABLE,
+      });
+      const result = await addLessonSessionData({
+        videoId: video.id,
+        session,
+        submissionType: "Manual entry",
+        sourceType: "manual_entry",
+        isPrimary: linkedSessionCount(video) === 0,
+      });
+      onLinked({
+        links: result.links ?? [],
+        session,
+        recapUpdateRecommended: result.recapUpdateRecommended,
+      });
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Manual session data could not be attached.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="video-modal-overlay">
+      <section className="video-upload-modal lesson-session-modal">
+        <div className="video-modal-header">
+          <div>
+            <p className="eyebrow">Session data</p>
+            <h2>{modalTitle}</h2>
+            <span>{modalCopy}</span>
+          </div>
+          <button aria-label="Close session data dialog" className="icon-button" onClick={onClose} type="button">×</button>
+        </div>
+
+        <div className="segmented-control lesson-session-mode" aria-label="Session data source">
+          <button className={mode === "existing" ? "active" : ""} onClick={() => setMode("existing")} type="button">Link Existing Session</button>
+          <button className={mode === "photos" ? "active" : ""} onClick={() => setMode("photos")} type="button">Upload Photos</button>
+          <button className={mode === "csv" ? "active" : ""} onClick={() => setMode("csv")} type="button">Upload CSV</button>
+          <button className={mode === "manual" ? "active" : ""} onClick={() => setMode("manual")} type="button">Enter Manually</button>
+        </div>
+
+        <label className="lesson-session-club-field">
+          <span>Club correction</span>
+          <input
+            list="lesson-session-club-options"
+            onChange={(event) => setClubDraft(event.target.value)}
+            placeholder="Leave blank to keep detected club, or enter Unknown Club"
+            value={clubDraft}
+          />
+          <datalist id="lesson-session-club-options">
+            {IMPORT_CLUB_OPTIONS.map((club) => (
+              <option key={club} value={getClubDisplayName(club)} />
+            ))}
+          </datalist>
+          <small>Use this only when the photos or CSV missed the club. Missing values remain NA.</small>
+        </label>
+
+        {mode === "existing" && (
+          <form className="lesson-session-form" onSubmit={linkExistingSession}>
+            <label>
+              <span>Student session</span>
+              <select value={selectedSessionId} onChange={(event) => setSelectedSessionId(event.target.value)}>
+                <option value="">Choose a session</option>
+                {sessions.map((session) => (
+                  <option key={session.id} value={session.id}>
+                    {formatFullDate(session.date)} · {importReviewSummaryClubLabel(session.shots)} · {session.shots.length} shots · {session.source}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="lesson-session-picker-list">
+              {sessions.slice(0, 6).map((session) => (
+                <button
+                  className={selectedSessionId === session.id ? "selected" : ""}
+                  key={session.id}
+                  onClick={() => setSelectedSessionId(session.id)}
+                  type="button"
+                >
+                  <strong>{formatFullDate(session.date)}</strong>
+                  <span>{importReviewSummaryClubLabel(session.shots)} · {session.shots.length} shots · {session.source}</span>
+                </button>
+              ))}
+              {!sessions.length && <p>No saved sessions are available for this student yet. Upload photos, CSV, or enter data manually.</p>}
+            </div>
+            <button className="primary-action" disabled={saving || !selectedSessionId} type="submit">Add Session Data</button>
+          </form>
+        )}
+
+        {mode === "photos" && (
+          <div className="lesson-session-form">
+            <label className="video-file-picker">
+              <input
+                accept={PHOTO_IMPORT_ACCEPT}
+                disabled={saving}
+                multiple
+                onChange={(event) => {
+                  const files = Array.from(event.currentTarget.files ?? []);
+                  event.currentTarget.value = "";
+                  addPhotoFiles(files);
+                }}
+                type="file"
+              />
+              <span aria-hidden="true">⇧</span>
+              <strong>{photoFiles.length ? `${photoFiles.length} photos selected` : "Choose session photos"}</strong>
+              <small>{PHOTO_IMPORT_ACCEPTED_LABEL} · up to {PHOTO_IMPORT_MAX_FILES} files</small>
+            </label>
+            {photoFiles.length > 0 && (
+              <div className="selected-photo-list lesson-session-photo-list">
+                {photoFiles.map((photo) => (
+                  <article className="selected-photo-card" key={photo.id}>
+                    <img alt={`Selected ${photo.file.name}`} src={photo.previewUrl} />
+                    <div>
+                      <strong>{photo.file.name}</strong>
+                      <span>{formatLessonUploadFileSize(photo.file.size)}</span>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+            {saving && <progress aria-label="Photo session progress" max="100" value={photoProgress} />}
+            <div className="button-row">
+              <button className="secondary-action" disabled={saving || !photoFiles.length} onClick={clearPhotoFiles} type="button">Clear</button>
+              <button className="primary-action" disabled={saving || !photoFiles.length} onClick={() => void uploadPhotoSession()} type="button">Add Session Data</button>
+            </div>
+          </div>
+        )}
+
+        {mode === "csv" && (
+          <form className="lesson-session-form" onSubmit={uploadCsvSession}>
+            <input
+              className="file-input"
+              type="file"
+              accept=".csv,text/csv"
+              disabled={saving}
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0];
+                event.currentTarget.value = "";
+                if (!file) return;
+                if (!file.name.toLowerCase().endsWith(".csv") || file.size > 5 * 1024 * 1024) {
+                  setStatus("Use a CSV file smaller than 5 MB.");
+                  return;
+                }
+                void file.text().then((contents) => {
+                  setCsvTextDraft(contents);
+                  setCsvFileName(file.name);
+                  setStatus(`${parseCsv(contents).length} shot rows are ready to attach.`);
+                }).catch(() => setStatus("This CSV could not be read. Try exporting it again."));
+              }}
+            />
+            <label>
+              <span>CSV rows</span>
+              <textarea
+                className="csv-input"
+                onChange={(event) => {
+                  setCsvTextDraft(event.target.value);
+                  setCsvFileName("Pasted rows");
+                }}
+                placeholder="Paste launch-monitor CSV rows"
+                spellCheck={false}
+                value={csvTextDraft}
+              />
+            </label>
+            <button className="primary-action" disabled={saving || !csvTextDraft.trim()} type="submit">Add Session Data</button>
+          </form>
+        )}
+
+        {mode === "manual" && (
+          <form className="lesson-session-form manual-entry-panel" onSubmit={submitManualSession}>
+            <div className="manual-form-grid">
+              <label><span>Date</span><input onChange={(event) => updateManualField("date", event.target.value)} type="date" value={manualForm.date} /></label>
+              <label><span>Club</span><select value={manualForm.club} onChange={(event) => updateManualField("club", event.target.value)}>{IMPORT_CLUB_OPTIONS.map((club) => <option key={club} value={club}>{getClubDisplayName(club)}</option>)}</select></label>
+              <label className="manual-form-wide"><span>Location</span><input onChange={(event) => updateManualField("location", event.target.value)} placeholder="Back Nine Woodstock" value={manualForm.location} /></label>
+              {MANUAL_SHOT_FIELDS.map((field) => (
+                <label key={field.key}>
+                  <span>{field.label}</span>
+                  <input inputMode="decimal" onChange={(event) => updateManualField(field.key, event.target.value)} placeholder={field.placeholder} value={manualForm[field.key]} />
+                  {field.unit && <small>{field.unit}</small>}
+                </label>
+              ))}
+            </div>
+            <button className="primary-action" disabled={saving} type="submit">Add Session Data</button>
+          </form>
+        )}
+
+        <label className="lesson-session-notes-field">
+          <span>Notes</span>
+          <textarea
+            maxLength={220}
+            onChange={(event) => setNotes(event.target.value)}
+            placeholder="Optional context for this session"
+            value={notes}
+          />
+        </label>
+
+        <div className="video-modal-actions">
+          <span>{saving ? "Saving session data..." : status}</span>
+          <div className="button-row">
+            {clubDraft !== getClubDisplayName(UNKNOWN_IMPORT_CLUB) && (
+              <button className="secondary-action" disabled={saving} onClick={() => setClubDraft(getClubDisplayName(UNKNOWN_IMPORT_CLUB))} type="button">Save as Unknown Club</button>
+            )}
+            <button className="secondary-action" disabled={saving} onClick={onClose} type="button">Cancel</button>
+          </div>
+        </div>
+      </section>
     </div>
   );
 }
@@ -13686,19 +14487,27 @@ function ApprovedTranscriptDisclosure({ videoId }: { videoId: string }) {
 function VideoDetailView({
   onBack,
   onDelete,
+  onAddSessionData,
   onOpenRelated,
+  onRemoveSessionLink,
+  onSetPrimarySessionLink,
   onUpdate,
   relatedVideos,
   session,
+  sessions,
   video,
   viewerRole,
 }: {
   onBack: () => void;
   onDelete: () => void;
+  onAddSessionData: () => void;
   onOpenRelated: (video: VideoLibraryItem) => void;
+  onRemoveSessionLink: (linkId: string) => void;
+  onSetPrimarySessionLink: (linkId: string) => void;
   onUpdate: (patch: Partial<VideoLibraryRecord>) => void | Promise<void>;
   relatedVideos: VideoLibraryItem[];
   session?: Session;
+  sessions: Session[];
   video: VideoLibraryItem;
   viewerRole: VideoViewerRole;
 }) {
@@ -13706,6 +14515,7 @@ function VideoDetailView({
   const [coachNotes, setCoachNotes] = useState(video.coachNotes);
   const [coachNotesPrivate, setCoachNotesPrivate] = useState(video.coachNotesPrivate);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [recapUpdateMessage, setRecapUpdateMessage] = useState("");
   const canEditCoachNotes = viewerRole === "coach" || viewerRole === "admin";
   const canEditUserNotes = viewerRole === "user";
   const canDelete =
@@ -13727,6 +14537,10 @@ function VideoDetailView({
   );
   const playbackMessage = videoUploadPlaybackMessage(video);
   const deliveryStatus = coachVideoDeliveryStatusLabel(video);
+  const sessionLinks = video.sessionLinks ?? [];
+  const primaryLink = primaryLessonSessionLink(video);
+  const linkSessionMap = new Map(sessions.map((item) => [item.id, item]));
+  const primaryLinkedSession = primaryLink ? linkSessionMap.get(primaryLink.sessionId) : session;
 
   return (
     <section className="view-stack">
@@ -13833,9 +14647,76 @@ function VideoDetailView({
         </aside>
       </div>
 
-      <section className="panel">
-        <PanelHeader kicker="Linked data" title="Session performance" meta={session ? session.source : "Optional"} />
-        <VideoSessionMetrics session={session} video={video} />
+      <section className="panel lesson-session-data-panel">
+        <PanelHeader
+          kicker="Session Data"
+          title={lessonSessionLinkCountLabel(linkedSessionCount(video))}
+          meta={primaryLink ? `${primaryLink.session.clubLabel} · ${primaryLink.session.shotCount} shots` : "Optional"}
+          action={<button className="secondary-action compact-action" onClick={onAddSessionData} type="button">{viewerRole === "user" ? "Add your session data" : "Add Session Data"}</button>}
+        />
+        {sessionLinks.length ? (
+          <div className="lesson-session-link-list">
+            {sessionLinks.map((link) => (
+              <article className={cls("lesson-session-link-card", link.isPrimary && "primary")} key={link.id}>
+                <div>
+                  <span>{link.isPrimary ? "Primary lesson session" : link.reviewStatus}</span>
+                  <strong>{link.session.date ? formatFullDate(link.session.date) : "Date unavailable"}</strong>
+                  <p>{link.session.clubLabel} · {link.session.shotCount} shots · {link.session.source}</p>
+                  <small>Attached by {link.attachedByName} · {link.attachedByRole}</small>
+                </div>
+                <div className="button-row">
+                  {!link.isPrimary && <button className="secondary-action compact-action" onClick={() => onSetPrimarySessionLink(link.id)} type="button">Mark Primary</button>}
+                  <button className="secondary-action compact-action" onClick={() => onAddSessionData()} type="button">Add Another</button>
+                  <button
+                    className="text-button danger-text-button"
+                    onClick={() => {
+                      if (window.confirm("Remove this session link from the lesson? The underlying session data will stay saved.")) {
+                        onRemoveSessionLink(link.id);
+                      }
+                    }}
+                    type="button"
+                  >
+                    Remove Link
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            title="No session data attached"
+            body={viewerRole === "user"
+              ? "Add launch-monitor results from this lesson so your Coach and MAI Coach can connect the numbers to the video."
+              : "Add launch-monitor results to strengthen this lesson recap."}
+          />
+        )}
+        <VideoSessionMetrics session={primaryLinkedSession} video={video} />
+        {sessionLinks.some((link) => link.recapUpdateStatus === "pending") && (
+          <div className="lesson-recap-update-notice">
+            <strong>New session data added</strong>
+            <span>This lesson recap was created before the session data was attached.</span>
+            {recapUpdateMessage && <small>{recapUpdateMessage}</small>}
+            <div className="button-row">
+              <button
+                className="secondary-action compact-action"
+                onClick={() => {
+                  setRecapUpdateMessage("The lesson is marked ready for Coach review before any recap changes are shared.");
+                  void onUpdate({ status: "Coach Feedback" });
+                }}
+                type="button"
+              >
+                Update MAI Recap
+              </button>
+              <button
+                className="secondary-action compact-action"
+                onClick={() => setRecapUpdateMessage("Current Coach-approved feedback is preserved.")}
+                type="button"
+              >
+                Keep Current Recap
+              </button>
+            </div>
+          </div>
+        )}
       </section>
 
       <section className="panel">
@@ -13928,6 +14809,7 @@ function VideosView({
 }) {
   const [videos, setVideos] = useState<VideoLibraryItem[]>([]);
   const [assignedCoaches, setAssignedCoaches] = useState<CoachSummary[]>([]);
+  const [librarySessions, setLibrarySessions] = useState<Session[]>(sessions);
   const [loading, setLoading] = useState(true);
   const [libraryMessage, setLibraryMessage] = useState("Loading your video library...");
   const [showUpload, setShowUpload] = useState(false);
@@ -13958,9 +14840,11 @@ function VideosView({
   );
   const [uploadState, setUploadState] = useState<"idle" | "saving">("idle");
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [sessionDataVideo, setSessionDataVideo] = useState<VideoLibraryItem | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    setLibrarySessions(sessions);
     if (!authenticated) {
       queueMicrotask(() => {
         setLibraryMessage("Log in to open your private lesson video library.");
@@ -13973,12 +14857,14 @@ function VideosView({
     Promise.all([
       readVideoLibrary(viewerRole === "user" ? undefined : ownerId),
       viewerRole === "user" ? readMyCoaches() : Promise.resolve([] as CoachSummary[]),
+      viewerRole === "user" ? Promise.resolve(null as StaffMemberDetail | null) : readStaffMember(ownerId).catch(() => null),
     ])
-      .then(([records, coaches]) => {
+      .then(([records, coaches, memberDetail]) => {
         if (cancelled) return;
         const items = records.map((record) => createVideoLibraryItem(record));
         setVideos(items);
         setAssignedCoaches(coaches);
+        if (memberDetail?.sessions) setLibrarySessions(sanitizeSessionList(memberDetail.sessions) as Session[]);
         if (requestedVideoId && items.some((item) => item.id === requestedVideoId && canViewLibraryVideo(item, ownerId, viewerRole))) {
           setSelectedVideoId(requestedVideoId);
         }
@@ -13995,15 +14881,15 @@ function VideosView({
     return () => {
       cancelled = true;
     };
-  }, [authenticated, ownerId, requestedVideoId, viewerRole]);
+  }, [authenticated, ownerId, requestedVideoId, sessions, viewerRole]);
 
   const visibleVideos = useMemo(
     () => videos.filter((video) => canViewLibraryVideo(video, ownerId, viewerRole)),
     [ownerId, viewerRole, videos],
   );
   const clubOptions = useMemo(
-    () => Array.from(new Set([...CLUB_ORDER, ...sessions.flatMap((session) => session.shots.map((shot) => shot.club))])),
-    [sessions],
+    () => Array.from(new Set([...CLUB_ORDER, ...librarySessions.flatMap((session) => session.shots.map((shot) => shot.club))])),
+    [librarySessions],
   );
   const filteredVideos = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
@@ -14095,6 +14981,58 @@ function VideosView({
     } catch (error) {
       setVideos((items) => items.map((item) => item.id === videoId ? current : item));
       setLibraryMessage(error instanceof Error ? error.message : "The video update could not be saved.");
+    }
+  }
+
+  function applyLessonSessionLinks(videoId: string, links: LessonSessionLink[], session?: Session) {
+    if (session) {
+      setLibrarySessions((current) => sanitizeSessionList([
+        session,
+        ...current.filter((item) => item.id !== session.id),
+      ]) as Session[]);
+    }
+    const primaryLink = choosePrimaryLessonSessionLink(links) as LessonSessionLink | null;
+    setVideos((items) => items.map((item) => (
+      item.id === videoId
+        ? {
+          ...item,
+          sessionId: primaryLink?.sessionId,
+          sessionLinks: links,
+          status: links.some((link) => link.reviewStatus.toLowerCase().includes("review"))
+            ? "Coach Feedback"
+            : item.status,
+        }
+        : item
+    )));
+  }
+
+  function handleLessonSessionLinked(videoId: string, values: { links: LessonSessionLink[]; session?: Session; recapUpdateRecommended?: boolean }) {
+    applyLessonSessionLinks(videoId, values.links, values.session);
+    setSessionDataVideo(null);
+    setLibraryMessage(
+      values.recapUpdateRecommended
+        ? "Session data attached. Review the lesson recap before sharing updates."
+        : "Session data attached to this lesson.",
+    );
+  }
+
+  async function removeLessonSession(videoId: string, linkId: string) {
+    try {
+      const result = await removeLessonSessionData(videoId, linkId);
+      applyLessonSessionLinks(videoId, result.links ?? []);
+      setLibraryMessage("Session link removed. The underlying session is still saved.");
+    } catch (error) {
+      setLibraryMessage(error instanceof Error ? error.message : "Session link could not be removed.");
+    }
+  }
+
+  async function setPrimaryLessonSession(videoId: string, linkId: string) {
+    try {
+      const result = await markLessonSessionPrimary(videoId, linkId);
+      applyLessonSessionLinks(videoId, result.links ?? []);
+      setLibraryMessage("Primary lesson session updated.");
+    } catch (error) {
+      setLibraryMessage(error instanceof Error ? error.message : "Primary lesson session could not be changed.");
     }
   }
 
@@ -14225,24 +15163,40 @@ function VideosView({
 
   if (selectedVideo) {
     return (
-      <VideoDetailView
-        key={selectedVideo.id}
-        onBack={() => setSelectedVideoId(null)}
-        onDelete={() => void removeVideo(selectedVideo)}
-        onOpenRelated={openVideo}
-        onUpdate={(patch) => updateVideo(selectedVideo.id, patch)}
-        relatedVideos={visibleVideos
-          .filter((video) => video.id !== selectedVideo.id && getVideoPublicationStatus(video) === "Published")
-          .slice(0, 3)}
-        session={sessions.find((session) => session.id === selectedVideo.sessionId)}
-        video={selectedVideo}
-        viewerRole={viewerRole}
-      />
+      <>
+        <VideoDetailView
+          key={selectedVideo.id}
+          onBack={() => setSelectedVideoId(null)}
+          onAddSessionData={() => setSessionDataVideo(selectedVideo)}
+          onDelete={() => void removeVideo(selectedVideo)}
+          onOpenRelated={openVideo}
+          onRemoveSessionLink={(linkId) => void removeLessonSession(selectedVideo.id, linkId)}
+          onSetPrimarySessionLink={(linkId) => void setPrimaryLessonSession(selectedVideo.id, linkId)}
+          onUpdate={(patch) => updateVideo(selectedVideo.id, patch)}
+          relatedVideos={visibleVideos
+            .filter((video) => video.id !== selectedVideo.id && getVideoPublicationStatus(video) === "Published")
+            .slice(0, 3)}
+          session={librarySessions.find((session) => session.id === selectedVideo.sessionId)}
+          sessions={librarySessions}
+          video={selectedVideo}
+          viewerRole={viewerRole}
+        />
+        {sessionDataVideo && (
+          <LessonSessionDataModal
+            key={sessionDataVideo.id}
+            onClose={() => setSessionDataVideo(null)}
+            onLinked={(values) => handleLessonSessionLinked(sessionDataVideo.id, values)}
+            sessions={librarySessions}
+            video={sessionDataVideo}
+            viewerRole={viewerRole}
+          />
+        )}
+      </>
     );
   }
 
   if (showComparison && comparisonVideos.length === 2) {
-    return <VideoComparisonView onBack={() => setShowComparison(false)} sessions={sessions} videos={comparisonVideos} />;
+    return <VideoComparisonView onBack={() => setShowComparison(false)} sessions={librarySessions} videos={comparisonVideos} />;
   }
 
   return (
@@ -14320,9 +15274,10 @@ function VideosView({
               <VideoLibraryCard
                 comparisonSelected={comparisonIds.includes(video.id)}
                 key={video.id}
+                onAddSessionData={() => setSessionDataVideo(video)}
                 onCompare={() => toggleComparison(video.id)}
                 onOpen={() => openVideo(video)}
-                session={sessions.find((session) => session.id === video.sessionId)}
+                session={librarySessions.find((session) => session.id === video.sessionId)}
                 video={video}
               />
             ))}
@@ -14337,9 +15292,10 @@ function VideosView({
                     <VideoLibraryCard
                       comparisonSelected={comparisonIds.includes(video.id)}
                       key={video.id}
+                      onAddSessionData={() => setSessionDataVideo(video)}
                       onCompare={() => toggleComparison(video.id)}
                       onOpen={() => openVideo(video)}
-                      session={sessions.find((session) => session.id === video.sessionId)}
+                      session={librarySessions.find((session) => session.id === video.sessionId)}
                       video={video}
                     />
                   ))}
@@ -14417,6 +15373,17 @@ function VideosView({
             </div>
           </form>
         </div>
+      )}
+
+      {sessionDataVideo && (
+        <LessonSessionDataModal
+          key={sessionDataVideo.id}
+          onClose={() => setSessionDataVideo(null)}
+          onLinked={(values) => handleLessonSessionLinked(sessionDataVideo.id, values)}
+          sessions={librarySessions}
+          video={sessionDataVideo}
+          viewerRole={viewerRole}
+        />
       )}
     </section>
   );

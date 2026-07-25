@@ -6,10 +6,13 @@ const pageSource = await readFile(new URL("../app/page.tsx", import.meta.url), "
 const sessionAnalysisRouteSource = await readFile(new URL("../app/api/session-analysis/route.ts", import.meta.url), "utf8");
 
 test("import front door prioritizes multi-photo upload before CSV and manual entry", () => {
-  const photoIndex = pageSource.indexOf("Upload Photos");
-  const csvIndex = pageSource.indexOf("Upload CSV instead");
-  const manualIndex = pageSource.indexOf("Enter Manually");
+  const importFrontDoorStart = pageSource.indexOf("import-mode-grid import-primary-paths");
+  const importFrontDoorSource = pageSource.slice(importFrontDoorStart);
+  const photoIndex = importFrontDoorSource.indexOf("Upload Photos");
+  const csvIndex = importFrontDoorSource.indexOf("Upload CSV instead");
+  const manualIndex = importFrontDoorSource.indexOf("Enter Manually");
 
+  assert.ok(importFrontDoorStart > -1, "import front door exists");
   assert.ok(photoIndex > -1, "photo import entry exists");
   assert.ok(csvIndex > photoIndex, "CSV follows photo import");
   assert.ok(manualIndex > csvIndex, "manual entry follows CSV");

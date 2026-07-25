@@ -317,6 +317,34 @@ export const lessonVideos = sqliteTable(
   ],
 );
 
+export const lessonSessionLinks = sqliteTable(
+  "lesson_session_links",
+  {
+    id: text("id").primaryKey(),
+    videoId: text("video_id").notNull().references(() => lessonVideos.id, { onDelete: "cascade" }),
+    sessionId: text("session_id").notNull(),
+    memberId: text("member_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    coachId: text("coach_id").references(() => users.id, { onDelete: "set null" }),
+    attachedByUserId: text("attached_by_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    attachedByRole: text("attached_by_role").notNull().default("member"),
+    sourceType: text("source_type").notNull().default("existing_session"),
+    reviewStatus: text("review_status").notNull().default("Ready"),
+    isPrimary: integer("is_primary", { mode: "boolean" }).notNull().default(false),
+    recapUpdateStatus: text("recap_update_status").notNull().default("not_needed"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("lesson_session_links_video_session_unique").on(table.videoId, table.sessionId),
+    index("lesson_session_links_video_idx").on(table.videoId, table.isPrimary, table.createdAt),
+    index("lesson_session_links_member_idx").on(table.memberId, table.createdAt),
+    index("lesson_session_links_session_idx").on(table.sessionId),
+    uniqueIndex("lesson_session_links_one_primary_unique")
+      .on(table.videoId)
+      .where(sql`${table.isPrimary} = 1`),
+  ],
+);
+
 export const videoAiProcessingJobs = sqliteTable(
   "video_ai_processing_jobs",
   {

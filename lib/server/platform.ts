@@ -894,6 +894,29 @@ export async function ensurePlatformSchema(database = getRequiredDatabase()) {
       )`,
     ),
     database.prepare(
+      `CREATE TABLE IF NOT EXISTS lesson_session_links (
+        id TEXT PRIMARY KEY,
+        video_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        member_id TEXT NOT NULL,
+        coach_id TEXT,
+        attached_by_user_id TEXT NOT NULL,
+        attached_by_role TEXT NOT NULL DEFAULT 'member',
+        source_type TEXT NOT NULL DEFAULT 'existing_session',
+        review_status TEXT NOT NULL DEFAULT 'Ready',
+        is_primary INTEGER NOT NULL DEFAULT 0,
+        recap_update_status TEXT NOT NULL DEFAULT 'not_needed',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (video_id) REFERENCES lesson_videos(id) ON DELETE CASCADE,
+        FOREIGN KEY (member_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (coach_id) REFERENCES users(id) ON DELETE SET NULL,
+        FOREIGN KEY (attached_by_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CHECK (attached_by_role IN ('admin', 'coach', 'member')),
+        CHECK (is_primary IN (0, 1))
+      )`,
+    ),
+    database.prepare(
       `CREATE TABLE IF NOT EXISTS auth_login_tokens (
         id TEXT PRIMARY KEY,
         email TEXT NOT NULL,
@@ -961,6 +984,42 @@ export async function ensurePlatformSchema(database = getRequiredDatabase()) {
     database.prepare("CREATE INDEX IF NOT EXISTS member_activity_target_idx ON member_activity_log(target_user_id, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS video_views_video_idx ON video_views(video_id)"),
     database.prepare("CREATE INDEX IF NOT EXISTS video_email_notifications_video_idx ON video_email_notifications(video_id)"),
+    database.prepare("CREATE UNIQUE INDEX IF NOT EXISTS lesson_session_links_video_session_unique ON lesson_session_links(video_id, session_id)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS lesson_session_links_video_idx ON lesson_session_links(video_id, is_primary, created_at)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS lesson_session_links_member_idx ON lesson_session_links(member_id, created_at)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS lesson_session_links_session_idx ON lesson_session_links(session_id)"),
+    database.prepare(
+      `CREATE UNIQUE INDEX IF NOT EXISTS lesson_session_links_one_primary_unique
+       ON lesson_session_links(video_id)
+       WHERE is_primary = 1`,
+    ),
+    database.prepare(
+      `INSERT OR IGNORE INTO lesson_session_links (
+         id, video_id, session_id, member_id, coach_id, attached_by_user_id,
+         attached_by_role, source_type, review_status, is_primary, recap_update_status,
+         created_at, updated_at
+       )
+       SELECT
+         'legacy-' || id || '-' || session_data_id,
+         id,
+         session_data_id,
+         member_id,
+         coach_id,
+         COALESCE(coach_id, member_id),
+         CASE
+           WHEN coach_id IS NOT NULL THEN 'coach'
+           WHEN uploaded_by_role IN ('admin', 'coach', 'member') THEN uploaded_by_role
+           ELSE 'member'
+         END,
+         'legacy_session_link',
+         'Ready',
+         1,
+         'not_needed',
+         created_at,
+         updated_at
+       FROM lesson_videos
+       WHERE session_data_id IS NOT NULL AND TRIM(session_data_id) <> ''`,
+    ),
     database.prepare("CREATE INDEX IF NOT EXISTS auth_login_tokens_email_idx ON auth_login_tokens(email, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS auth_sessions_user_idx ON auth_sessions(user_id, expires_at)"),
   ]);

@@ -22,6 +22,10 @@ import {
   queueVideoRecapWorkflowAfterUpload,
 } from "@/lib/server/video-ai-recap";
 import {
+  loadLessonSessionLinksForVideos,
+  upsertLessonSessionLink,
+} from "@/lib/server/lesson-session-links";
+import {
   MAX_AUDIO_EXTRACTION_TRANSCRIPTION_BYTES,
   mediaProbeHasAudio,
   mediaProbeResultFromBytes,
@@ -617,7 +621,16 @@ function uploadedByLabel(role: string) {
   return "User";
 }
 
-function serializeVideo(row: VideoRow, viewerRole?: string) {
+type SerializedLessonSessionLink = {
+  id: string;
+  isPrimary: boolean;
+  sessionId: string;
+  [key: string]: unknown;
+};
+
+function serializeVideo(row: VideoRow, viewerRole?: string, sessionLinks: SerializedLessonSessionLink[] = []) {
+  const primarySessionLink = sessionLinks.find((link) => link.isPrimary) ?? sessionLinks[0];
+  const primarySessionId = primarySessionLink?.sessionId ?? row.session_data_id ?? undefined;
   return {
     id: row.id,
     ownerId: row.member_id,
@@ -633,7 +646,8 @@ function serializeVideo(row: VideoRow, viewerRole?: string) {
     uploadedByRole: row.uploaded_by_role,
     type: row.video_type,
     tags: parseTags(row.tags_json),
-    sessionId: row.session_data_id ?? undefined,
+    sessionId: primarySessionId,
+    sessionLinks,
     club: row.club ?? undefined,
     swingType: row.swing_type ?? undefined,
     focusArea: row.focus_area ?? undefined,
@@ -680,6 +694,11 @@ async function getVideo(database: D1Database, videoId: string) {
     .prepare(`${VIDEO_SELECT} WHERE videos.id = ?`)
     .bind(videoId)
     .first<VideoRow>();
+}
+
+async function serializeSingleVideo(database: D1Database, row: VideoRow, viewerRole?: string) {
+  const links = await loadLessonSessionLinksForVideos(database, [row.id]);
+  return serializeVideo(row, viewerRole, links.get(row.id) ?? []);
 }
 
 async function requireVideoAccess(videoId: string, mode: "read" | "manage") {
@@ -786,7 +805,8 @@ export async function GET(request: Request) {
     const result = bindings.length
       ? await statement.bind(...bindings).all<VideoRow>()
       : await statement.all<VideoRow>();
-    return Response.json({ videos: result.results.map((row) => serializeVideo(row, identity.role)) });
+    const links = await loadLessonSessionLinksForVideos(database, result.results.map((row) => row.id));
+    return Response.json({ videos: result.results.map((row) => serializeVideo(row, identity.role, links.get(row.id) ?? [])) });
   } catch (error) {
     return responseFromError(error);
   }
@@ -901,10 +921,36 @@ export async function POST(request: Request) {
       aiProcessingDisabledReason = "AI recap generation was disabled because no assigned coach was selected.";
     }
 
+    const initialSessionId = text(payload.sessionId, 120);
+    if (initialSessionId) {
+      await upsertLessonSessionLink({
+        assignedMemberIds,
+        database,
+        identity,
+        isPrimary: true,
+        sessionId: initialSessionId,
+        sourceType: "coach_lesson_upload",
+        video: {
+          id: videoId,
+          member_id: memberId,
+          coach_id: coachId,
+          publication_status: publicationStatus,
+          lesson_summary: text(payload.lessonSummary, 4000),
+          worked_on: text(payload.workedOn, 4000),
+          key_issue: text(payload.keyIssue, 4000),
+          improvement: text(payload.improvement, 4000),
+          practice_assignment: text(payload.practiceAssignment, 4000),
+          recommended_drill: text(payload.recommendedDrill, 4000),
+          member_facing_notes: text(payload.memberFacingNotes, 4000),
+          next_session_goal: text(payload.nextSessionGoal, 4000),
+        },
+      });
+    }
+
     const row = await getVideo(database, videoId);
     return Response.json({
       aiProcessingDisabledReason: aiProcessingDisabledReason || undefined,
-      video: row ? serializeVideo(row, identity.role) : null,
+      video: row ? await serializeSingleVideo(database, row, identity.role) : null,
     }, { status: 201 });
   } catch (error) {
     return responseFromError(error);
@@ -1029,7 +1075,7 @@ export async function PATCH(request: Request) {
           .bind(crypto.randomUUID(), video.id, identity.id, viewedAt),
       ]);
       const updated = await getVideo(database, video.id);
-      return Response.json({ video: updated ? serializeVideo(updated, identity.role) : null });
+      return Response.json({ video: updated ? await serializeSingleVideo(database, updated, identity.role) : null });
     }
 
     const assignedMemberIds = await getAssignedMemberIds(identity, database);
@@ -1100,6 +1146,19 @@ export async function PATCH(request: Request) {
         )
         .run();
 
+      const nextSessionId = payload.sessionId === null ? "" : optionalText(payload.sessionId, 120) ?? "";
+      if (nextSessionId) {
+        await upsertLessonSessionLink({
+          assignedMemberIds,
+          database,
+          identity,
+          isPrimary: true,
+          sessionId: nextSessionId,
+          sourceType: "existing_session",
+          video,
+        });
+      }
+
       if (publicationStatus === "Published") {
         await upsertStructuredCoachFeedback(database, video, payload);
         await recordActivity({
@@ -1154,7 +1213,7 @@ export async function PATCH(request: Request) {
     }
 
     const updated = await getVideo(database, video.id);
-    return Response.json({ video: updated ? serializeVideo(updated, identity.role) : null });
+    return Response.json({ video: updated ? await serializeSingleVideo(database, updated, identity.role) : null });
   } catch (error) {
     return responseFromError(error);
   }
@@ -1182,6 +1241,7 @@ export async function DELETE(request: Request) {
     await database.batch([
       database.prepare("DELETE FROM video_views WHERE video_id = ?").bind(video.id),
       database.prepare("DELETE FROM video_email_notifications WHERE video_id = ?").bind(video.id),
+      database.prepare("DELETE FROM lesson_session_links WHERE video_id = ?").bind(video.id),
       database.prepare("DELETE FROM video_lesson_recap_drafts WHERE video_id = ?").bind(video.id),
       database.prepare("DELETE FROM video_transcripts WHERE video_id = ?").bind(video.id),
       database.prepare("DELETE FROM video_ai_processing_jobs WHERE video_id = ?").bind(video.id),

@@ -3067,6 +3067,10 @@ dd {
 }
 
 @media (max-width: 760px) {
+  .lesson-session-mode {
+    grid-template-columns: 1fr;
+  }
+
   .performance-review-controls,
   .shot-delete-table-heading {
     align-items: stretch;
@@ -4197,6 +4201,22 @@ button:disabled {
   text-align: left;
 }
 
+.video-session-quick-action {
+  margin: 0 13px 13px;
+  min-height: 36px;
+  border: 1px solid rgba(47, 235, 118, 0.42);
+  border-radius: 8px;
+  background: rgba(47, 235, 118, 0.1);
+  color: var(--green);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.video-session-quick-action:hover {
+  background: rgba(47, 235, 118, 0.18);
+}
+
 .video-thumbnail {
   position: relative;
   aspect-ratio: 16 / 9;
@@ -5260,6 +5280,246 @@ button:disabled {
 .video-session-block {
   display: grid;
   gap: 14px;
+}
+
+.lesson-session-data-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.lesson-session-link-list {
+  display: grid;
+  gap: 10px;
+}
+
+.lesson-session-link-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+  padding: 14px;
+}
+
+.lesson-session-link-card.primary {
+  border-color: rgba(47, 235, 118, 0.5);
+  box-shadow: inset 0 0 0 1px rgba(47, 235, 118, 0.08);
+}
+
+.lesson-session-link-card span,
+.lesson-session-link-card small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.lesson-session-link-card strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--ink);
+  font-size: 17px;
+}
+
+.lesson-session-link-card p {
+  margin: 4px 0;
+  color: var(--muted);
+}
+
+.lesson-recap-update-notice {
+  display: grid;
+  gap: 8px;
+  border: 1px solid rgba(255, 211, 38, 0.42);
+  border-radius: 8px;
+  background: rgba(255, 211, 38, 0.1);
+  padding: 14px;
+}
+
+.lesson-recap-update-notice strong {
+  color: var(--ink);
+}
+
+.lesson-recap-update-notice span,
+.lesson-recap-update-notice small {
+  color: var(--muted);
+}
+
+.lesson-session-modal {
+  max-width: 980px;
+}
+
+.lesson-session-mode {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.lesson-session-club-field,
+.lesson-session-notes-field,
+.lesson-session-form {
+  display: grid;
+  gap: 10px;
+}
+
+.lesson-session-club-field input,
+.lesson-session-notes-field textarea,
+.lesson-session-form input,
+.lesson-session-form select,
+.lesson-session-form textarea {
+  width: 100%;
+}
+
+.lesson-session-club-field small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.lesson-session-picker-list {
+  display: grid;
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.lesson-session-picker-list button {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+  color: var(--ink);
+  cursor: pointer;
+  padding: 12px;
+  text-align: left;
+}
+
+.lesson-session-picker-list button.selected {
+  border-color: var(--green);
+  background: rgba(47, 235, 118, 0.12);
+}
+
+.lesson-session-picker-list span,
+.lesson-session-picker-list p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.lesson-session-photo-list {
+  max-height: 240px;
+  overflow: auto;
+}
+
+.coached-student-dashboard {
+  display: grid;
+  gap: 16px;
+}
+
+.coached-student-hero,
+.coach-priority-card,
+.latest-lesson-card,
+.action-needed-card,
+.coach-progress-card,
+.coached-empty-lesson-card,
+.coached-more-ways {
+  border-color: rgba(47, 235, 118, 0.22);
+  background:
+    linear-gradient(135deg, rgba(47, 235, 118, 0.08), transparent 48%),
+    var(--surface);
+}
+
+.coached-student-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 18px;
+  align-items: center;
+  border: 1px solid rgba(47, 235, 118, 0.28);
+  border-radius: 8px;
+  padding: 18px;
+}
+
+.coached-student-hero h2,
+.coached-student-hero p {
+  margin: 0;
+}
+
+.coached-student-hero p {
+  color: var(--muted);
+}
+
+.coached-student-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.coach-priority-card-grid,
+.coached-student-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.coached-student-detail-grid {
+  grid-template-columns: 1.2fr 1fr 1fr;
+}
+
+.coach-priority-card {
+  display: grid;
+  gap: 12px;
+}
+
+.coach-priority-card div,
+.latest-lesson-card,
+.action-needed-card,
+.coach-progress-card,
+.coached-empty-lesson-card,
+.coached-more-ways {
+  display: grid;
+  gap: 10px;
+}
+
+.coach-priority-card span,
+.latest-lesson-card span,
+.coach-progress-card dt {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.coach-priority-card strong,
+.latest-lesson-card strong,
+.action-needed-card strong {
+  color: var(--ink);
+  font-size: 20px;
+}
+
+.coach-priority-card p,
+.latest-lesson-card p,
+.action-needed-card p,
+.coach-progress-card dd,
+.coached-empty-lesson-card p,
+.coached-more-ways p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.coach-progress-card dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.coach-progress-card div {
+  display: grid;
+  gap: 3px;
+}
+
+.coach-progress-card dd {
+  margin: 0;
+  color: var(--ink);
+  font-weight: 850;
 }
 
 .video-session-heading {
@@ -6990,6 +7250,23 @@ button:disabled {
 
   .video-detail-layout {
     grid-template-columns: 1fr;
+  }
+
+  .coached-student-hero,
+  .coach-priority-card-grid,
+  .coached-student-detail-grid,
+  .lesson-session-link-card {
+    grid-template-columns: 1fr;
+  }
+
+  .coached-student-actions,
+  .lesson-session-link-card .button-row {
+    justify-content: stretch;
+  }
+
+  .coached-student-actions > button,
+  .lesson-session-link-card .button-row > button {
+    width: 100%;
   }
 
   .video-notes-column {
