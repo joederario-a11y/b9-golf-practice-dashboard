@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { MaiCoachLogoFull, MaiCoachLogoMark } from "@/components/brand/mai-coach-logo";
 import { APP_BUILD_INFO } from "@/lib/build-info";
 import { accountPayloadConfirmsUser } from "@/lib/auth-session-policy.mjs";
@@ -770,7 +770,7 @@ type VideoType =
   | "System Test"
   | "User Upload"
   | "Other";
-type VideoSwingType = "Driver" | "Iron" | "Wedge" | "Putting" | "Chipping" | "Bunker" | "Other";
+type VideoSwingType = "Full Swing" | "Pitch" | "Chip" | "Putt" | "Drill" | "Setup/Rehearsal" | "Other";
 type VideoFocusArea =
   | "Driver"
   | "Irons"
@@ -1118,6 +1118,7 @@ type VideoLibraryRecord = {
   lessonDate?: string;
   focusArea?: VideoFocusArea;
   publicationStatus?: VideoPublicationStatus;
+  publishedAt?: string;
   isViewedByMember?: boolean;
   viewedAt?: string;
   emailStatus?: VideoEmailStatus;
@@ -1566,7 +1567,7 @@ const VIDEO_TYPES: VideoType[] = [
   "User Upload",
   "Other",
 ];
-const VIDEO_SWING_TYPES: VideoSwingType[] = ["Driver", "Iron", "Wedge", "Putting", "Chipping", "Bunker", "Other"];
+const VIDEO_SWING_TYPES: VideoSwingType[] = ["Full Swing", "Pitch", "Chip", "Putt", "Drill", "Setup/Rehearsal", "Other"];
 const VIDEO_FOCUS_AREAS: VideoFocusArea[] = [
   "Driver",
   "Irons",
@@ -3321,6 +3322,23 @@ function getClubDisplayName(club: string) {
 }
 
 const IMPORT_CLUB_OPTIONS = Array.from(new Set([
+  "Driver",
+  "3-Wood",
+  "5-Wood",
+  "7-Wood",
+  "Hybrid",
+  "2-Iron",
+  "3-Iron",
+  "4-Iron",
+  "5-Iron",
+  "6-Iron",
+  "7-Iron",
+  "8-Iron",
+  "9-Iron",
+  "Pitching Wedge",
+  "Gap Wedge",
+  "Sand Wedge",
+  "Lob Wedge",
   ...DEFAULT_IMPORT_CLUB_ORDER,
   "46° Wedge",
   "48° Wedge",
@@ -3333,8 +3351,73 @@ const IMPORT_CLUB_OPTIONS = Array.from(new Set([
   "62° Wedge",
   "64° Wedge",
   "Driving Iron",
+  "Putter",
   UNKNOWN_IMPORT_CLUB,
 ]));
+
+function ClubSelector({
+  allowClear = true,
+  applyLabel = "Apply to all shots",
+  className,
+  compact = false,
+  disabled = false,
+  help,
+  label,
+  onApplyToAll,
+  onChange,
+  options = IMPORT_CLUB_OPTIONS,
+  placeholder = "Search or type a club",
+  value,
+}: {
+  allowClear?: boolean;
+  applyLabel?: string;
+  className?: string;
+  compact?: boolean;
+  disabled?: boolean;
+  help?: ReactNode;
+  label: ReactNode;
+  onApplyToAll?: () => void;
+  onChange: (value: string) => void;
+  options?: string[];
+  placeholder?: string;
+  value: string;
+}) {
+  const inputId = useId();
+  const listId = useId();
+  const displayValue = value ? getClubDisplayName(value) : "";
+
+  return (
+    <div className={cls("club-selector", compact && "compact", className)}>
+      <label htmlFor={inputId}>{label}</label>
+      <div className="club-selector-control">
+        <input
+          disabled={disabled}
+          id={inputId}
+          list={listId}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={placeholder}
+          value={displayValue}
+        />
+        {allowClear && displayValue && (
+          <button className="club-selector-clear" disabled={disabled} onClick={() => onChange("")} type="button">
+            Clear club
+          </button>
+        )}
+      </div>
+      <datalist id={listId}>
+        {options.map((club) => (
+          <option key={club} value={getClubDisplayName(club)} />
+        ))}
+      </datalist>
+      {help && <small>{help}</small>}
+      {onApplyToAll && (
+        <button className="secondary-action compact-action" disabled={disabled || !displayValue} onClick={onApplyToAll} type="button">
+          {applyLabel}
+        </button>
+      )}
+    </div>
+  );
+}
 
 function isUnknownReviewClub(value: string | undefined | null) {
   return !value || isUnknownLaunchMonitorClubName(value);
@@ -6495,6 +6578,7 @@ export default function Home() {
   const [videoLibraryMemberId, setVideoLibraryMemberId] = useState("current-user");
   const [videoLibraryMemberName, setVideoLibraryMemberName] = useState("");
   const [requestedVideoId, setRequestedVideoId] = useState<string | null>(null);
+  const [videoLibraryResetKey, setVideoLibraryResetKey] = useState(0);
   const [practiceProfile, setPracticeProfile] = useState<UserPracticeProfile | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(true);
   const [lastImport, setLastImport] = useState<LastImport>(EMPTY_LAST_IMPORT);
@@ -7560,12 +7644,16 @@ export default function Home() {
 
   function navigateToTab(tab: Tab) {
     setActiveTab(tab);
+    if (tab === "videos") {
+      setRequestedVideoId(null);
+      setVideoLibraryResetKey((value) => value + 1);
+    }
     if (typeof window === "undefined") return;
 
     const url = new URL(window.location.href);
     url.pathname = pathForTab(tab);
     url.searchParams.delete("tab");
-    if (tab !== "videos") url.searchParams.delete("video");
+    url.searchParams.delete("video");
     if (tab !== "sessions") {
       url.searchParams.delete("session");
       url.searchParams.delete("club");
@@ -7777,6 +7865,7 @@ export default function Home() {
             ownerId={workspaceRole === "user" ? accountUser?.id ?? "current-user" : videoLibraryMemberId}
             ownerName={workspaceRole === "user" ? accountUser?.displayName : videoLibraryMemberName}
             requestedVideoId={requestedVideoId}
+            routeResetKey={videoLibraryResetKey}
             sessions={sessions}
             viewerRole={workspaceRole}
           />
@@ -9284,21 +9373,18 @@ function SessionsView({
               <button className="text-button" onClick={() => setIsEditingSession(false)} type="button">Close</button>
             </div>
             <div className="session-edit-grid">
-              <label>
-                <span>Session-level club</span>
-                <input
-                  list="session-edit-club-options"
-                  onChange={(event) => {
-                    setEditSessionClub(event.target.value);
-                    const nextClub = normalizeReviewClubInput(event.target.value);
-                    setEditShotClubs(Object.fromEntries(
-                      selectedSession.shots.map((shot) => [shot.id, getClubDisplayName(nextClub)]),
-                    ));
-                  }}
-                  placeholder="Example: 8-Iron, 56° Wedge, Unknown Club"
-                  value={editSessionClub}
-                />
-              </label>
+              <ClubSelector
+                label="Session-level club"
+                onChange={(value) => {
+                  setEditSessionClub(value);
+                  const nextClub = normalizeReviewClubInput(value);
+                  setEditShotClubs(Object.fromEntries(
+                    selectedSession.shots.map((shot) => [shot.id, getClubDisplayName(nextClub)]),
+                  ));
+                }}
+                placeholder="Example: 8-Iron, 56° Wedge, Unknown Club"
+                value={editSessionClub}
+              />
               <label>
                 <span>Session notes</span>
                 <textarea
@@ -9308,11 +9394,6 @@ function SessionsView({
                 />
               </label>
             </div>
-            <datalist id="session-edit-club-options">
-              {IMPORT_CLUB_OPTIONS.map((club) => (
-                <option key={club} value={getClubDisplayName(club)} />
-              ))}
-            </datalist>
             <div className="session-edit-shot-list">
               <div className="session-edit-shot-row header">
                 <span>Shot</span>
@@ -9322,13 +9403,14 @@ function SessionsView({
               {selectedSession.shots.map((shot, index) => (
                 <div className="session-edit-shot-row" key={shot.id}>
                   <span>{shot.sourceShotNumber ? `#${shot.sourceShotNumber}` : `#${index + 1}`}</span>
-                  <input
-                    aria-label={`Club for shot ${shot.sourceShotNumber ?? index + 1}`}
-                    list="session-edit-club-options"
-                    onChange={(event) => setEditShotClubs((current) => ({
+                  <ClubSelector
+                    compact
+                    label={`Club for shot ${shot.sourceShotNumber ?? index + 1}`}
+                    onChange={(value) => setEditShotClubs((current) => ({
                       ...current,
-                      [shot.id]: event.target.value,
+                      [shot.id]: value,
                     }))}
+                    placeholder="Club"
                     value={editShotClubs[shot.id] ?? getClubDisplayName(shot.club)}
                   />
                   <span>{formatAvailableMetric(getShotMetric(shot, "carry") ?? Number.NaN, "yd")}</span>
@@ -9955,7 +10037,7 @@ function AdminView({
   const [sessionForm, setSessionForm] = useState({
     title: "",
     date: getTodayDateString(),
-    club: "SW",
+    club: UNKNOWN_IMPORT_CLUB,
     carry: "",
     total: "",
     ballSpeed: "",
@@ -10210,11 +10292,12 @@ function AdminView({
         action: "addSession",
         memberId: selectedMember.id,
         ...sessionForm,
+        club: sessionForm.club || UNKNOWN_IMPORT_CLUB,
       });
       setSessionForm({
         title: "",
         date: getTodayDateString(),
-        club: "SW",
+        club: UNKNOWN_IMPORT_CLUB,
         carry: "",
         total: "",
         ballSpeed: "",
@@ -10587,7 +10670,13 @@ function AdminView({
               <div className="video-form-grid">
                 <label className="video-form-wide"><span>Session name</span><input value={sessionForm.title} onChange={(event) => setSessionForm((current) => ({ ...current, title: event.target.value }))} placeholder="Wedge distance control" /></label>
                 <label><span>Date</span><input type="date" value={sessionForm.date} onChange={(event) => setSessionForm((current) => ({ ...current, date: event.target.value }))} /></label>
-                <label><span>Club</span><select value={sessionForm.club} onChange={(event) => setSessionForm((current) => ({ ...current, club: event.target.value }))}>{CLUB_ORDER.map((club) => <option key={club} value={club}>{getClubDisplayName(club)}</option>)}</select></label>
+                <ClubSelector
+                  compact
+                  label="Club"
+                  onChange={(value) => setSessionForm((current) => ({ ...current, club: value ? normalizeReviewClubInput(value) : "" }))}
+                  placeholder="Search, type, or save as Unknown Club"
+                  value={sessionForm.club}
+                />
                 {(["carry", "total", "ballSpeed", "clubSpeed", "smash", "launch", "spin", "dispersion"] as const).map((field) => (
                   <label key={field}><span>{field.replace(/([A-Z])/g, " $1")}</span><input inputMode="decimal" value={sessionForm[field]} onChange={(event) => setSessionForm((current) => ({ ...current, [field]: event.target.value }))} /></label>
                 ))}
@@ -10957,7 +11046,7 @@ function CoachVideoWorkspace({
   const [coachSessionForm, setCoachSessionForm] = useState({
     title: "",
     date: getTodayDateString(),
-    club: "SW",
+    club: UNKNOWN_IMPORT_CLUB,
     carry: "",
     total: "",
     ballSpeed: "",
@@ -12374,11 +12463,12 @@ function CoachVideoWorkspace({
         action: "addSession",
         memberId: selectedMember.id,
         ...coachSessionForm,
+        club: coachSessionForm.club || UNKNOWN_IMPORT_CLUB,
       });
       setCoachSessionForm({
         title: "",
         date: getTodayDateString(),
-        club: "SW",
+        club: UNKNOWN_IMPORT_CLUB,
         carry: "",
         total: "",
         ballSpeed: "",
@@ -13048,7 +13138,13 @@ function CoachVideoWorkspace({
               <div className="video-form-grid">
                 <label className="video-form-wide"><span>Session name</span><input value={coachSessionForm.title} onChange={(event) => setCoachSessionForm((current) => ({ ...current, title: event.target.value }))} placeholder="Wedge distance control" /></label>
                 <label><span>Date</span><input type="date" value={coachSessionForm.date} onChange={(event) => setCoachSessionForm((current) => ({ ...current, date: event.target.value }))} /></label>
-                <label><span>Club</span><select value={coachSessionForm.club} onChange={(event) => setCoachSessionForm((current) => ({ ...current, club: event.target.value }))}>{CLUB_ORDER.map((club) => <option key={club} value={club}>{getClubDisplayName(club)}</option>)}</select></label>
+                <ClubSelector
+                  compact
+                  label="Club"
+                  onChange={(value) => setCoachSessionForm((current) => ({ ...current, club: value ? normalizeReviewClubInput(value) : "" }))}
+                  placeholder="Search, type, or save as Unknown Club"
+                  value={coachSessionForm.club}
+                />
                 {(["carry", "total", "ballSpeed", "clubSpeed", "smash", "launch", "spin", "dispersion"] as const).map((field) => (
                   <label key={field}><span>{field.replace(/([A-Z])/g, " $1")}</span><input inputMode="decimal" value={coachSessionForm[field]} onChange={(event) => setCoachSessionForm((current) => ({ ...current, [field]: event.target.value }))} /></label>
                 ))}
@@ -14018,21 +14114,14 @@ function LessonSessionDataModal({
           <button className={mode === "manual" ? "active" : ""} onClick={() => setMode("manual")} type="button">Enter Manually</button>
         </div>
 
-        <label className="lesson-session-club-field">
-          <span>Club correction</span>
-          <input
-            list="lesson-session-club-options"
-            onChange={(event) => setClubDraft(event.target.value)}
-            placeholder="Leave blank to keep detected club, or enter Unknown Club"
-            value={clubDraft}
-          />
-          <datalist id="lesson-session-club-options">
-            {IMPORT_CLUB_OPTIONS.map((club) => (
-              <option key={club} value={getClubDisplayName(club)} />
-            ))}
-          </datalist>
-          <small>Use this only when the photos or CSV missed the club. Missing values remain NA.</small>
-        </label>
+        <ClubSelector
+          className="lesson-session-club-field"
+          help="Use this only when the photos or CSV missed the club. Missing values remain NA."
+          label="Club correction"
+          onChange={setClubDraft}
+          placeholder="Leave blank to keep detected club, or enter Unknown Club"
+          value={clubDraft}
+        />
 
         {mode === "existing" && (
           <form className="lesson-session-form" onSubmit={linkExistingSession}>
@@ -14147,7 +14236,7 @@ function LessonSessionDataModal({
           <form className="lesson-session-form manual-entry-panel" onSubmit={submitManualSession}>
             <div className="manual-form-grid">
               <label><span>Date</span><input onChange={(event) => updateManualField("date", event.target.value)} type="date" value={manualForm.date} /></label>
-              <label><span>Club</span><select value={manualForm.club} onChange={(event) => updateManualField("club", event.target.value)}>{IMPORT_CLUB_OPTIONS.map((club) => <option key={club} value={club}>{getClubDisplayName(club)}</option>)}</select></label>
+              <ClubSelector compact label="Club" onChange={(value) => updateManualField("club", normalizeReviewClubInput(value))} value={manualForm.club} />
               <label className="manual-form-wide"><span>Location</span><input onChange={(event) => updateManualField("location", event.target.value)} placeholder="Back Nine Woodstock" value={manualForm.location} /></label>
               {MANUAL_SHOT_FIELDS.map((field) => (
                 <label key={field.key}>
@@ -14743,10 +14832,26 @@ function ApprovedTranscriptDisclosure({ videoId }: { videoId: string }) {
 
   if (!state?.draft || state.draft.status !== "published" || !state.transcript?.text) return null;
 
+  const transcriptText = state.transcript.text.trim();
+  const wordCount = transcriptText.split(/\s+/).filter(Boolean).length;
+  const durationSeconds = typeof state.transcript.durationSeconds === "number" ? state.transcript.durationSeconds : null;
+  const lowSpeechDetected = wordCount > 0 && (wordCount < 25 || (durationSeconds !== null && durationSeconds >= 90 && wordCount < 60));
+
   return (
     <details className="approved-transcript">
-      <summary>Approved lesson transcript</summary>
-      <p>{state.transcript.text}</p>
+      <summary>View Lesson Transcript</summary>
+      <div className="approved-transcript-body">
+        <div>
+          <h3>Lesson Transcript</h3>
+          <span>Generated from lesson audio{durationSeconds ? ` · ${formatVideoDuration(durationSeconds)}` : ""}.</span>
+        </div>
+        {lowSpeechDetected && (
+          <p className="transcript-quality-warning">
+            Only a small amount of speech was detected. Review the transcript or retry audio processing.
+          </p>
+        )}
+        <p>{transcriptText}</p>
+      </div>
     </details>
   );
 }
@@ -15312,6 +15417,7 @@ function VideosView({
   ownerId,
   ownerName,
   requestedVideoId,
+  routeResetKey,
   sessions,
   viewerRole,
 }: {
@@ -15319,6 +15425,7 @@ function VideosView({
   ownerId: string;
   ownerName?: string;
   requestedVideoId?: string | null;
+  routeResetKey?: number;
   sessions: Session[];
   viewerRole: VideoViewerRole;
 }) {
@@ -15357,6 +15464,12 @@ function VideosView({
   const [uploadState, setUploadState] = useState<"idle" | "saving">("idle");
   const [uploadProgress, setUploadProgress] = useState(0);
   const [sessionDataVideo, setSessionDataVideo] = useState<VideoLibraryItem | null>(null);
+
+  useEffect(() => {
+    if (!requestedVideoId) {
+      setSelectedVideoId(null);
+    }
+  }, [requestedVideoId, routeResetKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -15404,9 +15517,17 @@ function VideosView({
     [ownerId, viewerRole, videos],
   );
   const clubOptions = useMemo(
-    () => Array.from(new Set([...CLUB_ORDER, ...librarySessions.flatMap((session) => session.shots.map((shot) => shot.club))])),
+    () => Array.from(new Set([...IMPORT_CLUB_OPTIONS, ...librarySessions.flatMap((session) => session.shots.map((shot) => shot.club))])),
     [librarySessions],
   );
+  const videoLibrarySortTime = useCallback((video: VideoLibraryItem) => {
+    const candidates = [video.publishedAt, video.emailSentAt, video.lessonDate, video.uploadedAt];
+    for (const candidate of candidates) {
+      const timestamp = candidate ? new Date(candidate).getTime() : Number.NaN;
+      if (Number.isFinite(timestamp)) return timestamp;
+    }
+    return 0;
+  }, []);
   const filteredVideos = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
     const dateCutoff =
@@ -15444,13 +15565,13 @@ function VideosView({
         if (sessionFilter === "none" && video.sessionId) return false;
         if (reviewFilter === "reviewed" && video.status !== "Reviewed") return false;
         if (reviewFilter === "unreviewed" && video.status === "Reviewed") return false;
-        if (dateCutoff && new Date(video.uploadedAt).getTime() < dateCutoff) return false;
+        if (dateCutoff && videoLibrarySortTime(video) < dateCutoff) return false;
         return true;
       })
       .sort((a, b) =>
         sortOrder === "newest"
-          ? new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime()
-          : new Date(a.uploadedAt).getTime() - new Date(b.uploadedAt).getTime(),
+          ? videoLibrarySortTime(b) - videoLibrarySortTime(a)
+          : videoLibrarySortTime(a) - videoLibrarySortTime(b),
       );
   }, [
     clubFilter,
@@ -15462,6 +15583,7 @@ function VideosView({
     sortOrder,
     typeFilter,
     uploaderFilter,
+    videoLibrarySortTime,
     visibleVideos,
   ]);
   const selectedVideo = videos.find((video) => video.id === selectedVideoId);
@@ -15478,7 +15600,8 @@ function VideosView({
     .map((videoId) => videos.find((video) => video.id === videoId))
     .filter((video): video is VideoLibraryItem => Boolean(video));
   const timelineGroups = filteredVideos.reduce<Record<string, VideoLibraryItem[]>>((groups, video) => {
-    const uploadDate = parseDisplayDate(video.uploadedAt);
+    const sortTimestamp = videoLibrarySortTime(video);
+    const uploadDate = sortTimestamp ? new Date(sortTimestamp) : parseDisplayDate(video.uploadedAt);
     const key = uploadDate
       ? new Intl.DateTimeFormat("en", { month: "long", year: "numeric" }).format(uploadDate)
       : "Date unavailable";
@@ -15870,12 +15993,14 @@ function VideosView({
               <small>MP4, MOV, WebM, or M4V · up to 500 MB</small>
             </label>
 
-            <div className="video-form-grid">
-              <label className="video-form-wide"><span>Title</span><input maxLength={120} onChange={(event) => setUploadTitle(event.target.value)} placeholder={videoFile ? videoDateTitleFromFile(videoFile) : "Jul 19, 2026"} value={uploadTitle} /></label>
+            <details className="coach-lesson-details member-upload-details">
+              <summary>Add Lesson Details</summary>
+              <div className="video-form-grid">
+              <label className="video-form-wide"><span>Title optional</span><input maxLength={120} onChange={(event) => setUploadTitle(event.target.value)} placeholder={videoFile ? videoDateTitleFromFile(videoFile) : "Jul 19, 2026"} value={uploadTitle} /></label>
               <label><span>Video type</span><select value={uploadType} onChange={(event) => setUploadType(event.target.value as VideoType)}>{VIDEO_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>
               <label><span>Visibility</span><select value={uploadVisibility} onChange={(event) => setUploadVisibility(event.target.value as VideoVisibility)}>{viewerRole === "user" ? <><option>User only</option><option>Coach + User</option></> : viewerRole === "coach" ? <><option>Coach + User</option><option>Admin only</option></> : <><option>User only</option><option>Coach + User</option><option>Admin only</option></>}</select></label>
               <label><span>Related session</span><select value={uploadSessionId} onChange={(event) => setUploadSessionId(event.target.value)}><option value="">No session attached</option>{sessions.map((session) => <option key={session.id} value={session.id}>{formatDate(session.date)} · {session.title}</option>)}</select></label>
-              <label><span>Club used</span><select value={uploadClub} onChange={(event) => setUploadClub(event.target.value)}><option value="">Not specified</option>{clubOptions.map((club) => <option key={club} value={club}>{getClubDisplayName(club)}</option>)}</select></label>
+              <ClubSelector compact label="Club" onChange={(value) => setUploadClub(value ? normalizeReviewClubInput(value) : "")} value={uploadClub} />
               <label><span>Swing type</span><select value={uploadSwingType} onChange={(event) => setUploadSwingType(event.target.value as VideoSwingType | "")}><option value="">Not specified</option>{VIDEO_SWING_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>
               <label><span>Tags</span><input onChange={(event) => setUploadTags(event.target.value)} placeholder="tempo, takeaway, lesson" value={uploadTags} /></label>
               {viewerRole === "user" && (
@@ -15885,7 +16010,8 @@ function VideosView({
                 </label>
               )}
               <label className="video-form-wide"><span>Description or notes</span><textarea onChange={(event) => setUploadDescription(event.target.value)} placeholder="Context, lesson recap, or what to review..." value={uploadDescription} /></label>
-            </div>
+              </div>
+            </details>
 
             {uploadState === "saving" && (
               <div className="coach-upload-progress" aria-label={`Upload ${uploadProgress}% complete`}>
@@ -16186,7 +16312,7 @@ function ImportView({
   const [manualForm, setManualForm] = useState<Record<string, string>>({
     date: getTodayDateString(),
     location: "",
-    club: "SW",
+    club: UNKNOWN_IMPORT_CLUB,
     carry: "",
     total: "",
     ballSpeed: "",
@@ -16232,7 +16358,7 @@ function ImportView({
 
     const shot: Shot = {
       id: `manual-shot-${Date.now()}`,
-      club: manualForm.club || "SW",
+      club: manualForm.club || UNKNOWN_IMPORT_CLUB,
       carry: manualNumber("carry"),
       total: manualNumber("total"),
       ballSpeed: manualNumber("ballSpeed"),
@@ -16541,7 +16667,7 @@ function ImportView({
         ? apiErrorMessage(payload, "The private photo reader could not complete this batch.", response.status)
         : typeof payload.warnings?.[0] === "string" && payload.warnings[0].trim()
           ? payload.warnings[0].trim()
-          : "No readable shot data was found.";
+          : "We could not detect enough shot data.";
 
       const importedMetadata: PhotoImportMetadata = {
         ...combinedMetadata,
@@ -16599,7 +16725,7 @@ function ImportView({
       setPhotoStatus(
         readableShotCount
           ? `${payload.summary?.simulator ?? payload.simulator} ${payload.summary?.club ?? payload.clubDisplay ?? "session"}: ${payload.shots.length} unique shots ready for review. CSV ready.`
-          : "We could not confidently read this screen. You can paste or upload a CSV instead, or enter the session manually.",
+          : "We found part of your session data, but a few details need your review. You can paste or upload a CSV instead, or enter the session manually.",
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "The private photo reader could not complete this batch.";
@@ -16683,21 +16809,24 @@ function ImportView({
             )}
 
             {reviewMetadata && (
-              <div className="photo-import-summary-grid import-evidence-summary">
-                <div><span>Detected session</span><strong>{reviewMetadata.sessionId ?? pendingImportReview.id}</strong></div>
-                <div><span>Rows</span><strong>{reviewMetadata.rowsDetected ?? pendingImportReview.shots.length}</strong></div>
-                <div><span>Clubs</span><strong>{reviewClubNames.length}</strong></div>
-                <div><span>Source file</span><strong>{reviewMetadata.sourceFileName ?? "NA"}</strong></div>
-                <div><span>Measured</span><strong>{sourceCountLabel(reviewMetadata.sourceCounts, "measured")}</strong></div>
-                <div><span>Calculated</span><strong>{sourceCountLabel(reviewMetadata.sourceCounts, "derived")}</strong></div>
-                <div><span>Estimated</span><strong>{sourceCountLabel(reviewMetadata.sourceCounts, "estimated")}</strong></div>
-                <div><span>Manual</span><strong>{sourceCountLabel(reviewMetadata.sourceCounts, "manual")}</strong></div>
-              </div>
+              <details className="mapping-review-panel import-advanced-details">
+                <summary>View import details</summary>
+                <div className="photo-import-summary-grid import-evidence-summary">
+                  <div><span>Detected session</span><strong>{reviewMetadata.sessionId ?? pendingImportReview.id}</strong></div>
+                  <div><span>Rows</span><strong>{reviewMetadata.rowsDetected ?? pendingImportReview.shots.length}</strong></div>
+                  <div><span>Clubs</span><strong>{reviewClubNames.length}</strong></div>
+                  <div><span>Source file</span><strong>{reviewMetadata.sourceFileName ?? "NA"}</strong></div>
+                  <div><span>Measured</span><strong>{sourceCountLabel(reviewMetadata.sourceCounts, "measured")}</strong></div>
+                  <div><span>Calculated</span><strong>{sourceCountLabel(reviewMetadata.sourceCounts, "derived")}</strong></div>
+                  <div><span>Estimated</span><strong>{sourceCountLabel(reviewMetadata.sourceCounts, "estimated")}</strong></div>
+                  <div><span>Manual</span><strong>{sourceCountLabel(reviewMetadata.sourceCounts, "manual")}</strong></div>
+                </div>
+              </details>
             )}
 
             {reviewMetadata && (
-              <details className="mapping-review-panel" open>
-                <summary>Column mapping review</summary>
+              <details className="mapping-review-panel">
+                <summary>Advanced column mapping</summary>
                 <div className="mapping-review-summary">
                   <div>
                     <strong>Clubs detected</strong>
@@ -16793,13 +16922,22 @@ function ImportView({
             )}
 
             <div className="import-review-grid">
-              <label>
-                <span>Club used</span>
-                <input
-                  list="import-club-options"
-                  onChange={(event) => {
-                    const nextClub = normalizeReviewClubInput(event.target.value);
-                    setSessionClubDraft(event.target.value);
+              <div>
+                <ClubSelector
+                  help="Changing this fills rows that are missing a club without overwriting row-specific clubs."
+                  label="Club used"
+                  onApplyToAll={sessionClubInputValue ? () => {
+                    const nextClub = normalizeReviewClubInput(sessionClubInputValue);
+                    setSessionClubDraft(getClubDisplayName(nextClub));
+                    updateImportReview((review) => ({
+                      ...review,
+                      inferredClub: nextClub,
+                      shots: review.shots.map((shot) => setImportShotClub(shot, nextClub, true)),
+                    }));
+                  } : undefined}
+                  onChange={(value) => {
+                    const nextClub = normalizeReviewClubInput(value);
+                    setSessionClubDraft(value);
                     updateImportReview((review) => ({
                       ...review,
                       inferredClub: nextClub,
@@ -16811,12 +16949,6 @@ function ImportView({
                   placeholder="Example: 8-Iron, 7-Wood, 56° Wedge"
                   value={sessionClubInputValue}
                 />
-                <datalist id="import-club-options">
-                  {IMPORT_CLUB_OPTIONS.map((club) => (
-                    <option key={club} value={getClubDisplayName(club)} />
-                  ))}
-                </datalist>
-                <small>Changing this fills rows that are missing a club without overwriting row-specific clubs.</small>
                 {suggestedClubFromNotes && !reviewClubNames.includes(getClubDisplayName(suggestedClubFromNotes)) && (
                   <button
                     className="secondary-action compact-action"
@@ -16835,24 +16967,7 @@ function ImportView({
                     Use suggested club: {getClubDisplayName(suggestedClubFromNotes)}
                   </button>
                 )}
-                {sessionClubInputValue && (
-                  <button
-                    className="secondary-action compact-action"
-                    onClick={() => {
-                      const nextClub = normalizeReviewClubInput(sessionClubInputValue);
-                      setSessionClubDraft(getClubDisplayName(nextClub));
-                      updateImportReview((review) => ({
-                        ...review,
-                        inferredClub: nextClub,
-                        shots: review.shots.map((shot) => setImportShotClub(shot, nextClub, true)),
-                      }));
-                    }}
-                    type="button"
-                  >
-                    Apply this club to all shots
-                  </button>
-                )}
-              </label>
+              </div>
               <label>
                 <span>Session notes</span>
                 <textarea
@@ -16871,10 +16986,10 @@ function ImportView({
                 <strong>Detected metrics</strong>
                 <span>{pendingImportReview.detectedMetrics.map((metric) => PHOTO_METRIC_LABELS[metric] ?? metric).join(", ") || "NA"}</span>
               </div>
-              <div>
-                <strong>Unavailable metrics</strong>
+              <details className="compact-disclosure">
+                <summary>Unavailable metrics</summary>
                 <span>{pendingImportReview.missingMetrics.map((metric) => PHOTO_METRIC_LABELS[metric] ?? metric).join(", ") || "None"}</span>
-              </div>
+              </details>
             </div>
 
             {nonClubBlockingIssues(pendingImportReview.blockingIssues).length > 0 && (
@@ -16903,36 +17018,30 @@ function ImportView({
               {pendingImportReview.shots.map((shot, index) => (
                 <div className="import-review-shot-row" key={shot.id} role="row">
                   <strong>{shot.sourceShotNumber ? `#${shot.sourceShotNumber}` : `#${index + 1}`}</strong>
-                  <label className="review-shot-club-cell">
-                    <span className="sr-only">Club for shot {shot.sourceShotNumber ?? index + 1}</span>
-                    <input
-                      list="import-club-options"
-                      onChange={(event) => {
-                        const nextClub = normalizeReviewClubInput(event.target.value);
-                        updateImportReview((review) => ({
-                          ...review,
-                          shots: review.shots.map((reviewShot) => (
-                            reviewShot.id === shot.id ? setImportShotClub(reviewShot, nextClub, true) : reviewShot
-                          )),
-                        }));
-                      }}
-                      value={getClubDisplayName(shot.club)}
-                    />
-                    <button
-                      className="table-link-action"
-                      onClick={() => {
-                        const nextClub = normalizeReviewClubInput(shot.club);
-                        updateImportReview((review) => ({
-                          ...review,
-                          inferredClub: nextClub,
-                          shots: review.shots.map((reviewShot) => setImportShotClub(reviewShot, nextClub, true)),
-                        }));
-                      }}
-                      type="button"
-                    >
-                      Apply to all
-                    </button>
-                  </label>
+                  <ClubSelector
+                    className="review-shot-club-cell"
+                    compact
+                    label={`Club for shot ${shot.sourceShotNumber ?? index + 1}`}
+                    onApplyToAll={() => {
+                      const nextClub = normalizeReviewClubInput(shot.club);
+                      updateImportReview((review) => ({
+                        ...review,
+                        inferredClub: nextClub,
+                        shots: review.shots.map((reviewShot) => setImportShotClub(reviewShot, nextClub, true)),
+                      }));
+                    }}
+                    onChange={(value) => {
+                      const nextClub = normalizeReviewClubInput(value);
+                      updateImportReview((review) => ({
+                        ...review,
+                        shots: review.shots.map((reviewShot) => (
+                          reviewShot.id === shot.id ? setImportShotClub(reviewShot, nextClub, true) : reviewShot
+                        )),
+                      }));
+                    }}
+                    placeholder="Club"
+                    value={getClubDisplayName(shot.club)}
+                  />
                   <div className="photo-review-metric-group">
                     {PHOTO_REVIEW_DISTANCE_FIELDS.map((field) => (
                       <label key={field.key}>
@@ -17049,7 +17158,7 @@ function ImportView({
           </div>
         )}
 
-        {(importMode === "file" || importMode === "photo") && (
+        {importMode === "photo" && (
           <div className="import-panel">
             <div className="manual-entry-guide">
               <strong>Upload photos of your session</strong>
@@ -17091,7 +17200,7 @@ function ImportView({
                 addSelectedPhotoFiles(Array.from(event.dataTransfer.files ?? []));
               }}
             >
-              <strong>{photoScanState === "scanning" ? "Reading your data" : "Session photo reader"}</strong>
+              <strong>{photoScanState === "scanning" ? "Reading your data" : "Choose Photos"}</strong>
               <span>{selectedPhotoFiles.length ? `${selectedPhotoFiles.length} photos selected` : photoStatus}</span>
               {photoScanState === "scanning" && (
                 <progress aria-label="Photo scan progress" max="100" value={photoProgress} />
@@ -17128,44 +17237,6 @@ function ImportView({
                 </button>
               </div>
             )}
-            <div className="manual-entry-guide">
-              <strong>Upload CSV</strong>
-              <span>CSV files can come from Full Swing, TrackMan, Foresight, FlightScope, SkyTrak, Uneekor, Garmin, Rapsodo, or similar launch monitors.</span>
-            </div>
-            <input
-              className="file-input"
-              type="file"
-              accept=".csv,text/csv"
-              onChange={(event) => {
-                const file = event.currentTarget.files?.[0];
-                event.currentTarget.value = "";
-                void readCsvFile(file);
-              }}
-            />
-            <div className="csv-file-status" role="status">
-              <strong>{csvFileName}</strong>
-              <span>{csvFileStatus}</span>
-            </div>
-            <textarea
-              className="csv-input"
-              value={csvText}
-              onChange={(event) => {
-                setCsvText(event.target.value);
-                setCsvFileName("Pasted rows");
-                setCsvFileStatus(`${parseCsv(event.target.value).length} shot rows are ready to analyze.`);
-              }}
-              spellCheck={false}
-            />
-            <div className="button-row">
-              <button className="primary-action" onClick={() => importCsv("CSV / Excel", importNotes, csvFileName)}>
-                <span>⇧</span>
-                Analyze rows
-              </button>
-            </div>
-            <p className="muted-copy">
-              Accepted format: CSV under 5 MB. Include at least club plus one shot metric such as carry, total,
-              ball speed, launch, spin, offline, club path, or face angle. Session photos should be JPG, JPEG, PNG, HEIC, HEIF, or WebP.
-            </p>
 
             {photoScans.length > 0 && (
               <div className="photo-scan-results" aria-live="polite">
@@ -17174,9 +17245,9 @@ function ImportView({
                     <div className="photo-scan-heading">
                       <div>
                         <strong>{result.fileName}</strong>
-                        <span>{result.status === "ready" ? `${result.simulator} · ${result.shots.length} CSV ${result.shots.length === 1 ? "row" : "rows"} · OCR confidence ${result.confidence}%` : "Needs another photo"}</span>
+                        <span>{result.status === "ready" ? `${result.simulator} · ${result.shots.length} CSV ${result.shots.length === 1 ? "row" : "rows"} · OCR confidence ${result.confidence}%` : "No complete shot rows found"}</span>
                       </div>
-                      <span className={cls("scan-status", result.status)}>{result.status === "ready" ? "Converted" : "Unreadable"}</span>
+                      <span className={cls("scan-status", result.status)}>{result.status === "ready" ? "Converted" : "Needs review"}</span>
                     </div>
 
                     {result.previewUrl && (
@@ -17275,6 +17346,48 @@ function ImportView({
             )}
           </div>
         )}
+        {importMode === "file" && (
+          <div className="import-panel">
+            <div className="manual-entry-guide">
+              <strong>Upload CSV</strong>
+              <span>CSV files can come from Full Swing, TrackMan, Foresight, FlightScope, SkyTrak, Uneekor, Garmin, Rapsodo, or similar launch monitors.</span>
+            </div>
+            <input
+              className="file-input"
+              type="file"
+              accept=".csv,text/csv"
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0];
+                event.currentTarget.value = "";
+                void readCsvFile(file);
+              }}
+            />
+            <div className="csv-file-status" role="status">
+              <strong>{csvFileName}</strong>
+              <span>{csvFileStatus}</span>
+            </div>
+            <textarea
+              className="csv-input"
+              value={csvText}
+              onChange={(event) => {
+                setCsvText(event.target.value);
+                setCsvFileName("Pasted rows");
+                setCsvFileStatus(`${parseCsv(event.target.value).length} shot rows are ready to analyze.`);
+              }}
+              spellCheck={false}
+            />
+            <div className="button-row">
+              <button className="primary-action" onClick={() => importCsv("CSV / Excel", importNotes, csvFileName)}>
+                <span>⇧</span>
+                Analyze rows
+              </button>
+            </div>
+            <p className="muted-copy">
+              Accepted format: CSV under 5 MB. Include at least club plus one shot metric such as carry, total,
+              ball speed, launch, spin, offline, club path, or face angle.
+            </p>
+          </div>
+        )}
         {importMode === "manual" && (
           <form className="import-panel manual-entry-panel" onSubmit={submitManualSession}>
             <div className="manual-entry-guide">
@@ -17293,16 +17406,7 @@ function ImportView({
                   value={manualForm.date}
                 />
               </label>
-              <label>
-                <span>Club</span>
-                <select value={manualForm.club} onChange={(event) => updateManualField("club", event.target.value)}>
-                  {CLUB_ORDER.map((club) => (
-                    <option key={club} value={club}>
-                      {getClubDisplayName(club)}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <ClubSelector compact label="Club" onChange={(value) => updateManualField("club", normalizeReviewClubInput(value))} value={manualForm.club} />
               <label className="manual-form-wide">
                 <span>Location</span>
                 <input
@@ -18986,6 +19090,15 @@ function ShotMap({
         {!isAllClubMode && <span><b className="roll-key" />Rollout</span>}
         {isAllClubMode && <span>Average lines · low-opacity shot points</span>}
       </div>
+
+      <p className="shot-map-explanation">
+        Each dot is one shot. Distance lines are carry yards; left/right labels show yards offline from the target line.
+        {" "}{carryShots.length < 6
+          ? `Based on ${carryShots.length} ${carryShots.length === 1 ? "shot" : "shots"}, so treat this pattern as directional.`
+          : isAllClubMode
+            ? "The shaded area shows the typical landing pattern when enough shots are available."
+            : "Flight lines show the shot shape when launch-direction or curve data is available."}
+      </p>
 
       <div className="shot-shape-table-shell">
         <table className="shot-shape-table">
