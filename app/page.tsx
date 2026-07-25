@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type FormEvent, type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { MaiCoachLogoFull, MaiCoachLogoMark } from "@/components/brand/mai-coach-logo";
 import { APP_BUILD_INFO } from "@/lib/build-info";
 import { accountPayloadConfirmsUser } from "@/lib/auth-session-policy.mjs";
@@ -70,6 +70,12 @@ import {
   transcriptProof,
   videoLibraryVisibleCount,
 } from "@/lib/video-processing-status-policy.mjs";
+import {
+  VIDEO_ANNOTATION_COLORS,
+  VIDEO_ANNOTATION_STROKES,
+  visibleVideoAnnotationsAt,
+  visualAngleDegrees,
+} from "@/lib/video-annotation-policy.mjs";
 import {
   choosePrimaryLessonSessionLink,
   lessonSessionCardStatus,
@@ -1141,6 +1147,73 @@ type VideoLibraryItem = VideoLibraryRecord & {
   objectUrl: string;
   thumbnailObjectUrl?: string;
 };
+
+type VideoAnnotationType = "line" | "arrow" | "angle" | "circle" | "rectangle" | "freehand" | "text";
+
+type VideoAnnotationPoint = {
+  x: number;
+  y: number;
+};
+
+type VideoAnnotationGeometry = {
+  height?: number;
+  points?: VideoAnnotationPoint[];
+  width?: number;
+  x?: number;
+  y?: number;
+};
+
+type VideoAnnotationObject = {
+  id: string;
+  annotationSetId?: string;
+  color: string;
+  createdAt?: string;
+  deletedAt?: string | null;
+  endTimeMs: number;
+  geometry: VideoAnnotationGeometry;
+  normalizedCoordinates: true;
+  startTimeMs: number;
+  strokeWidth: number;
+  text?: string;
+  type: VideoAnnotationType;
+  updatedAt?: string;
+  videoId?: string;
+};
+
+type VideoAnnotationSet = {
+  id: string;
+  annotations: VideoAnnotationObject[];
+  coachId: string;
+  createdAt: string;
+  memberId: string;
+  publishedAt?: string | null;
+  status: "draft" | "published" | "archived";
+  updatedAt: string;
+  version: number;
+  videoId: string;
+};
+
+type VideoAnnotationExport = {
+  id: string;
+  annotationSetId: string;
+  completedAt?: string | null;
+  createdAt: string;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  sourceStoragePath?: string | null;
+  status: string;
+  storagePath?: string | null;
+  updatedAt: string;
+  videoId: string;
+};
+
+type VideoAnnotationState = {
+  draft: VideoAnnotationSet | null;
+  exports: VideoAnnotationExport[];
+  published: VideoAnnotationSet | null;
+};
+
+type VideoAnnotationTool = "select" | "line" | "arrow" | "angle" | "circle" | "rectangle" | "freehand" | "text" | "eraser";
 
 type VideoRecapDraft = {
   confidence: number;
@@ -5308,6 +5381,29 @@ async function updateVideoVisualAnalysis(payload: Record<string, unknown>) {
     body: JSON.stringify(payload),
   });
   return readApiJson<VideoVisualAnalysisState>(response, "The MAI visual swing analysis could not be updated.");
+}
+
+async function readVideoAnnotations(videoId: string) {
+  const response = await fetch(`/api/video-annotations?videoId=${encodeURIComponent(videoId)}`, { cache: "no-store" });
+  return readApiJson<VideoAnnotationState>(response, "Coach markups could not be loaded.");
+}
+
+async function saveVideoAnnotationDraft(videoId: string, annotations: VideoAnnotationObject[], currentTimeMs = 0) {
+  const response = await fetch("/api/video-annotations", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ annotations, currentTimeMs, videoId }),
+  });
+  return readApiJson<VideoAnnotationState>(response, "We could not save these markups. Your current work is still open.");
+}
+
+async function runVideoAnnotationAction(videoId: string, action: string, payload: Record<string, unknown> = {}) {
+  const response = await fetch("/api/video-annotations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, videoId, ...payload }),
+  });
+  return readApiJson<VideoAnnotationState>(response, "The Coach markups could not be updated.");
 }
 
 function stripVideoObjectUrl(video: VideoLibraryItem): VideoLibraryRecord {
@@ -13626,6 +13722,710 @@ function LessonVideoPlayer({ className = "video-player", src, title = "Lesson vi
   );
 }
 
+function formatAnnotationTime(ms: number) {
+  const safeMs = Number.isFinite(ms) ? Math.max(0, ms) : 0;
+  const totalSeconds = Math.floor(safeMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  const tenths = Math.floor((safeMs % 1000) / 100);
+  return `${minutes}:${seconds}.${tenths}`;
+}
+
+function annotationLabel(annotation: VideoAnnotationObject) {
+  if (annotation.type === "angle") return "Visual angle";
+  if (annotation.text?.trim()) return annotation.text.trim();
+  return annotation.type.replace("-", " ");
+}
+
+function getVideoContentStyle(video: HTMLVideoElement | null): CSSProperties {
+  if (!video) return { inset: 0 };
+  const width = video.clientWidth;
+  const height = video.clientHeight;
+  const videoWidth = video.videoWidth || width;
+  const videoHeight = video.videoHeight || height;
+  if (!width || !height || !videoWidth || !videoHeight) return { inset: 0 };
+  const boxAspect = width / height;
+  const videoAspect = videoWidth / videoHeight;
+  if (boxAspect > videoAspect) {
+    const renderedWidth = height * videoAspect;
+    return {
+      height: `${height}px`,
+      left: `${(width - renderedWidth) / 2}px`,
+      top: 0,
+      width: `${renderedWidth}px`,
+    };
+  }
+  const renderedHeight = width / videoAspect;
+  return {
+    height: `${renderedHeight}px`,
+    left: 0,
+    top: `${(height - renderedHeight) / 2}px`,
+    width: `${width}px`,
+  };
+}
+
+function pointToPixels(point: VideoAnnotationPoint, width: number, height: number) {
+  return { x: point.x * width, y: point.y * height };
+}
+
+function pathFromPoints(points: VideoAnnotationPoint[] | undefined, width: number, height: number) {
+  const safePoints = points ?? [];
+  if (!safePoints.length) return "";
+  return safePoints.map((point, index) => {
+    const pixel = pointToPixels(point, width, height);
+    return `${index === 0 ? "M" : "L"} ${pixel.x} ${pixel.y}`;
+  }).join(" ");
+}
+
+function annotationHitBox(annotation: VideoAnnotationObject) {
+  const points = annotation.geometry.points ?? [];
+  if (annotation.type === "rectangle" || annotation.type === "circle") {
+    return {
+      maxX: (annotation.geometry.x ?? 0) + (annotation.geometry.width ?? 0),
+      maxY: (annotation.geometry.y ?? 0) + (annotation.geometry.height ?? 0),
+      minX: annotation.geometry.x ?? 0,
+      minY: annotation.geometry.y ?? 0,
+    };
+  }
+  if (annotation.type === "text") {
+    return {
+      maxX: Math.min(1, (annotation.geometry.x ?? 0) + 0.16),
+      maxY: Math.min(1, (annotation.geometry.y ?? 0) + 0.08),
+      minX: annotation.geometry.x ?? 0,
+      minY: annotation.geometry.y ?? 0,
+    };
+  }
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  return {
+    maxX: Math.max(...xs, 0),
+    maxY: Math.max(...ys, 0),
+    minX: Math.min(...xs, 1),
+    minY: Math.min(...ys, 1),
+  };
+}
+
+function VideoAnnotationOverlay({
+  annotations,
+  frameSize,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  selectedId,
+}: {
+  annotations: VideoAnnotationObject[];
+  frameSize: { height: number; width: number };
+  onPointerDown?: (event: React.PointerEvent<SVGSVGElement>) => void;
+  onPointerMove?: (event: React.PointerEvent<SVGSVGElement>) => void;
+  onPointerUp?: (event: React.PointerEvent<SVGSVGElement>) => void;
+  selectedId?: string | null;
+}) {
+  const width = Math.max(1, frameSize.width);
+  const height = Math.max(1, frameSize.height);
+  return (
+    <svg
+      aria-hidden={!onPointerDown}
+      className={cls("video-annotation-svg", onPointerDown && "editable")}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      role={onPointerDown ? "img" : undefined}
+      viewBox={`0 0 ${width} ${height}`}
+    >
+      <defs>
+        <marker id="coach-arrowhead" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="4">
+          <path d="M 0 0 L 8 4 L 0 8 z" fill="currentColor" />
+        </marker>
+      </defs>
+      {annotations.map((annotation) => {
+        const color = annotation.color || VIDEO_ANNOTATION_COLORS.red;
+        const strokeWidth = annotation.strokeWidth || VIDEO_ANNOTATION_STROKES.medium;
+        const selected = selectedId === annotation.id;
+        const points = annotation.geometry.points ?? [];
+        const common = {
+          className: cls("video-annotation-shape", selected && "selected"),
+          stroke: color,
+          strokeLinecap: "round" as const,
+          strokeLinejoin: "round" as const,
+          strokeWidth,
+        };
+        if (annotation.type === "line" || annotation.type === "arrow") {
+          const start = pointToPixels(points[0] ?? { x: 0.5, y: 0.5 }, width, height);
+          const end = pointToPixels(points[1] ?? points[0] ?? { x: 0.6, y: 0.6 }, width, height);
+          return (
+            <line
+              key={annotation.id}
+              {...common}
+              fill="none"
+              markerEnd={annotation.type === "arrow" ? "url(#coach-arrowhead)" : undefined}
+              style={{ color }}
+              x1={start.x}
+              x2={end.x}
+              y1={start.y}
+              y2={end.y}
+            />
+          );
+        }
+        if (annotation.type === "angle") {
+          const angle = visualAngleDegrees(points);
+          const middle = pointToPixels(points[1] ?? { x: 0.5, y: 0.5 }, width, height);
+          return (
+            <g key={annotation.id}>
+              <path {...common} d={pathFromPoints(points, width, height)} fill="none" />
+              <text className="video-annotation-text" fill={color} x={middle.x + 10} y={middle.y - 10}>
+                Visual angle{angle ? ` ${angle}°` : ""}
+              </text>
+            </g>
+          );
+        }
+        if (annotation.type === "freehand") {
+          return <path key={annotation.id} {...common} d={pathFromPoints(points, width, height)} fill="none" />;
+        }
+        if (annotation.type === "circle") {
+          return (
+            <ellipse
+              key={annotation.id}
+              {...common}
+              cx={(annotation.geometry.x ?? 0) * width + ((annotation.geometry.width ?? 0) * width) / 2}
+              cy={(annotation.geometry.y ?? 0) * height + ((annotation.geometry.height ?? 0) * height) / 2}
+              fill="rgba(0,0,0,0.04)"
+              rx={Math.max(2, ((annotation.geometry.width ?? 0) * width) / 2)}
+              ry={Math.max(2, ((annotation.geometry.height ?? 0) * height) / 2)}
+            />
+          );
+        }
+        if (annotation.type === "rectangle") {
+          return (
+            <rect
+              key={annotation.id}
+              {...common}
+              fill="rgba(0,0,0,0.04)"
+              height={(annotation.geometry.height ?? 0) * height}
+              width={(annotation.geometry.width ?? 0) * width}
+              x={(annotation.geometry.x ?? 0) * width}
+              y={(annotation.geometry.y ?? 0) * height}
+            />
+          );
+        }
+        const textPoint = pointToPixels({ x: annotation.geometry.x ?? 0.5, y: annotation.geometry.y ?? 0.5 }, width, height);
+        return (
+          <text className={cls("video-annotation-text", selected && "selected")} fill={color} key={annotation.id} x={textPoint.x} y={textPoint.y}>
+            {annotation.text || "Coach note"}
+          </text>
+        );
+      })}
+    </svg>
+  );
+}
+
+function AnnotatedLessonVideoPlayer({
+  annotations,
+  className = "video-player",
+  markupsVisible,
+  onTimeChange,
+  src,
+  title = "Lesson video",
+}: {
+  annotations: VideoAnnotationObject[];
+  className?: string;
+  markupsVisible: boolean;
+  onTimeChange?: (timeMs: number) => void;
+  src: string;
+  title?: string;
+}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [frameStyle, setFrameStyle] = useState<CSSProperties>({ inset: 0 });
+  const [frameSize, setFrameSize] = useState({ height: 1, width: 1 });
+  const [timeMs, setTimeMs] = useState(0);
+
+  const updateFrame = useCallback(() => {
+    const video = videoRef.current;
+    setFrameStyle(getVideoContentStyle(video));
+    setFrameSize({
+      height: video?.clientHeight ? Number.parseFloat(String(getVideoContentStyle(video).height ?? video.clientHeight)) || video.clientHeight : 1,
+      width: video?.clientWidth ? Number.parseFloat(String(getVideoContentStyle(video).width ?? video.clientWidth)) || video.clientWidth : 1,
+    });
+  }, []);
+
+  useEffect(() => {
+    updateFrame();
+    const video = videoRef.current;
+    if (!video || typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updateFrame);
+      return () => window.removeEventListener("resize", updateFrame);
+    }
+    const observer = new ResizeObserver(updateFrame);
+    observer.observe(video);
+    return () => observer.disconnect();
+  }, [updateFrame]);
+
+  const visibleAnnotations = markupsVisible ? visibleVideoAnnotationsAt(annotations, timeMs) as VideoAnnotationObject[] : [];
+
+  return (
+    <div className="lesson-video-player-shell annotated-video-shell">
+      <video
+        aria-label={title}
+        className={className}
+        controls
+        onLoadedMetadata={(event) => {
+          updateFrame();
+          event.currentTarget.muted = false;
+          if (event.currentTarget.volume === 0) event.currentTarget.volume = 1;
+        }}
+        onSeeked={(event) => {
+          const nextTime = event.currentTarget.currentTime * 1000;
+          setTimeMs(nextTime);
+          onTimeChange?.(nextTime);
+        }}
+        onTimeUpdate={(event) => {
+          const nextTime = event.currentTarget.currentTime * 1000;
+          setTimeMs(nextTime);
+          onTimeChange?.(nextTime);
+        }}
+        playsInline
+        preload="metadata"
+        ref={videoRef}
+        src={src}
+      />
+      {visibleAnnotations.length > 0 && (
+        <div className="video-annotation-frame" style={frameStyle}>
+          <VideoAnnotationOverlay annotations={visibleAnnotations} frameSize={frameSize} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function normalizeVideoPoint(event: React.PointerEvent<SVGSVGElement>): VideoAnnotationPoint {
+  const rect = event.currentTarget.getBoundingClientRect();
+  return {
+    x: Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width))),
+    y: Math.max(0, Math.min(1, (event.clientY - rect.top) / Math.max(1, rect.height))),
+  };
+}
+
+function makeAnnotation(tool: VideoAnnotationTool, start: VideoAnnotationPoint, end: VideoAnnotationPoint, values: {
+  color: string;
+  currentTimeMs: number;
+  labelText: string;
+  strokeWidth: number;
+}): VideoAnnotationObject {
+  const startTimeMs = Math.max(0, Math.round(values.currentTimeMs));
+  const endTimeMs = startTimeMs + 3000;
+  const minX = Math.min(start.x, end.x);
+  const minY = Math.min(start.y, end.y);
+  const width = Math.abs(end.x - start.x);
+  const height = Math.abs(end.y - start.y);
+  return {
+    id: crypto.randomUUID(),
+    color: values.color,
+    endTimeMs,
+    geometry: tool === "circle" || tool === "rectangle"
+      ? { height, width, x: minX, y: minY }
+      : tool === "text"
+        ? { x: start.x, y: start.y }
+        : { points: [start, end] },
+    normalizedCoordinates: true,
+    startTimeMs,
+    strokeWidth: values.strokeWidth,
+    text: tool === "text" ? values.labelText.trim() || "Pressure forward" : "",
+    type: tool === "eraser" || tool === "select" ? "line" : tool,
+  };
+}
+
+function VideoAnnotationWorkspace({
+  annotationState,
+  onClose,
+  onStateChange,
+  video,
+}: {
+  annotationState: VideoAnnotationState | null;
+  onClose: () => void;
+  onStateChange: (state: VideoAnnotationState) => void;
+  video: VideoLibraryItem;
+}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [annotations, setAnnotations] = useState<VideoAnnotationObject[]>(() => annotationState?.draft?.annotations ?? annotationState?.published?.annotations ?? []);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [tool, setTool] = useState<VideoAnnotationTool>("line");
+  const [color, setColor] = useState(VIDEO_ANNOTATION_COLORS.red);
+  const [strokeWidth, setStrokeWidth] = useState(VIDEO_ANNOTATION_STROKES.medium);
+  const [labelText, setLabelText] = useState("Pressure forward");
+  const [currentTimeMs, setCurrentTimeMs] = useState(0);
+  const [frameStyle, setFrameStyle] = useState<CSSProperties>({ inset: 0 });
+  const [frameSize, setFrameSize] = useState({ height: 1, width: 1 });
+  const [dragStart, setDragStart] = useState<VideoAnnotationPoint | null>(null);
+  const [freehandPoints, setFreehandPoints] = useState<VideoAnnotationPoint[]>([]);
+  const [anglePoints, setAnglePoints] = useState<VideoAnnotationPoint[]>([]);
+  const [savingState, setSavingState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
+  const [message, setMessage] = useState("");
+  const [previewMode, setPreviewMode] = useState(false);
+  const [showAll, setShowAll] = useState(true);
+  const [undoStack, setUndoStack] = useState<VideoAnnotationObject[][]>([]);
+  const [redoStack, setRedoStack] = useState<VideoAnnotationObject[][]>([]);
+  const [dirty, setDirty] = useState(false);
+
+  useEffect(() => {
+    if (dirty) return;
+    setAnnotations(annotationState?.draft?.annotations ?? annotationState?.published?.annotations ?? []);
+  }, [annotationState?.draft?.id, annotationState?.published?.id, dirty]);
+
+  const updateFrame = useCallback(() => {
+    const videoElement = videoRef.current;
+    const style = getVideoContentStyle(videoElement);
+    setFrameStyle(style);
+    setFrameSize({
+      height: Number.parseFloat(String(style.height ?? videoElement?.clientHeight ?? 1)) || 1,
+      width: Number.parseFloat(String(style.width ?? videoElement?.clientWidth ?? 1)) || 1,
+    });
+  }, []);
+
+  useEffect(() => {
+    updateFrame();
+    const videoElement = videoRef.current;
+    if (!videoElement || typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updateFrame);
+      return () => window.removeEventListener("resize", updateFrame);
+    }
+    const observer = new ResizeObserver(updateFrame);
+    observer.observe(videoElement);
+    return () => observer.disconnect();
+  }, [updateFrame]);
+
+  useEffect(() => {
+    if (!dirty) return undefined;
+    const timer = window.setTimeout(() => {
+      void saveDraft(false);
+    }, 1400);
+    return () => window.clearTimeout(timer);
+  }, [annotations, dirty]);
+
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!dirty) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [dirty]);
+
+  function applyAnnotations(next: VideoAnnotationObject[]) {
+    setUndoStack((current) => [...current.slice(-20), annotations]);
+    setRedoStack([]);
+    setAnnotations(next);
+    setDirty(true);
+    setSavingState("idle");
+  }
+
+  function updateSelected(patch: Partial<VideoAnnotationObject>) {
+    if (!selectedId) return;
+    applyAnnotations(annotations.map((annotation) => annotation.id === selectedId ? { ...annotation, ...patch } : annotation));
+  }
+
+  async function saveDraft(showSuccess = true) {
+    setSavingState("saving");
+    try {
+      const state = await saveVideoAnnotationDraft(video.id, annotations, currentTimeMs);
+      onStateChange(state);
+      setDirty(false);
+      setSavingState("saved");
+      if (showSuccess) setMessage("Your markups are saved.");
+      return true;
+    } catch (error) {
+      setSavingState("failed");
+      setMessage(error instanceof Error ? error.message : "We could not save these markups. Your current work is still open.");
+      return false;
+    }
+  }
+
+  async function publishMarkups() {
+    const saved = await saveDraft(false);
+    if (!saved) return;
+    try {
+      const state = await runVideoAnnotationAction(video.id, "publish");
+      onStateChange(state);
+      setDirty(false);
+      setMessage(`Lesson markups sent to ${video.memberName ?? "the student"}. The original video remains available without markups.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Save markups before publishing.");
+    }
+  }
+
+  async function exportAnnotatedCopy() {
+    try {
+      const state = await runVideoAnnotationAction(video.id, "exportAnnotatedCopy", {
+        annotationSetId: annotationState?.published?.id,
+      });
+      onStateChange(state);
+      const latestExport = state.exports[0];
+      setMessage(latestExport?.status === "ready"
+        ? "Annotated video ready. The original clean video was preserved."
+        : "The annotated export could not be created. Your original video and editable markups are safe.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The annotated export could not be created. Your original video and editable markups are safe.");
+    }
+  }
+
+  function annotationAt(point: VideoAnnotationPoint) {
+    return [...annotations].reverse().find((annotation) => {
+      const box = annotationHitBox(annotation);
+      const pad = 0.03;
+      return point.x >= box.minX - pad && point.x <= box.maxX + pad && point.y >= box.minY - pad && point.y <= box.maxY + pad;
+    });
+  }
+
+  function onPointerDown(event: React.PointerEvent<SVGSVGElement>) {
+    if (previewMode) return;
+    const point = normalizeVideoPoint(event);
+    event.currentTarget.setPointerCapture(event.pointerId);
+    if (tool === "select") {
+      setSelectedId(annotationAt(point)?.id ?? null);
+      return;
+    }
+    if (tool === "eraser") {
+      const target = annotationAt(point);
+      if (target) applyAnnotations(annotations.filter((annotation) => annotation.id !== target.id));
+      return;
+    }
+    if (tool === "angle") {
+      const nextPoints = [...anglePoints, point];
+      setAnglePoints(nextPoints);
+      if (nextPoints.length >= 3) {
+        applyAnnotations([
+          ...annotations,
+          {
+            id: crypto.randomUUID(),
+            color,
+            endTimeMs: currentTimeMs + 3000,
+            geometry: { points: nextPoints.slice(0, 3) },
+            normalizedCoordinates: true,
+            startTimeMs: currentTimeMs,
+            strokeWidth,
+            text: "",
+            type: "angle",
+          },
+        ]);
+        setAnglePoints([]);
+      }
+      return;
+    }
+    if (tool === "text") {
+      applyAnnotations([...annotations, makeAnnotation(tool, point, point, { color, currentTimeMs, labelText, strokeWidth })]);
+      return;
+    }
+    setDragStart(point);
+    if (tool === "freehand") setFreehandPoints([point]);
+  }
+
+  function onPointerMove(event: React.PointerEvent<SVGSVGElement>) {
+    if (!dragStart || tool !== "freehand" || previewMode) return;
+    const point = normalizeVideoPoint(event);
+    setFreehandPoints((current) => {
+      const last = current[current.length - 1];
+      if (last && Math.hypot(last.x - point.x, last.y - point.y) < 0.008) return current;
+      return [...current, point].slice(-240);
+    });
+  }
+
+  function onPointerUp(event: React.PointerEvent<SVGSVGElement>) {
+    if (!dragStart || previewMode) return;
+    const point = normalizeVideoPoint(event);
+    if (tool === "line" || tool === "arrow" || tool === "circle" || tool === "rectangle") {
+      applyAnnotations([...annotations, makeAnnotation(tool, dragStart, point, { color, currentTimeMs, labelText, strokeWidth })]);
+    }
+    if (tool === "freehand" && freehandPoints.length > 1) {
+      applyAnnotations([
+        ...annotations,
+        {
+          id: crypto.randomUUID(),
+          color,
+          endTimeMs: currentTimeMs + 3000,
+          geometry: { points: [...freehandPoints, point] },
+          normalizedCoordinates: true,
+          startTimeMs: currentTimeMs,
+          strokeWidth,
+          text: "",
+          type: "freehand",
+        },
+      ]);
+    }
+    setDragStart(null);
+    setFreehandPoints([]);
+  }
+
+  function undo() {
+    const previous = undoStack.at(-1);
+    if (!previous) return;
+    setRedoStack((current) => [...current, annotations]);
+    setUndoStack((current) => current.slice(0, -1));
+    setAnnotations(previous);
+    setDirty(true);
+  }
+
+  function redo() {
+    const next = redoStack.at(-1);
+    if (!next) return;
+    setUndoStack((current) => [...current, annotations]);
+    setRedoStack((current) => current.slice(0, -1));
+    setAnnotations(next);
+    setDirty(true);
+  }
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z" && event.shiftKey) {
+        event.preventDefault();
+        redo();
+      } else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        undo();
+      } else if ((event.key === "Delete" || event.key === "Backspace") && selectedId) {
+        event.preventDefault();
+        applyAnnotations(annotations.filter((annotation) => annotation.id !== selectedId));
+        setSelectedId(null);
+      } else if (event.key === "Escape") {
+        setSelectedId(null);
+        setAnglePoints([]);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [annotations, redoStack, selectedId, undoStack]);
+
+  const selected = annotations.find((annotation) => annotation.id === selectedId) ?? null;
+  const visibleAnnotations = previewMode && !showAll ? [] : (showAll ? annotations : visibleVideoAnnotationsAt(annotations, currentTimeMs) as VideoAnnotationObject[]);
+
+  return (
+    <div className="video-modal-overlay annotation-modal-overlay">
+      <section className="video-annotation-workspace">
+        <header className="video-annotation-header">
+          <div>
+            <p className="eyebrow">VIDEO REVIEW</p>
+            <h2>Add visual coaching notes to this lesson.</h2>
+            <span>{video.title} · {video.memberName ?? "Student"}</span>
+          </div>
+          <div className="button-row">
+            <button className="secondary-action" onClick={() => setPreviewMode((current) => !current)} type="button">{previewMode ? "Return to Editing" : "Preview as Student"}</button>
+            <button className="primary-action" onClick={() => void saveDraft()} type="button">Save Markups</button>
+            <button className="secondary-action" onClick={onClose} type="button">Done</button>
+          </div>
+        </header>
+        <div className="video-annotation-layout">
+          <main className="video-annotation-stage">
+            <div className="annotation-video-shell">
+              <video
+                aria-label="Annotate lesson video"
+                className="video-player annotation-video"
+                controls
+                onLoadedMetadata={(event) => {
+                  updateFrame();
+                  setCurrentTimeMs(event.currentTarget.currentTime * 1000);
+                }}
+                onSeeked={(event) => setCurrentTimeMs(event.currentTarget.currentTime * 1000)}
+                onTimeUpdate={(event) => setCurrentTimeMs(event.currentTarget.currentTime * 1000)}
+                playsInline
+                preload="metadata"
+                ref={videoRef}
+                src={video.objectUrl}
+              />
+              <div className="video-annotation-frame editable-frame" style={frameStyle}>
+                <VideoAnnotationOverlay
+                  annotations={visibleAnnotations}
+                  frameSize={frameSize}
+                  onPointerDown={onPointerDown}
+                  onPointerMove={onPointerMove}
+                  onPointerUp={onPointerUp}
+                  selectedId={selectedId}
+                />
+              </div>
+            </div>
+            <div className="annotation-timeline-row">
+              <span>{formatAnnotationTime(currentTimeMs)}</span>
+              <span>{savingState === "saving" ? "Saving..." : savingState === "saved" ? "Saved" : savingState === "failed" ? "Unable to save" : dirty ? "Unsaved changes" : "Ready"}</span>
+            </div>
+            {message && <p className="annotation-status-message">{message}</p>}
+          </main>
+          <aside className="video-annotation-sidebar">
+            <div className="annotation-toolbox">
+              {([
+                ["select", "Select"],
+                ["line", "Draw Line"],
+                ["arrow", "Add Arrow"],
+                ["angle", "Measure Visual Angle"],
+                ["circle", "Circle"],
+                ["rectangle", "Rectangle"],
+                ["freehand", "Freehand Draw"],
+                ["text", "Add Text"],
+                ["eraser", "Eraser"],
+              ] as Array<[VideoAnnotationTool, string]>).map(([value, label]) => (
+                <button className={cls(tool === value && "active")} key={value} onClick={() => setTool(value)} type="button">{label}</button>
+              ))}
+            </div>
+            <div className="annotation-control-grid">
+              <label><span>Color</span><select value={color} onChange={(event) => setColor(event.target.value)}>
+                <option value={VIDEO_ANNOTATION_COLORS.red}>Red</option>
+                <option value={VIDEO_ANNOTATION_COLORS.yellow}>Yellow</option>
+                <option value={VIDEO_ANNOTATION_COLORS.green}>Green</option>
+                <option value={VIDEO_ANNOTATION_COLORS.white}>White</option>
+                <option value={VIDEO_ANNOTATION_COLORS.blue}>Blue</option>
+              </select></label>
+              <label><span>Line</span><select value={strokeWidth} onChange={(event) => setStrokeWidth(Number(event.target.value))}>
+                <option value={VIDEO_ANNOTATION_STROKES.thin}>Thin</option>
+                <option value={VIDEO_ANNOTATION_STROKES.medium}>Medium</option>
+                <option value={VIDEO_ANNOTATION_STROKES.thick}>Thick</option>
+              </select></label>
+              <label className="annotation-wide"><span>Text Label</span><input value={labelText} onChange={(event) => setLabelText(event.target.value)} /></label>
+              <label><span>Start</span><input inputMode="numeric" value={selected ? selected.startTimeMs : Math.round(currentTimeMs)} onChange={(event) => selected && updateSelected({ startTimeMs: Number(event.target.value) })} /></label>
+              <label><span>End</span><input inputMode="numeric" value={selected ? selected.endTimeMs : Math.round(currentTimeMs + 3000)} onChange={(event) => selected && updateSelected({ endTimeMs: Number(event.target.value) })} /></label>
+            </div>
+            <div className="annotation-action-row">
+              <button className="secondary-action compact-action" disabled={!undoStack.length} onClick={undo} type="button">Undo</button>
+              <button className="secondary-action compact-action" disabled={!redoStack.length} onClick={redo} type="button">Redo</button>
+              <button className="secondary-action compact-action" onClick={() => setShowAll((current) => !current)} type="button">{showAll ? "Hide Markups" : "Show All"}</button>
+            </div>
+            <div className="annotation-list">
+              <div className="annotation-list-heading">
+                <span>Coach Markups</span>
+                <small>{annotations.length} saved objects</small>
+              </div>
+              {annotations.map((annotation) => (
+                <button className={cls(selectedId === annotation.id && "selected")} key={annotation.id} onClick={() => {
+                  setSelectedId(annotation.id);
+                  const element = videoRef.current;
+                  if (element) element.currentTime = annotation.startTimeMs / 1000;
+                }} type="button">
+                  <span>{formatAnnotationTime(annotation.startTimeMs)} - {annotation.type}</span>
+                  <strong>{annotationLabel(annotation)}</strong>
+                </button>
+              ))}
+              {!annotations.length && <p>No markups yet. Pause the video and add your first coaching note.</p>}
+            </div>
+            <div className="annotation-danger-zone">
+              <button disabled={!selectedId} onClick={() => {
+                if (!selectedId) return;
+                if (window.confirm("Delete this selected markup? The video will not be deleted.")) {
+                  applyAnnotations(annotations.filter((annotation) => annotation.id !== selectedId));
+                  setSelectedId(null);
+                }
+              }} type="button">Delete Selected Markup</button>
+              <button onClick={() => {
+                if (window.confirm("Remove all draft markups for this lesson? The video and published recap will stay saved.")) {
+                  applyAnnotations([]);
+                }
+              }} type="button">Remove Markups</button>
+            </div>
+            <div className="annotation-publish-panel">
+              <button className="primary-action" onClick={() => void publishMarkups()} type="button">Update Published Markups</button>
+              <button className="secondary-action" onClick={() => void exportAnnotatedCopy()} type="button">Export Annotated Copy</button>
+            </div>
+          </aside>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function VideoThumbnail({ video }: { video: VideoLibraryItem }) {
   const playbackMessage = videoUploadPlaybackMessage(video);
   return (
@@ -15135,6 +15935,10 @@ function VideoDetailView({
   const [coachNotesPrivate, setCoachNotesPrivate] = useState(video.coachNotesPrivate);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [recapUpdateMessage, setRecapUpdateMessage] = useState("");
+  const [annotationState, setAnnotationState] = useState<VideoAnnotationState | null>(null);
+  const [annotationMessage, setAnnotationMessage] = useState("");
+  const [showAnnotationWorkspace, setShowAnnotationWorkspace] = useState(false);
+  const [showCoachMarkups, setShowCoachMarkups] = useState(true);
   const canEditCoachNotes = viewerRole === "coach" || viewerRole === "admin";
   const canEditUserNotes = viewerRole === "user";
   const canDelete =
@@ -15160,12 +15964,50 @@ function VideoDetailView({
   const primaryLink = primaryLessonSessionLink(video);
   const linkSessionMap = new Map(sessions.map((item) => [item.id, item]));
   const primaryLinkedSession = primaryLink ? linkSessionMap.get(primaryLink.sessionId) : session;
+  const publishedAnnotations = annotationState?.published?.annotations ?? [];
+  const hasPublishedAnnotations = publishedAnnotations.length > 0;
+  const canManageMarkups = canEditCoachNotes && !playbackMessage;
+
+  useEffect(() => {
+    let active = true;
+    setAnnotationMessage("");
+    setShowCoachMarkups(true);
+    readVideoAnnotations(video.id)
+      .then((state) => {
+        if (!active) return;
+        setAnnotationState(state);
+      })
+      .catch((error) => {
+        if (!active) return;
+        setAnnotationState(null);
+        setAnnotationMessage(error instanceof Error ? error.message : "Coach markups could not be loaded.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [video.id]);
+
+  async function removePublishedMarkups() {
+    if (!window.confirm("Remove all published Coach markups from this lesson? The original video, recap, and coach notes will stay saved.")) return;
+    try {
+      const state = await runVideoAnnotationAction(video.id, "removeAllPublished");
+      setAnnotationState(state);
+      setAnnotationMessage("Published markups were removed. The clean video remains available.");
+    } catch (error) {
+      setAnnotationMessage(error instanceof Error ? error.message : "Coach markups could not be removed.");
+    }
+  }
 
   return (
     <section className="view-stack">
       <div className="video-detail-toolbar">
         <button className="secondary-action" onClick={onBack}>← Back to videos</button>
         <div className="button-row">
+          {canManageMarkups && (
+            <button className="secondary-action" onClick={() => setShowAnnotationWorkspace(true)} type="button">
+              {hasPublishedAnnotations || annotationState?.draft ? "Edit Coach Markups" : "Annotate Video"}
+            </button>
+          )}
           {video.status !== "Reviewed" && (
             <button className="secondary-action" onClick={() => void onUpdate({ status: "Reviewed" })}>
               ✓ Mark reviewed
@@ -15188,7 +16030,11 @@ function VideoDetailView({
           {playbackMessage ? (
             <VideoPlaybackUnavailable message={playbackMessage} />
           ) : (
-            <LessonVideoPlayer src={video.objectUrl} />
+            <AnnotatedLessonVideoPlayer
+              annotations={publishedAnnotations}
+              markupsVisible={showCoachMarkups}
+              src={video.objectUrl}
+            />
           )}
           <div className="video-detail-title">
             <div>
@@ -15208,6 +16054,34 @@ function VideoDetailView({
             {video.tags.map((tag) => <span key={tag}>{tag}</span>)}
             <span>{video.visibility}</span>
           </div>
+          {(hasPublishedAnnotations || canManageMarkups || annotationMessage) && (
+            <div className="coach-markups-panel">
+              <div>
+                <span>Coach Markups{hasPublishedAnnotations ? " Available" : ""}</span>
+                <p>{hasPublishedAnnotations
+                  ? "Timestamped visual coaching notes are layered over the clean original video."
+                  : canManageMarkups
+                    ? "Add visual coaching notes without changing the original video."
+                    : "No visual markups have been shared yet."}</p>
+                {annotationMessage && <small>{annotationMessage}</small>}
+              </div>
+              <div className="button-row">
+                {hasPublishedAnnotations && (
+                  <button className="secondary-action compact-action" onClick={() => setShowCoachMarkups((current) => !current)} type="button">
+                    {showCoachMarkups ? "Hide Coach Markups" : "Show Coach Markups"}
+                  </button>
+                )}
+                {canManageMarkups && (
+                  <button className="secondary-action compact-action" onClick={() => setShowAnnotationWorkspace(true)} type="button">
+                    {hasPublishedAnnotations ? "Edit Coach Markups" : "Annotate Video"}
+                  </button>
+                )}
+                {canManageMarkups && hasPublishedAnnotations && (
+                  <button className="text-button danger-text-button" onClick={() => void removePublishedMarkups()} type="button">Remove Markups</button>
+                )}
+              </div>
+            </div>
+          )}
         </section>
 
         <aside className="video-notes-column">
@@ -15368,6 +16242,14 @@ function VideoDetailView({
             ))}
           </div>
         </section>
+      )}
+      {showAnnotationWorkspace && canManageMarkups && (
+        <VideoAnnotationWorkspace
+          annotationState={annotationState}
+          onClose={() => setShowAnnotationWorkspace(false)}
+          onStateChange={setAnnotationState}
+          video={video}
+        />
       )}
     </section>
   );

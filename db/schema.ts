@@ -317,6 +317,82 @@ export const lessonVideos = sqliteTable(
   ],
 );
 
+export const videoAnnotationSets = sqliteTable(
+  "video_annotation_sets",
+  {
+    id: text("id").primaryKey(),
+    videoId: text("video_id").notNull().references(() => lessonVideos.id, { onDelete: "cascade" }),
+    memberId: text("member_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    coachId: text("coach_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    version: integer("version").notNull().default(1),
+    status: text("status").notNull().default("draft"),
+    createdByUserId: text("created_by_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    publishedByUserId: text("published_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    publishedAt: text("published_at"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("video_annotation_sets_video_status_idx").on(table.videoId, table.status, table.updatedAt),
+    index("video_annotation_sets_member_idx").on(table.memberId, table.updatedAt),
+    uniqueIndex("video_annotation_sets_one_draft_unique")
+      .on(table.videoId, table.coachId)
+      .where(sql`${table.status} = 'draft'`),
+    uniqueIndex("video_annotation_sets_one_published_unique")
+      .on(table.videoId)
+      .where(sql`${table.status} = 'published'`),
+  ],
+);
+
+export const videoAnnotations = sqliteTable(
+  "video_annotations",
+  {
+    id: text("id").primaryKey(),
+    annotationSetId: text("annotation_set_id").notNull().references(() => videoAnnotationSets.id, { onDelete: "cascade" }),
+    videoId: text("video_id").notNull().references(() => lessonVideos.id, { onDelete: "cascade" }),
+    type: text("type").notNull(),
+    startTimeMs: integer("start_time_ms").notNull().default(0),
+    endTimeMs: integer("end_time_ms").notNull().default(3000),
+    geometryJson: text("geometry_json").notNull().default("{}"),
+    normalizedCoordinates: integer("normalized_coordinates", { mode: "boolean" }).notNull().default(true),
+    color: text("color").notNull().default("#ef4444"),
+    strokeWidth: integer("stroke_width").notNull().default(4),
+    text: text("text"),
+    createdByUserId: text("created_by_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    deletedAt: text("deleted_at"),
+  },
+  (table) => [
+    index("video_annotations_set_idx").on(table.annotationSetId, table.startTimeMs),
+    index("video_annotations_video_time_idx").on(table.videoId, table.startTimeMs, table.endTimeMs),
+  ],
+);
+
+export const videoAnnotationExports = sqliteTable(
+  "video_annotation_exports",
+  {
+    id: text("id").primaryKey(),
+    annotationSetId: text("annotation_set_id").notNull().references(() => videoAnnotationSets.id, { onDelete: "cascade" }),
+    videoId: text("video_id").notNull().references(() => lessonVideos.id, { onDelete: "cascade" }),
+    memberId: text("member_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    coachId: text("coach_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    requestedByUserId: text("requested_by_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("requested"),
+    storagePath: text("storage_path"),
+    sourceStoragePath: text("source_storage_path"),
+    errorCode: text("error_code"),
+    errorMessage: text("error_message"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    completedAt: text("completed_at"),
+  },
+  (table) => [
+    index("video_annotation_exports_video_idx").on(table.videoId, table.createdAt),
+    index("video_annotation_exports_set_idx").on(table.annotationSetId, table.createdAt),
+  ],
+);
+
 export const lessonSessionLinks = sqliteTable(
   "lesson_session_links",
   {

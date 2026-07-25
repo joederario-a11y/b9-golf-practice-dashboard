@@ -10714,3 +10714,277 @@ input::file-selector-button {
     font-size: 18px;
   }
 }
+
+.annotated-video-shell,
+.annotation-video-shell {
+  position: relative;
+  width: 100%;
+}
+
+.video-annotation-frame {
+  pointer-events: none;
+  position: absolute;
+  z-index: 5;
+}
+
+.video-annotation-frame.editable-frame {
+  pointer-events: auto;
+}
+
+.video-annotation-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.video-annotation-svg.editable {
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.video-annotation-shape {
+  filter: drop-shadow(0 0 7px rgba(0, 0, 0, 0.72));
+}
+
+.video-annotation-shape.selected,
+.video-annotation-text.selected {
+  outline: none;
+  filter:
+    drop-shadow(0 0 4px rgba(255, 255, 255, 0.9))
+    drop-shadow(0 0 10px rgba(151, 210, 46, 0.9));
+}
+
+.video-annotation-text {
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.78);
+  stroke-width: 5px;
+  font-size: 22px;
+  font-weight: 950;
+  letter-spacing: 0;
+  pointer-events: none;
+}
+
+.coach-markups-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid rgba(151, 210, 46, 0.32);
+  border-radius: 8px;
+  background: rgba(151, 210, 46, 0.08);
+  padding: 12px;
+}
+
+.coach-markups-panel span {
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.coach-markups-panel p,
+.coach-markups-panel small {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.annotation-modal-overlay {
+  align-items: stretch;
+  overflow: auto;
+  padding: 18px;
+}
+
+.video-annotation-workspace {
+  display: grid;
+  gap: 16px;
+  width: min(1680px, 100%);
+  margin: auto;
+  border: 1px solid rgba(151, 210, 46, 0.28);
+  border-radius: 10px;
+  background:
+    radial-gradient(circle at 30% 0%, rgba(151, 210, 46, 0.16), transparent 32%),
+    #07100d;
+  padding: 18px;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.52);
+}
+
+.video-annotation-header,
+.annotation-timeline-row,
+.annotation-list-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.video-annotation-header h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: clamp(28px, 4vw, 54px);
+  line-height: 1;
+}
+
+.video-annotation-header span,
+.annotation-timeline-row,
+.annotation-list-heading small {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.video-annotation-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(330px, 0.72fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.video-annotation-stage,
+.video-annotation-sidebar {
+  display: grid;
+  gap: 12px;
+}
+
+.annotation-video {
+  max-height: min(72vh, 760px);
+}
+
+.annotation-toolbox {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.annotation-toolbox button,
+.annotation-list button,
+.annotation-danger-zone button {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink);
+  padding: 10px;
+  font-weight: 900;
+}
+
+.annotation-toolbox button.active,
+.annotation-list button.selected {
+  border-color: rgba(151, 210, 46, 0.78);
+  background: rgba(151, 210, 46, 0.14);
+  color: var(--green);
+}
+
+.annotation-control-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.annotation-control-grid label {
+  display: grid;
+  gap: 6px;
+}
+
+.annotation-control-grid span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.annotation-control-grid input,
+.annotation-control-grid select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(4, 12, 10, 0.86);
+  color: var(--ink);
+  padding: 10px;
+  font: inherit;
+  font-weight: 800;
+}
+
+.annotation-wide {
+  grid-column: 1 / -1;
+}
+
+.annotation-action-row,
+.annotation-publish-panel,
+.annotation-danger-zone {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.annotation-list {
+  display: grid;
+  max-height: 320px;
+  overflow: auto;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.annotation-list button {
+  display: grid;
+  gap: 3px;
+  text-align: left;
+}
+
+.annotation-list button span {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.annotation-list button strong {
+  color: var(--ink);
+}
+
+.annotation-status-message {
+  margin: 0;
+  border: 1px solid rgba(151, 210, 46, 0.32);
+  border-radius: 8px;
+  background: rgba(151, 210, 46, 0.08);
+  color: var(--ink);
+  padding: 10px 12px;
+  font-weight: 800;
+}
+
+.annotation-danger-zone {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.annotation-danger-zone button {
+  border-color: rgba(239, 68, 68, 0.42);
+  color: #fecaca;
+}
+
+@media (max-width: 1040px) {
+  .video-annotation-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .coach-markups-panel,
+  .video-annotation-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 720px) {
+  .annotation-modal-overlay {
+    padding: 8px;
+  }
+
+  .video-annotation-workspace {
+    padding: 12px;
+  }
+
+  .annotation-toolbox,
+  .annotation-control-grid {
+    grid-template-columns: 1fr;
+  }
+}

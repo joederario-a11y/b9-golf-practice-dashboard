@@ -766,6 +766,93 @@ export async function ensureVideoVisualAnalysisSchema(database = getRequiredData
   ]);
 }
 
+export async function ensureVideoAnnotationSchema(database = getRequiredDatabase()) {
+  await database.batch([
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS video_annotation_sets (
+        id TEXT PRIMARY KEY,
+        video_id TEXT NOT NULL,
+        member_id TEXT NOT NULL,
+        coach_id TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'archived')),
+        created_by_user_id TEXT NOT NULL,
+        published_by_user_id TEXT,
+        published_at TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (video_id) REFERENCES lesson_videos(id) ON DELETE CASCADE,
+        FOREIGN KEY (member_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (coach_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (published_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+      )`,
+    ),
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS video_annotations (
+        id TEXT PRIMARY KEY,
+        annotation_set_id TEXT NOT NULL,
+        video_id TEXT NOT NULL,
+        type TEXT NOT NULL CHECK (type IN ('line', 'arrow', 'angle', 'circle', 'rectangle', 'freehand', 'text')),
+        start_time_ms INTEGER NOT NULL DEFAULT 0,
+        end_time_ms INTEGER NOT NULL DEFAULT 3000,
+        geometry_json TEXT NOT NULL DEFAULT '{}',
+        normalized_coordinates INTEGER NOT NULL DEFAULT 1 CHECK (normalized_coordinates = 1),
+        color TEXT NOT NULL DEFAULT '#ef4444',
+        stroke_width INTEGER NOT NULL DEFAULT 4,
+        text TEXT,
+        created_by_user_id TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        deleted_at TEXT,
+        FOREIGN KEY (annotation_set_id) REFERENCES video_annotation_sets(id) ON DELETE CASCADE,
+        FOREIGN KEY (video_id) REFERENCES lesson_videos(id) ON DELETE CASCADE,
+        FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE CASCADE
+      )`,
+    ),
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS video_annotation_exports (
+        id TEXT PRIMARY KEY,
+        annotation_set_id TEXT NOT NULL,
+        video_id TEXT NOT NULL,
+        member_id TEXT NOT NULL,
+        coach_id TEXT NOT NULL,
+        requested_by_user_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'requested'
+          CHECK (status IN ('requested', 'preparing', 'rendering', 'ready', 'failed')),
+        storage_path TEXT,
+        source_storage_path TEXT,
+        error_code TEXT,
+        error_message TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        completed_at TEXT,
+        FOREIGN KEY (annotation_set_id) REFERENCES video_annotation_sets(id) ON DELETE CASCADE,
+        FOREIGN KEY (video_id) REFERENCES lesson_videos(id) ON DELETE CASCADE,
+        FOREIGN KEY (member_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (coach_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (requested_by_user_id) REFERENCES users(id) ON DELETE CASCADE
+      )`,
+    ),
+    database.prepare("CREATE INDEX IF NOT EXISTS video_annotation_sets_video_status_idx ON video_annotation_sets(video_id, status, updated_at)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS video_annotation_sets_member_idx ON video_annotation_sets(member_id, updated_at)"),
+    database.prepare(
+      `CREATE UNIQUE INDEX IF NOT EXISTS video_annotation_sets_one_draft_unique
+       ON video_annotation_sets(video_id, coach_id)
+       WHERE status = 'draft'`,
+    ),
+    database.prepare(
+      `CREATE UNIQUE INDEX IF NOT EXISTS video_annotation_sets_one_published_unique
+       ON video_annotation_sets(video_id)
+       WHERE status = 'published'`,
+    ),
+    database.prepare("CREATE INDEX IF NOT EXISTS video_annotations_set_idx ON video_annotations(annotation_set_id, start_time_ms)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS video_annotations_video_time_idx ON video_annotations(video_id, start_time_ms, end_time_ms)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS video_annotation_exports_video_idx ON video_annotation_exports(video_id, created_at)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS video_annotation_exports_set_idx ON video_annotation_exports(annotation_set_id, created_at)"),
+  ]);
+}
+
 type AuthSessionCookieOptions = {
   maxAgeSeconds?: number;
   requestUrl?: string;
@@ -1140,6 +1227,7 @@ export async function ensurePlatformSchema(database = getRequiredDatabase()) {
   ]);
   await ensureVideoAiProcessingSchema(database);
   await ensurePracticeActivitySchema(database);
+  await ensureVideoAnnotationSchema(database);
 }
 
 export function identityForUser(row: UserRow): AuthIdentity {
