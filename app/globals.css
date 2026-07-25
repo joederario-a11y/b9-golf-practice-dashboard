@@ -5277,6 +5277,172 @@ button:disabled {
   accent-color: var(--green);
 }
 
+.video-visual-analysis-toggle {
+  align-items: flex-start;
+  border: 1px solid rgba(150, 203, 57, 0.28);
+  border-radius: 8px;
+  background: linear-gradient(145deg, rgba(150, 203, 57, 0.1), rgba(15, 28, 24, 0.82));
+  padding: 12px;
+}
+
+.video-visual-analysis-toggle span {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.visual-analysis-panel {
+  display: grid;
+  gap: 14px;
+  border-color: rgba(150, 203, 57, 0.26);
+  background: linear-gradient(145deg, rgba(150, 203, 57, 0.08), var(--surface));
+}
+
+.visual-analysis-panel.compact {
+  padding: 16px;
+}
+
+.visual-source-hierarchy {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.visual-source-hierarchy span,
+.visual-analysis-summary span {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+  padding: 10px;
+}
+
+.visual-source-hierarchy strong,
+.visual-source-hierarchy small,
+.visual-analysis-summary span {
+  display: block;
+}
+
+.visual-source-hierarchy strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.visual-source-hierarchy small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.visual-member-disclosure {
+  display: grid;
+  gap: 8px;
+}
+
+.visual-member-disclosure p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.visual-analysis-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.visual-analysis-summary span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.visual-finding-list {
+  display: grid;
+  gap: 10px;
+}
+
+.visual-finding-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+  padding: 14px;
+}
+
+.visual-finding-card.dismissed {
+  opacity: 0.58;
+}
+
+.visual-finding-card span,
+.visual-finding-card small,
+.visual-drill-card span,
+.visual-drill-card small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.visual-finding-card strong,
+.visual-drill-card strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--ink);
+  font-size: 16px;
+}
+
+.visual-finding-card p,
+.visual-drill-card p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.visual-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.visual-review-actions .secondary-action,
+.visual-review-actions .text-button {
+  min-height: 38px;
+}
+
+.visual-review-actions .secondary-action.active {
+  border-color: rgba(150, 203, 57, 0.58);
+  background: rgba(150, 203, 57, 0.18);
+  color: var(--green);
+}
+
+.visual-review-actions .danger-text-button.active {
+  color: var(--danger);
+}
+
+.visual-drill-card {
+  border: 1px solid rgba(250, 204, 21, 0.26);
+  border-radius: 8px;
+  background: linear-gradient(145deg, rgba(250, 204, 21, 0.08), rgba(255, 255, 255, 0.035));
+  padding: 14px;
+}
+
+.visual-analysis-actions {
+  align-items: center;
+  gap: 10px;
+}
+
+@media (max-width: 900px) {
+  .visual-source-hierarchy,
+  .visual-analysis-summary {
+    grid-template-columns: 1fr;
+  }
+}
+
 .video-session-block {
   display: grid;
   gap: 14px;

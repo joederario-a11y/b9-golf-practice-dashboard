@@ -1206,6 +1206,62 @@ type VideoRecapState = {
   };
 };
 
+type VideoVisualAnalysisFinding = {
+  classification?: string;
+  confidence?: number;
+  evidenceFrameIds?: string[];
+  explanation: string;
+  id?: string;
+  phase?: string;
+  reviewStatus?: "include_in_recap" | "coach_only" | "dismissed";
+  reviewedAt?: string | null;
+  sourceComparison?: string;
+  title: string;
+};
+
+type VideoVisualAnalysisState = {
+  analysis: {
+    analysisVersion: string;
+    cameraView?: string | null;
+    club?: string | null;
+    completedAt?: string | null;
+    frameCount: number;
+    framesAnalyzed: number;
+    handedness?: string | null;
+    id: string;
+    model?: string | null;
+    overallConfidence?: number | null;
+    publishedToMemberAt?: string | null;
+    safeErrorCode?: string | null;
+    safeErrorMessage?: string | null;
+    selectedSwingId?: string | null;
+    status: string;
+    structuredResult: {
+      observations?: VideoVisualAnalysisFinding[];
+      priority?: VideoVisualAnalysisFinding | null;
+      strengths?: VideoVisualAnalysisFinding[];
+      suggestedDrill?: {
+        goal?: string | null;
+        instructions?: string[];
+        title?: string;
+        why?: string;
+      } | null;
+      unableToDetermine?: string[];
+    };
+    swingCountDetected: number;
+    updatedAt: string;
+  } | null;
+  canRequest: boolean;
+  canReview: boolean;
+  coachLed: boolean;
+  eligibility: {
+    eligible: boolean;
+    safeErrorCode?: string | null;
+    safeMessage?: string;
+  };
+  hierarchy: string[];
+};
+
 type LessonPublishConfirmation = {
   body: string;
   emailFailureReason?: string | null;
@@ -5157,6 +5213,20 @@ async function updateVideoRecap(payload: Record<string, unknown>) {
   return readApiJson<VideoRecapState>(response, "The MAI Coach recap could not be updated.");
 }
 
+async function readVideoVisualAnalysis(videoId: string) {
+  const response = await fetch(`/api/video-visual-analysis?videoId=${encodeURIComponent(videoId)}`, { cache: "no-store" });
+  return readApiJson<VideoVisualAnalysisState>(response, "The MAI visual swing analysis could not be loaded.");
+}
+
+async function updateVideoVisualAnalysis(payload: Record<string, unknown>) {
+  const response = await fetch("/api/video-visual-analysis", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return readApiJson<VideoVisualAnalysisState>(response, "The MAI visual swing analysis could not be updated.");
+}
+
 function stripVideoObjectUrl(video: VideoLibraryItem): VideoLibraryRecord {
   return { ...video };
 }
@@ -5347,6 +5417,89 @@ function readVideoMetadata(file: File, signal?: AbortSignal) {
 
 async function readVideoDuration(file: File) {
   return (await readVideoMetadata(file)).duration;
+}
+
+function captureLessonVideoFrame(file: File, metadata?: Partial<LessonVideoMetadata> | null, signal?: AbortSignal) {
+  return new Promise<File | null>((resolve) => {
+    const objectUrl = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    let settled = false;
+    let abortHandler: (() => void) | null = null;
+    const timeout = window.setTimeout(() => finish(null), 15000);
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      URL.revokeObjectURL(objectUrl);
+      if (abortHandler) signal?.removeEventListener("abort", abortHandler);
+      video.onloadedmetadata = null;
+      video.onseeked = null;
+      video.onerror = null;
+      video.removeAttribute("src");
+      video.load();
+    };
+    const finish = (result: File | null) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(result);
+    };
+    abortHandler = () => finish(null);
+    if (signal?.aborted) {
+      finish(null);
+      return;
+    }
+    signal?.addEventListener("abort", abortHandler, { once: true });
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "metadata";
+    video.onerror = () => finish(null);
+    video.onloadedmetadata = () => {
+      const duration = Number.isFinite(video.duration) ? video.duration : Number(metadata?.duration ?? 0);
+      const targetTime = duration > 4 ? Math.min(duration - 0.25, Math.max(1, duration * 0.28)) : Math.max(0, duration / 2);
+      try {
+        video.currentTime = targetTime;
+      } catch {
+        finish(null);
+      }
+    };
+    video.onseeked = async () => {
+      try {
+        const width = Number.isFinite(video.videoWidth) && video.videoWidth > 0
+          ? video.videoWidth
+          : Number(metadata?.width ?? 0);
+        const height = Number.isFinite(video.videoHeight) && video.videoHeight > 0
+          ? video.videoHeight
+          : Number(metadata?.height ?? 0);
+        if (!width || !height) {
+          finish(null);
+          return;
+        }
+        const maxDimension = 960;
+        const scale = Math.min(1, maxDimension / Math.max(width, height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(width * scale));
+        canvas.height = Math.max(1, Math.round(height * scale));
+        const context = canvas.getContext("2d", { alpha: false });
+        if (!context) {
+          finish(null);
+          return;
+        }
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const blob = await canvasBlob(canvas, "image/jpeg", 0.78);
+        if (!blob) {
+          finish(null);
+          return;
+        }
+        const stem = file.name.replace(/\.[^.]+$/, "") || "lesson-video";
+        finish(new File([blob], `${stem}-swing-frame.jpg`, {
+          lastModified: file.lastModified || Date.now(),
+          type: "image/jpeg",
+        }));
+      } catch {
+        finish(null);
+      }
+    };
+    video.src = objectUrl;
+  });
 }
 
 function abortError(message: string) {
@@ -10728,6 +10881,7 @@ function CoachVideoWorkspace({
   const [coachPrivateNotes, setCoachPrivateNotes] = useState("");
   const [emailMember, setEmailMember] = useState(true);
   const [generateAiRecap, setGenerateAiRecap] = useState(true);
+  const [prepareVisualAnalysis, setPrepareVisualAnalysis] = useState(true);
   const [editingVideoId, setEditingVideoId] = useState<string | null>(null);
   const [recapReviewVideo, setRecapReviewVideo] = useState<VideoLibraryItem | null>(null);
   const [selectedMemberDetail, setSelectedMemberDetail] = useState<StaffMemberDetail | null>(null);
@@ -11019,6 +11173,7 @@ function CoachVideoWorkspace({
     setCoachPrivateNotes("");
     setEmailMember(true);
     setGenerateAiRecap(true);
+    setPrepareVisualAnalysis(true);
     setEditingVideoId(null);
     setUploadProgress(0);
     setUploadStage("idle");
@@ -11548,6 +11703,7 @@ function CoachVideoWorkspace({
       let preparationController: AbortController | null = null;
       let selectedCompressionPlan: ReturnType<typeof chooseLessonVideoCompressionPlan> | null = null;
       let shouldPrepareTranscriptionAudio = false;
+      let preparedThumbnailFile = thumbnailFile;
       let videoSourceAudioProbe: LessonVideoAudioProbe | null = null;
       if (videoFile) {
         preparationController = new AbortController();
@@ -11774,6 +11930,15 @@ function CoachVideoWorkspace({
         }
       }
       compressionFailed = false;
+      if (videoFile && videoMetadata && prepareVisualAnalysis && !preparedThumbnailFile) {
+        setWorkspaceMessage("Preparing a private swing frame for MAI visual analysis.");
+        const capturedFrame = await captureLessonVideoFrame(videoFile, videoMetadata, preparationController?.signal);
+        if (capturedFrame) {
+          preparedThumbnailFile = capturedFrame;
+        } else {
+          setWorkspaceMessage("A swing frame could not be prepared automatically. The video will still upload and MAI can retry after a frame is available.");
+        }
+      }
 
       const duration = videoMetadata?.duration ?? editingVideo?.duration ?? 0;
       const lessonSummaryText = lessonSummary.trim();
@@ -11809,6 +11974,7 @@ function CoachVideoWorkspace({
         coachNotes: lessonSummaryText || mainFocusText || practiceNextText,
         coachId: accountUser?.role === "coach" ? accountUser.id : undefined,
         generateAiRecap: Boolean(generateAiRecap && !editingVideo && videoFile && accountUser?.role === "coach"),
+        generateVisualAnalysis: Boolean(prepareVisualAnalysis && !editingVideo && videoFile),
         processingLanguage: "en",
       };
 
@@ -12003,8 +12169,8 @@ function CoachVideoWorkspace({
         sessionAttachmentError = error instanceof Error ? error.message : "Session data could not be attached.";
         setSessionUploadStatus(sessionAttachmentError);
       }
-      if (thumbnailFile) {
-        await uploadVideoAsset(pendingVideoId, thumbnailFile, "thumbnail", (progress) => {
+      if (preparedThumbnailFile) {
+        await uploadVideoAsset(pendingVideoId, preparedThumbnailFile, "thumbnail", (progress) => {
           setUploadProgress(progress);
         });
       }
@@ -12022,6 +12188,9 @@ function CoachVideoWorkspace({
       const aiStatusNote = generateAiRecap && !editingVideo
         ? " MAI Coach recap processing is queued for coach review."
         : "";
+      const visualStatusNote = prepareVisualAnalysis && !editingVideo
+        ? " MAI visual swing analysis is queued for coach review."
+        : "";
       const sessionStatusNote = sessionAttachmentError
         ? ` Session data needs attention: ${sessionAttachmentError}`
         : linkedSessionSummary
@@ -12035,7 +12204,7 @@ function CoachVideoWorkspace({
           title: record.title,
           videoId: record.id,
         });
-        setWorkspaceMessage(`Video uploaded to ${selectedMember.name}. MAI Coach is processing the lesson. You can leave this page and come back later.${sessionStatusNote}`);
+        setWorkspaceMessage(`Video uploaded to ${selectedMember.name}. MAI Coach is processing the lesson. You can leave this page and come back later.${visualStatusNote}${sessionStatusNote}`);
         setVideoFile(null);
         setThumbnailFile(null);
         setVideoTitle("");
@@ -12057,15 +12226,15 @@ function CoachVideoWorkspace({
       }
 
       if (publicationStatus === "Draft") {
-        setWorkspaceMessage(`Draft saved for ${selectedMember.name}. It is not visible to the member.${aiStatusNote}${sessionStatusNote}`);
+        setWorkspaceMessage(`Draft saved for ${selectedMember.name}. It is not visible to the member.${aiStatusNote}${visualStatusNote}${sessionStatusNote}`);
       } else if (notifyMember && emailMember) {
         setWorkspaceMessage(
           record.emailStatus === "Sent"
-            ? `Video published to ${selectedMember.name} and the email notification was sent.${aiStatusNote}${sessionStatusNote}`
-            : `Video published, but the email notification could not be sent.${aiStatusNote}${sessionStatusNote}`,
+            ? `Video published to ${selectedMember.name} and the email notification was sent.${aiStatusNote}${visualStatusNote}${sessionStatusNote}`
+            : `Video published, but the email notification could not be sent.${aiStatusNote}${visualStatusNote}${sessionStatusNote}`,
         );
       } else {
-        setWorkspaceMessage(`Video published to ${selectedMember.name}. No email was sent.${aiStatusNote}${sessionStatusNote}`);
+        setWorkspaceMessage(`Video published to ${selectedMember.name}. No email was sent.${aiStatusNote}${visualStatusNote}${sessionStatusNote}`);
       }
       const completedMember = selectedMember;
       resetWorkflow();
@@ -12455,6 +12624,15 @@ function CoachVideoWorkspace({
                   </div>
                 )}
                 <label><span>Tags optional</span><input onChange={(event) => setTags(event.target.value)} placeholder="takeaway, face control" value={tags} /></label>
+                <label className="video-private-toggle video-visual-analysis-toggle wide">
+                  <input
+                    checked={prepareVisualAnalysis}
+                    disabled={Boolean(editingVideo)}
+                    onChange={(event) => setPrepareVisualAnalysis(event.target.checked)}
+                    type="checkbox"
+                  />
+                  <span>Prepare MAI swing analysis for my review</span>
+                </label>
                 <label className="wide"><span>Coach notes optional</span><textarea onChange={(event) => setVideoDescription(event.target.value)} placeholder="Context, setup notes, or what to review after processing..." value={videoDescription} /></label>
               </div>
             </details>
@@ -14454,6 +14632,7 @@ function AiLessonRecapReviewModal({
 
           <div className="ai-recap-editor-column">
             <LessonProcessingTracker state={state} video={video} />
+            <VideoVisualAnalysisPanel compact video={video} viewerRole="coach" />
             <details className="approved-transcript ai-transcript-disclosure">
               <summary>View Video Transcript</summary>
               <textarea disabled={draftLocked} onChange={(event) => setTranscriptText(event.target.value)} placeholder="Transcript will appear here after processing." value={transcriptText} />
@@ -14539,6 +14718,235 @@ function ApprovedTranscriptDisclosure({ videoId }: { videoId: string }) {
       <summary>Approved lesson transcript</summary>
       <p>{state.transcript.text}</p>
     </details>
+  );
+}
+
+function visualAnalysisStatusLabel(status?: string | null) {
+  if (!status) return "Not requested";
+  if (status === "queued") return "Queued";
+  if (status === "detecting_swings") return "Detecting swings";
+  if (status === "extracting_frames") return "Extracting frames";
+  if (status === "analyzing_frames") return "Analyzing visible swing";
+  if (status === "ready_for_coach_review") return "Ready for Coach review";
+  if (status === "ready_for_member") return "Shared with member";
+  if (status === "needs_attention") return "Needs attention";
+  if (status === "cancelled") return "Cancelled";
+  return status.replaceAll("_", " ");
+}
+
+function visualFindingComparisonLabel(value?: string) {
+  if (!value) return "Directly visible";
+  if (value.includes("match")) return "Matches Coach feedback";
+  if (value.includes("conflict")) return "Conflicts with Coach feedback";
+  if (value.includes("session")) return "Supported by session data";
+  if (value.includes("unable")) return "Unable to determine";
+  if (value.includes("review")) return "Review suggested";
+  return value.replaceAll("_", " ");
+}
+
+function confidenceLabel(value?: number | null) {
+  const confidence = Number(value);
+  if (!Number.isFinite(confidence)) return "Low confidence";
+  if (confidence >= 0.75) return "High confidence";
+  if (confidence >= 0.45) return "Moderate confidence";
+  return "Low confidence";
+}
+
+function VisualFindingCard({
+  canReview,
+  finding,
+  onReview,
+}: {
+  canReview: boolean;
+  finding: VideoVisualAnalysisFinding;
+  onReview: (finding: VideoVisualAnalysisFinding, reviewStatus: "include_in_recap" | "coach_only" | "dismissed") => void;
+}) {
+  return (
+    <article className={cls("visual-finding-card", finding.reviewStatus === "dismissed" && "dismissed")}>
+      <div>
+        <span>{finding.phase || "Visible swing"} · {confidenceLabel(finding.confidence)}</span>
+        <strong>{finding.title}</strong>
+        {finding.explanation && <p>{finding.explanation}</p>}
+        <small>{visualFindingComparisonLabel(finding.sourceComparison)} · {finding.classification?.replaceAll("_", " ") || "observed"}</small>
+      </div>
+      {canReview && finding.id && (
+        <div className="visual-review-actions">
+          <button
+            className={cls("secondary-action", finding.reviewStatus === "include_in_recap" && "active")}
+            onClick={() => onReview(finding, "include_in_recap")}
+            type="button"
+          >
+            Include in Student Recap
+          </button>
+          <button
+            className={cls("secondary-action", finding.reviewStatus === "coach_only" && "active")}
+            onClick={() => onReview(finding, "coach_only")}
+            type="button"
+          >
+            Keep Coach-Only
+          </button>
+          <button
+            className={cls("text-button danger-text-button", finding.reviewStatus === "dismissed" && "active")}
+            onClick={() => onReview(finding, "dismissed")}
+            type="button"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+    </article>
+  );
+}
+
+function VideoVisualAnalysisPanel({
+  compact = false,
+  video,
+  viewerRole,
+}: {
+  compact?: boolean;
+  video: VideoLibraryItem;
+  viewerRole: VideoViewerRole;
+}) {
+  const [state, setState] = useState<VideoVisualAnalysisState | null>(null);
+  const [message, setMessage] = useState("Loading MAI visual swing analysis...");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    readVideoVisualAnalysis(video.id)
+      .then((payload) => {
+        if (cancelled) return;
+        setState(payload);
+        setMessage(payload.analysis ? visualAnalysisStatusLabel(payload.analysis.status) : "Visual analysis has not been requested.");
+      })
+      .catch((error) => {
+        if (!cancelled) setMessage(error instanceof Error ? error.message : "The visual analysis could not be loaded.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [video.id]);
+
+  const analysis = state?.analysis;
+  const structured = analysis?.structuredResult;
+  const allFindings = [
+    ...(structured?.strengths ?? []),
+    ...(structured?.observations ?? []),
+    ...(structured?.priority ? [structured.priority] : []),
+  ];
+  const canReview = Boolean(state?.canReview);
+  const canRequest = Boolean(state?.canRequest);
+  const coachLed = state?.coachLed ?? viewerRole !== "user";
+  const showMemberCoachedEmpty = viewerRole === "user" && coachLed && (!analysis || analysis.status !== "ready_for_member");
+
+  async function submit(action: string, extra: Record<string, unknown> = {}) {
+    setSaving(true);
+    try {
+      const payload = await updateVideoVisualAnalysis({ action, videoId: video.id, ...extra });
+      setState(payload);
+      setMessage(payload.analysis ? visualAnalysisStatusLabel(payload.analysis.status) : "Visual analysis updated.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The visual analysis could not be updated.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function reviewFinding(finding: VideoVisualAnalysisFinding, reviewStatus: "include_in_recap" | "coach_only" | "dismissed") {
+    if (!analysis?.id || !finding.id) return;
+    void submit("reviewObservation", {
+      analysisId: analysis.id,
+      observationId: finding.id,
+      reviewStatus,
+    });
+  }
+
+  if (showMemberCoachedEmpty && compact) return null;
+
+  const title = viewerRole === "user" && !coachLed ? "MAI Swing Analysis" : "MAI Visual Swing Analysis";
+  const kicker = viewerRole === "user" && !coachLed
+    ? "AI-generated visual analysis"
+    : "Supplemental";
+
+  return (
+    <section className={cls("panel", "visual-analysis-panel", compact && "compact")}>
+      <PanelHeader
+        kicker={kicker}
+        title={title}
+        meta={analysis ? visualAnalysisStatusLabel(analysis.status) : "Not requested"}
+        action={canRequest && (
+          <button
+            className="secondary-action compact-action"
+            disabled={saving}
+            onClick={() => void submit(analysis?.status === "needs_attention" ? "retry" : "request")}
+            type="button"
+          >
+            {analysis ? "Retry Swing Analysis" : viewerRole === "user" ? "Analyze my swing with MAI" : "Analyze Swing Video"}
+          </button>
+        )}
+      />
+      {coachLed && canReview && (
+        <div className="visual-source-hierarchy">
+          <span><strong>Coach Feedback</strong><small>Primary</small></span>
+          <span><strong>Measured Session Data</strong><small>Evidence</small></span>
+          <span><strong>MAI Visual Swing Analysis</strong><small>Supplemental</small></span>
+        </div>
+      )}
+      {viewerRole === "user" && coachLed && (
+        <details className="approved-transcript visual-member-disclosure">
+          <summary>Additional MAI swing observations</summary>
+          <p>MAI reviewed the visible swing motion to support your Coach’s feedback.</p>
+        </details>
+      )}
+      {!analysis && (
+        <p className="video-note-empty">
+          {viewerRole === "user" && !coachLed
+            ? "Upload or analyze a swing video to get AI-generated visual feedback."
+            : "MAI visual analysis is optional and will stay coach-only until reviewed."}
+        </p>
+      )}
+      {analysis?.safeErrorMessage && (
+        <p className="coach-inline-warning">{analysis.safeErrorMessage}</p>
+      )}
+      {analysis && (
+        <div className="visual-analysis-summary">
+          <span>{analysis.swingCountDetected || 0} swings detected</span>
+          <span>{analysis.framesAnalyzed || analysis.frameCount || 0} frames analyzed</span>
+          <span>{analysis.cameraView?.replaceAll("_", " ") || "Camera view unknown"}</span>
+          <span>{analysis.handedness || "Handedness unknown"}</span>
+        </div>
+      )}
+      {allFindings.length > 0 ? (
+        <div className="visual-finding-list">
+          {allFindings.map((finding, index) => (
+            <VisualFindingCard
+              canReview={canReview}
+              finding={finding}
+              key={finding.id ?? `${finding.title}-${index}`}
+              onReview={reviewFinding}
+            />
+          ))}
+        </div>
+      ) : analysis?.status === "ready_for_member" || analysis?.status === "ready_for_coach_review" ? (
+        <p className="video-note-empty">No visual findings were confident enough to share.</p>
+      ) : null}
+      {structured?.suggestedDrill && (
+        <article className="visual-drill-card">
+          <span>{viewerRole === "user" && !coachLed ? "Practice next" : "Coach-review drill suggestion"}</span>
+          <strong>{structured.suggestedDrill.title}</strong>
+          {structured.suggestedDrill.why && <p>{structured.suggestedDrill.why}</p>}
+          {structured.suggestedDrill.goal && <small>{structured.suggestedDrill.goal}</small>}
+        </article>
+      )}
+      <div className="video-modal-actions visual-analysis-actions">
+        <span>{message}</span>
+        {canReview && analysis?.status === "ready_for_coach_review" && (
+          <button className="primary-action" disabled={saving} onClick={() => void submit("publishApproved")} type="button">
+            Publish Approved Visual Notes
+          </button>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -14694,6 +15102,7 @@ function VideoDetailView({
           )}
 
           {viewerRole === "user" && <ApprovedTranscriptDisclosure videoId={video.id} />}
+          <VideoVisualAnalysisPanel compact video={video} viewerRole={viewerRole} />
 
           {canEditUserNotes && (
             <section className="panel video-note-panel">
@@ -14896,6 +15305,7 @@ function VideosView({
   const [uploadVisibility, setUploadVisibility] = useState<VideoVisibility>(
     viewerRole === "user" ? "User only" : "Coach + User",
   );
+  const [analyzeMySwing, setAnalyzeMySwing] = useState(true);
   const [uploadState, setUploadState] = useState<"idle" | "saving">("idle");
   const [uploadProgress, setUploadProgress] = useState(0);
   const [sessionDataVideo, setSessionDataVideo] = useState<VideoLibraryItem | null>(null);
@@ -15160,6 +15570,7 @@ function VideosView({
     setUploadClub("");
     setUploadSwingType("");
     setUploadVisibility(viewerRole === "user" ? "User only" : "Coach + User");
+    setAnalyzeMySwing(true);
     setUploadProgress(0);
   }
 
@@ -15181,7 +15592,11 @@ function VideosView({
     setUploadState("saving");
     setUploadProgress(2);
     try {
-      const duration = await readVideoDuration(videoFile);
+      const metadata = await readVideoMetadata(videoFile);
+      const duration = metadata.duration;
+      const visualFrame = viewerRole === "user" && analyzeMySwing
+        ? await captureLessonVideoFrame(videoFile, metadata)
+        : null;
       const resolvedTitle = uploadTitle.trim() || videoDateTitleFromFile(videoFile);
       const created = await createVideoRecord({
         memberId: ownerId,
@@ -15194,8 +15609,12 @@ function VideosView({
         swingType: uploadSwingType || undefined,
         duration,
         publicationStatus: "Published",
+        generateVisualAnalysis: Boolean(viewerRole === "user" && analyzeMySwing),
       }, videoFile);
       await uploadVideoAsset(created.id, videoFile, "video", setUploadProgress);
+      if (visualFrame) {
+        await uploadVideoAsset(created.id, visualFrame, "thumbnail", () => undefined);
+      }
       const record = await finalizeVideoRecord(created.id, {
         title: resolvedTitle,
         description: uploadDescription.trim(),
@@ -15206,10 +15625,11 @@ function VideosView({
         swingType: uploadSwingType || null,
         duration,
         publicationStatus: "Published",
+        generateVisualAnalysis: Boolean(viewerRole === "user" && analyzeMySwing),
       });
       const item = createVideoLibraryItem(record);
       setVideos((items) => [item, ...items]);
-      setLibraryMessage(`${record.title} was uploaded successfully.`);
+      setLibraryMessage(`${record.title} was uploaded successfully.${viewerRole === "user" && analyzeMySwing ? " MAI swing analysis is queued." : ""}`);
       setShowUpload(false);
       resetUploadForm();
     } catch (error) {
@@ -15410,6 +15830,12 @@ function VideosView({
               <label><span>Club used</span><select value={uploadClub} onChange={(event) => setUploadClub(event.target.value)}><option value="">Not specified</option>{clubOptions.map((club) => <option key={club} value={club}>{getClubDisplayName(club)}</option>)}</select></label>
               <label><span>Swing type</span><select value={uploadSwingType} onChange={(event) => setUploadSwingType(event.target.value as VideoSwingType | "")}><option value="">Not specified</option>{VIDEO_SWING_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>
               <label><span>Tags</span><input onChange={(event) => setUploadTags(event.target.value)} placeholder="tempo, takeaway, lesson" value={uploadTags} /></label>
+              {viewerRole === "user" && (
+                <label className="video-private-toggle video-visual-analysis-toggle video-form-wide">
+                  <input checked={analyzeMySwing} onChange={(event) => setAnalyzeMySwing(event.target.checked)} type="checkbox" />
+                  <span>Analyze my swing with MAI</span>
+                </label>
+              )}
               <label className="video-form-wide"><span>Description or notes</span><textarea onChange={(event) => setUploadDescription(event.target.value)} placeholder="Context, lesson recap, or what to review..." value={uploadDescription} /></label>
             </div>
 

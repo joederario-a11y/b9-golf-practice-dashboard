@@ -9,6 +9,7 @@ import { videoOwnershipChangeError } from "@/lib/video-upload-safety.mjs";
 import {
   ensureCoachFeedbackSchema,
   ensurePlatformSchema,
+  ensureVideoVisualAnalysisSchema,
   getAssignedMemberIds,
   getRequiredDatabase,
   getRequiredVideoStorage,
@@ -21,6 +22,10 @@ import {
   createVideoRecapProcessingJob,
   queueVideoRecapWorkflowAfterUpload,
 } from "@/lib/server/video-ai-recap";
+import {
+  processPendingVideoVisualAnalysisAfterUpload,
+  queueVideoVisualAnalysisRequest,
+} from "@/lib/server/video-visual-analysis";
 import {
   loadLessonSessionLinksForVideos,
   upsertLessonSessionLink,
@@ -333,12 +338,18 @@ async function finalizeStoredVideoUpload(values: {
     targetUserId: values.video.member_id,
   });
   let aiProcessing: unknown = null;
+  let visualAnalysisProcessing: unknown = null;
   try {
     aiProcessing = await queueVideoRecapWorkflowAfterUpload(values.database, values.identity, values.video.id);
   } catch {
     aiProcessing = { queued: false };
   }
-  return { aiProcessing, mediaProbe };
+  try {
+    visualAnalysisProcessing = await processPendingVideoVisualAnalysisAfterUpload(values.database, values.identity, values.video.id);
+  } catch {
+    visualAnalysisProcessing = { queued: false };
+  }
+  return { aiProcessing, mediaProbe, visualAnalysisProcessing };
 }
 
 function requireMultipartBucket(bucket: R2Bucket) {
@@ -476,6 +487,7 @@ async function handleMultipartVideoUpload(values: {
       mediaProbe: finalized.mediaProbe,
       multipart: true,
       size: stored.size,
+      visualAnalysisProcessing: finalized.visualAnalysisProcessing,
     });
   }
 
@@ -921,6 +933,13 @@ export async function POST(request: Request) {
       aiProcessingDisabledReason = "AI recap generation was disabled because no assigned coach was selected.";
     }
 
+    const visualAnalysisProcessing = await queueVideoVisualAnalysisRequest(database, identity, {
+      coachId,
+      memberId,
+      requested: payload.generateVisualAnalysis,
+      videoId,
+    });
+
     const initialSessionId = text(payload.sessionId, 120);
     if (initialSessionId) {
       await upsertLessonSessionLink({
@@ -950,6 +969,7 @@ export async function POST(request: Request) {
     const row = await getVideo(database, videoId);
     return Response.json({
       aiProcessingDisabledReason: aiProcessingDisabledReason || undefined,
+      visualAnalysisProcessing,
       video: row ? await serializeSingleVideo(database, row, identity.role) : null,
     }, { status: 201 });
   } catch (error) {
@@ -1029,11 +1049,17 @@ export async function PUT(request: Request) {
     }
 
     let aiProcessing: unknown = null;
+    let visualAnalysisProcessing: unknown = null;
     if (asset === "thumbnail") {
       await database
         .prepare("UPDATE lesson_videos SET thumbnail_storage_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
         .bind(storagePath, video.id)
         .run();
+      try {
+        visualAnalysisProcessing = await processPendingVideoVisualAnalysisAfterUpload(database, identity, video.id);
+      } catch {
+        visualAnalysisProcessing = { queued: false };
+      }
     } else {
       const finalized = await finalizeStoredVideoUpload({
         bucket,
@@ -1046,8 +1072,9 @@ export async function PUT(request: Request) {
         video,
       });
       aiProcessing = finalized.aiProcessing;
+      visualAnalysisProcessing = finalized.visualAnalysisProcessing;
     }
-    return Response.json({ ok: true, aiProcessing, asset, size: stored.size });
+    return Response.json({ ok: true, aiProcessing, asset, size: stored.size, visualAnalysisProcessing });
   } catch (error) {
     return responseFromError(error);
   }
@@ -1238,6 +1265,7 @@ export async function DELETE(request: Request) {
       ...(aiAssets.results ?? []).flatMap((asset) => asset.audio_storage_path.split("\n")),
     ].filter((key): key is string => Boolean(key))));
     if (keys.length) await bucket.delete(keys);
+    await ensureVideoVisualAnalysisSchema(database);
     await database.batch([
       database.prepare("DELETE FROM video_views WHERE video_id = ?").bind(video.id),
       database.prepare("DELETE FROM video_email_notifications WHERE video_id = ?").bind(video.id),
@@ -1245,6 +1273,9 @@ export async function DELETE(request: Request) {
       database.prepare("DELETE FROM video_lesson_recap_drafts WHERE video_id = ?").bind(video.id),
       database.prepare("DELETE FROM video_transcripts WHERE video_id = ?").bind(video.id),
       database.prepare("DELETE FROM video_ai_processing_jobs WHERE video_id = ?").bind(video.id),
+      database.prepare("DELETE FROM video_visual_observation_reviews WHERE video_id = ?").bind(video.id),
+      database.prepare("DELETE FROM video_visual_analysis_frames WHERE video_id = ?").bind(video.id),
+      database.prepare("DELETE FROM video_visual_analyses WHERE video_id = ?").bind(video.id),
       database.prepare("DELETE FROM lesson_videos WHERE id = ?").bind(video.id),
     ]);
     return Response.json({ ok: true });
