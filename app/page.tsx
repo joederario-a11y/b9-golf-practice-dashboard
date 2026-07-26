@@ -2682,6 +2682,36 @@ function getSeverityScore(severity: Insight["severity"]) {
   return severity === "high" ? 3 : severity === "medium" ? 2 : 1;
 }
 
+function consolidateInsightsByIssue(insights: Insight[]) {
+  const groups = new Map<string, Insight[]>();
+  insights.forEach((insight) => {
+    const key = `${insight.metric.toLowerCase()}::${insight.title.toLowerCase()}`;
+    groups.set(key, [...(groups.get(key) ?? []), insight]);
+  });
+
+  return Array.from(groups.values()).map((group) => {
+    const sorted = group.slice().sort((a, b) => getSeverityScore(b.severity) - getSeverityScore(a.severity));
+    const primary = sorted[0];
+    if (sorted.length === 1) return primary;
+
+    const clubNames = sorted
+      .map((insight) => insight.club)
+      .filter((club) => club && club !== "All clubs")
+      .map((club) => getClubDisplayName(club));
+    const uniqueClubs = Array.from(new Set(clubNames));
+
+    return {
+      ...primary,
+      id: `${primary.metric.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-consolidated`,
+      club: uniqueClubs.length > 1 ? `${uniqueClubs.length} clubs` : primary.club,
+      evidence: uniqueClubs.length > 1
+        ? `${uniqueClubs.join(", ")} are showing the same pattern. ${primary.evidence}`
+        : primary.evidence,
+      value: uniqueClubs.length > 1 ? `${uniqueClubs.length} clubs flagged` : primary.value,
+    };
+  });
+}
+
 function summarizeClubs(sessions: Session[]): ClubSummary[] {
   const shotsByClub = new Map<string, Shot[]>();
   sessions.flatMap((session) => session.shots).forEach((shot) => {
@@ -2826,7 +2856,9 @@ function computeInsights(clubs: ClubSummary[], sessions: Session[]): Insight[] {
     });
   }
 
-  return insights.sort((a, b) => getSeverityScore(b.severity) - getSeverityScore(a.severity)).slice(0, 7);
+  return consolidateInsightsByIssue(insights)
+    .sort((a, b) => getSeverityScore(b.severity) - getSeverityScore(a.severity))
+    .slice(0, 7);
 }
 
 function dashboardMetricValue(value: number, unit = "", digits = 1) {
@@ -8605,6 +8637,9 @@ function HomepageDashboardHero({
   const carryValue = dashboardMetricValue(summary.carry, "yd");
   const dispersionValue = Number.isFinite(summary.dispersionWidth) ? `${summary.dispersionWidth} yd` : "NA";
   const scoreValue = Number.isFinite(summary.sessionScore) ? Math.round(summary.sessionScore).toString() : "NA";
+  const scoreExplanation = Number.isFinite(summary.sessionScore)
+    ? "Composite of contact efficiency, shot pattern, launch window, and curve-control data for the selected club. Missing metrics stay out of the score instead of being counted as zero."
+    : "MAI Coach needs at least two captured performance categories before it can calculate a session score.";
 
   return (
     <section className="home-dashboard-shell">
@@ -8618,10 +8653,21 @@ function HomepageDashboardHero({
           </span>
           <p>{summary.summaryText}</p>
         </div>
-        <div className="session-score-ring" aria-label={`Session score ${scoreValue} out of 100`}>
-          <strong>{scoreValue}</strong>
-          <span>Session Score</span>
-        </div>
+        <details className="session-score-details">
+          <summary className="session-score-ring" aria-label={`Session score ${scoreValue} out of 100. Open to see how it is calculated.`}>
+            <strong>{scoreValue}</strong>
+            <span>Session Score</span>
+          </summary>
+          <div className="session-score-popover">
+            <strong>How this score is built</strong>
+            <p>{scoreExplanation}</p>
+            <dl>
+              <div><dt>Carry</dt><dd>{carryValue}</dd></div>
+              <div><dt>Spread</dt><dd>{dispersionValue}</dd></div>
+              <div><dt>Contact</dt><dd>{summary.contactLabel}</dd></div>
+            </dl>
+          </div>
+        </details>
       </div>
 
       <div className="home-dashboard-main">
@@ -8724,6 +8770,24 @@ function DashboardHeroVisual({ shots }: { shots: Shot[] }) {
     const y = 220 - clamp((carryForPosition - minCarry) / carryRange, 0, 1) * 150;
     return { x, y };
   }
+  const dispersionShots = availableShots.filter((shot) => (
+    typeof getShotMetric(shot, "carry") === "number" &&
+    typeof getShotMetric(shot, "offline") === "number"
+  ));
+  const dispersionArea = (() => {
+    if (dispersionShots.length < 5) return null;
+    const carryAverage = average(dispersionShots.map((shot) => getShotMetric(shot, "carry") as number));
+    const offlineAverage = average(dispersionShots.map((shot) => getShotMetric(shot, "offline") as number));
+    const carrySpread = standardDeviation(dispersionShots.map((shot) => getShotMetric(shot, "carry") as number));
+    const offlineSpread = standardDeviation(dispersionShots.map((shot) => getShotMetric(shot, "offline") as number));
+    if (!Number.isFinite(carryAverage) || !Number.isFinite(offlineAverage)) return null;
+    return {
+      cx: 230 + clamp(offlineAverage / maxOffline, -1, 1) * 165,
+      cy: 220 - clamp((carryAverage - minCarry) / carryRange, 0, 1) * 150,
+      rx: clamp((Number.isFinite(offlineSpread) ? offlineSpread : 0) / maxOffline * 165 * 1.6, 20, 118),
+      ry: clamp((Number.isFinite(carrySpread) ? carrySpread : 0) / carryRange * 150 * 1.6, 18, 96),
+    };
+  })();
 
   return (
     <svg className="home-shot-visual" role="img" viewBox="0 0 460 260" aria-label="Shot distance and dispersion grid">
@@ -8751,7 +8815,12 @@ function DashboardHeroVisual({ shots }: { shots: Shot[] }) {
         />
       ))}
       <path className="home-shot-arc" d="M230 220 C246 174 249 123 230 48" />
-      <ellipse className="home-shot-group" cx="230" cy="138" rx="84" ry="132" />
+      {dispersionArea && (
+        <g>
+          <title>{`Dispersion area derived from ${dispersionShots.length} measured shots.`}</title>
+          <ellipse className="home-shot-group" cx={dispersionArea.cx} cy={dispersionArea.cy} rx={dispersionArea.rx} ry={dispersionArea.ry} />
+        </g>
+      )}
       {availableShots.slice(0, 24).map((shot) => {
         const point = pointForShot(shot);
         return <circle className="home-shot-dot" cx={point.x} cy={point.y} key={shot.id} r="5" />;
@@ -9455,7 +9524,7 @@ function SessionsView({
           </span>
           {selectedShot && (
             <button className="text-button" onClick={() => onSelectionChange({ club: selectedShot.club, shotId: null })} type="button">
-              Clear shot
+              Show all shots
             </button>
           )}
         </div>

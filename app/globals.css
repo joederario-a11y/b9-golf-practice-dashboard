@@ -1156,6 +1156,11 @@ button {
   font-size: 18px;
 }
 
+.session-score-details {
+  position: relative;
+  justify-self: end;
+}
+
 .session-score-ring {
   display: grid;
   width: 126px;
@@ -1169,7 +1174,17 @@ button {
   box-shadow:
     0 0 34px rgba(150, 203, 57, 0.18),
     inset 0 0 0 12px #10171F;
+  cursor: pointer;
+  list-style: none;
   text-align: center;
+}
+
+.session-score-ring::-webkit-details-marker {
+  display: none;
+}
+
+.session-score-ring::marker {
+  content: "";
 }
 
 .session-score-ring strong,
@@ -1191,6 +1206,68 @@ button {
   font-weight: 850;
   line-height: 1.15;
   text-transform: uppercase;
+}
+
+.session-score-popover {
+  position: absolute;
+  top: calc(100% + 12px);
+  right: 0;
+  z-index: 5;
+  display: grid;
+  gap: 10px;
+  width: min(320px, 76vw);
+  border: 1px solid rgba(150, 203, 57, 0.32);
+  border-radius: 8px;
+  background: #0f171f;
+  box-shadow: 0 22px 48px rgba(0, 0, 0, 0.36);
+  padding: 14px;
+}
+
+.session-score-popover strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.session-score-popover p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 13px;
+  line-height: 1.48;
+}
+
+.session-score-popover dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.session-score-popover dl div {
+  display: grid;
+  gap: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 8px;
+}
+
+.session-score-popover dt,
+.session-score-popover dd {
+  margin: 0;
+}
+
+.session-score-popover dt {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.session-score-popover dd {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 900;
 }
 
 .home-dashboard-main {
@@ -9612,9 +9689,19 @@ input::file-selector-button {
     grid-template-columns: 1fr;
   }
 
+  .session-score-details {
+    justify-self: start;
+  }
+
   .session-score-ring {
     width: 108px;
     height: 108px;
+  }
+
+  .session-score-popover {
+    right: auto;
+    left: 0;
+    width: min(320px, calc(100vw - 56px));
   }
 
   .home-dashboard-header > div:first-child > p {

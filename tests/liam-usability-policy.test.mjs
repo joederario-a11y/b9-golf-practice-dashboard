@@ -44,6 +44,10 @@ test("shot summary explains real shot coordinates and sample size", () => {
   assert.match(pageSource, /Distance lines are carry yards/);
   assert.match(pageSource, /Based on/);
   assert.match(pageSource, /Flight lines show the shot shape/);
+  assert.match(pageSource, /Dispersion area derived from/);
+  assert.match(pageSource, /dispersionShots\.length < 5/);
+  assert.match(pageSource, /cx=\{dispersionArea\.cx\}/);
+  assert.match(pageSource, /Show all shots/);
 });
 
 test("canonical club selector is reused across import, session edit, lesson, and quick session flows", () => {
@@ -55,4 +59,12 @@ test("canonical club selector is reused across import, session edit, lesson, and
   assert.match(pageSource, /placeholder="Search, type, or save as Unknown Club"/);
   assert.doesNotMatch(pageSource, /<select value=\{sessionForm\.club\}/);
   assert.doesNotMatch(pageSource, /<select value=\{coachSessionForm\.club\}/);
+});
+
+test("dashboard reduces repeated flags and explains session score", () => {
+  assert.match(pageSource, /function consolidateInsightsByIssue/);
+  assert.match(pageSource, /are showing the same pattern/);
+  assert.match(pageSource, /How this score is built/);
+  assert.match(pageSource, /Missing metrics stay out of the score instead of being counted as zero/);
+  assert.match(cssSource, /\.session-score-popover/);
 });
