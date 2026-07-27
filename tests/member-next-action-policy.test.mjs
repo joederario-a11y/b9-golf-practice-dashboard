@@ -61,7 +61,7 @@ test("coach-led member follows coach-assigned practice before lesson and AI item
   assert.equal(getMemberExperienceMode({ activeCoachRelationships: [coach] }), "coach_led");
   assert.equal(action.type, "coach_practice");
   assert.equal(action.source, "coach");
-  assert.equal(action.primaryActionUrl, "/practice");
+  assert.equal(action.primaryActionUrl, "/practice/practice-1");
 });
 
 test("independent member gets MAI practice before session opportunity and upload prompts", () => {

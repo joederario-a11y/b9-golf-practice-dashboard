@@ -1,5 +1,6 @@
 import {
   generatePracticeActivity,
+  getPracticeActivityDetail,
   listPracticeActivities,
   updatePracticeActivity,
 } from "@/lib/server/practice-activities";
@@ -13,6 +14,10 @@ export async function GET(request: Request) {
   try {
     const identity = await requireIdentity();
     const url = new URL(request.url);
+    const activityId = text(url.searchParams.get("activityId"), 120);
+    if (activityId) {
+      return getPracticeActivityDetail(identity, activityId);
+    }
     return listPracticeActivities(identity, text(url.searchParams.get("memberId"), 120));
   } catch (error) {
     return responseFromError(error);

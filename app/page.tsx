@@ -1018,6 +1018,7 @@ type SessionsPayload = {
 type PracticeActivityType = "drill" | "challenge";
 type PracticeActivityStatus = "generated" | "in_progress" | "completed" | "results_submitted" | "cancelled" | "superseded";
 type PracticeProgressStatus = "improved" | "maintained" | "needs_more_work" | "insufficient_data";
+type PracticeAttemptStatus = "active" | "completed" | "abandoned" | "needs_review";
 type TrainingAidRecommendation = {
   aidId?: string;
   approvalState?: string;
@@ -1033,9 +1034,61 @@ type TrainingAidRecommendation = {
   whyItFits?: string;
 };
 
+type PracticeAttempt = {
+  id: string;
+  practiceActivityId: string;
+  userId: string;
+  status: PracticeAttemptStatus;
+  startedAt: string;
+  completedAt?: string;
+  completedShotCount?: number;
+  completedSetCount?: number;
+  completedMinutes?: number;
+  linkedSessionId?: string;
+  memberDifficultyRating?: number;
+  memberDifficultyLabel?: string;
+  memberConfidenceRating?: number;
+  memberCompletedAmount?: "yes" | "partial" | "unknown";
+  memberNotes?: string;
+  trainingAidUsed?: boolean | null;
+  trainingAidHelpfulness?: number;
+  measuredOutcome?: Record<string, unknown>;
+  evaluation?: {
+    classification?: string;
+    biggestWin?: string;
+    remainingOpportunity?: string | null;
+    recommendedNextAction?: "repeat" | "progress" | "modify" | "replace" | "complete";
+    recommendedReason?: string;
+    measurementSource?: string;
+    nextActionVisibility?: {
+      label?: string;
+      memberVisible?: boolean;
+      source?: string;
+    };
+  };
+  progress?: {
+    mode?: string;
+    label?: string;
+    sourceLabel?: string;
+  };
+  coachReviewStatus?: string;
+  coachReviewNote?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type PracticeActivity = {
   id: string;
   userId: string;
+  assignment?: {
+    source?: "coach" | "coach_approved_ai" | "ai" | "challenge" | "generic_library";
+    practicePriority?: string;
+    assignedShotCount?: number | null;
+    assignedSetCount?: number | null;
+    estimatedMinutes?: number | null;
+    status?: string;
+    version?: number;
+  };
   activityType: PracticeActivityType;
   focusArea: string;
   title: string;
@@ -1086,8 +1139,11 @@ type PracticeActivity = {
   startedAt?: string;
   completedAt?: string;
   updatedAt: string;
+  activeAttempt?: PracticeAttempt | null;
+  latestAttempt?: PracticeAttempt | null;
   latestResult?: {
     id: string;
+    practiceAttemptId?: string;
     progressStatus: PracticeProgressStatus;
     score?: number;
     attempts?: number;
@@ -7014,6 +7070,10 @@ export default function Home() {
     }
 
     const url = new URL(action.primaryActionUrl, window.location.origin);
+    if (url.pathname.startsWith("/practice/")) {
+      window.location.href = `${url.pathname}${url.search}${url.hash}`;
+      return;
+    }
     const nextTab = tabFromPathname(url.pathname) ?? tabFromValue(url.searchParams.get("tab")) ?? "dashboard";
 
     if (nextTab === "sessions") {
@@ -14441,6 +14501,27 @@ function PracticeView({
     }
   }
 
+  async function startFocusedPractice() {
+    if (!currentActivity) return;
+    setLoadingAction("update");
+    setPracticeMessage("Opening focused practice.");
+    try {
+      const response = await fetch("/api/practice", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "start", activityId: currentActivity.id }),
+      });
+      await readApiJson<{
+        activities?: PracticeActivity[];
+        currentActivity?: PracticeActivity | null;
+      }>(response, "Practice could not be started.");
+      window.location.href = `/practice/${encodeURIComponent(currentActivity.id)}`;
+    } catch (error) {
+      setPracticeMessage(error instanceof Error ? error.message : "Practice could not be started.");
+      setLoadingAction("");
+    }
+  }
+
   return (
     <section className="practice-workspace">
       <div className="practice-hero panel">
@@ -14610,7 +14691,9 @@ function PracticeView({
               <div><dt>Make it harder</dt><dd>{currentActivity.instructions.harderVersion ?? "NA"}</dd></div>
             </dl>
             <div className="practice-activity-actions">
-              <button className="primary-action" disabled={loadingAction === "update"} onClick={() => void updateActivity("start")} type="button">Start Activity</button>
+              <button className="primary-action" disabled={loadingAction === "update"} onClick={() => void startFocusedPractice()} type="button">
+                {currentActivity.activeAttempt ? "Resume Practice" : "Start Practice"}
+              </button>
               <button className="secondary-action" disabled={loadingAction === "update"} onClick={() => void updateActivity("complete")} type="button">Mark Complete</button>
               <button className="secondary-action" onClick={() => setShowResultEntry((current) => !current)} type="button">How Did You Do?</button>
             </div>
@@ -14673,7 +14756,9 @@ function PracticeView({
             <button className={cls(currentActivity?.id === activity.id && "selected")} key={activity.id} onClick={() => setCurrentActivity(activity)} type="button">
               <span>{formatDate(activity.createdAt)} · {activity.activityType}</span>
               <strong>{activity.title}</strong>
-              <small>{activity.focusArea} · {activity.latestResult?.progressStatus?.replaceAll("_", " ") ?? activity.status.replaceAll("_", " ")}</small>
+              <small>
+                {activity.focusArea} · {activity.latestAttempt?.progress?.label ?? activity.latestResult?.progressStatus?.replaceAll("_", " ") ?? activity.status.replaceAll("_", " ")}
+              </small>
             </button>
           ))}
           {activities.length === 0 && <p>No generated practice activities yet.</p>}

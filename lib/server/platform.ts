@@ -468,6 +468,7 @@ export async function ensurePracticeActivitySchema(database = getRequiredDatabas
       `CREATE TABLE IF NOT EXISTS practice_activity_results (
         id TEXT PRIMARY KEY,
         practice_activity_id TEXT NOT NULL,
+        practice_attempt_id TEXT,
         user_id TEXT NOT NULL,
         related_session_id TEXT,
         submission_type TEXT NOT NULL
@@ -490,18 +491,88 @@ export async function ensurePracticeActivitySchema(database = getRequiredDatabas
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       )`,
     ),
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS practice_attempts (
+        id TEXT PRIMARY KEY,
+        practice_activity_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active'
+          CHECK (status IN ('active', 'completed', 'abandoned', 'needs_review')),
+        started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        completed_at TEXT,
+        completed_shot_count INTEGER,
+        completed_set_count INTEGER,
+        completed_minutes INTEGER,
+        linked_session_id TEXT,
+        linked_challenge_attempt_id TEXT,
+        member_difficulty_rating INTEGER,
+        member_difficulty_label TEXT,
+        member_confidence_rating INTEGER,
+        member_completed_amount TEXT NOT NULL DEFAULT 'unknown'
+          CHECK (member_completed_amount IN ('yes', 'partial', 'unknown')),
+        member_notes TEXT NOT NULL DEFAULT '',
+        training_aid_used INTEGER CHECK (training_aid_used IN (0, 1)),
+        training_aid_helpfulness INTEGER,
+        measured_outcome_json TEXT NOT NULL DEFAULT '{}',
+        evaluation_json TEXT NOT NULL DEFAULT '{}',
+        source_snapshot_json TEXT NOT NULL DEFAULT '{}',
+        coach_review_status TEXT NOT NULL DEFAULT 'not_required',
+        coach_review_note TEXT NOT NULL DEFAULT '',
+        coach_reviewed_by TEXT,
+        coach_reviewed_at TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (practice_activity_id) REFERENCES practice_activities(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (coach_reviewed_by) REFERENCES users(id) ON DELETE SET NULL
+      )`,
+    ),
     database.prepare("CREATE INDEX IF NOT EXISTS practice_activities_user_idx ON practice_activities(user_id, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS practice_activities_generated_by_idx ON practice_activities(generated_by, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS practice_activities_coach_idx ON practice_activities(coach_id, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS practice_activities_session_idx ON practice_activities(related_session_id)"),
     database.prepare("CREATE INDEX IF NOT EXISTS practice_activity_results_activity_idx ON practice_activity_results(practice_activity_id, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS practice_activity_results_user_idx ON practice_activity_results(user_id, created_at)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS practice_activity_results_attempt_idx ON practice_activity_results(practice_attempt_id)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS practice_attempts_activity_idx ON practice_attempts(practice_activity_id, created_at)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS practice_attempts_user_idx ON practice_attempts(user_id, created_at)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS practice_attempts_session_idx ON practice_attempts(linked_session_id)"),
+    database.prepare(
+      `CREATE UNIQUE INDEX IF NOT EXISTS practice_attempts_one_active_unique
+       ON practice_attempts(practice_activity_id, user_id)
+       WHERE status = 'active'`,
+    ),
+    database.prepare(
+      `CREATE UNIQUE INDEX IF NOT EXISTS practice_activity_results_one_per_attempt_unique
+       ON practice_activity_results(practice_attempt_id)
+       WHERE practice_attempt_id IS NOT NULL`,
+    ),
     database.prepare(
       `CREATE UNIQUE INDEX IF NOT EXISTS practice_activities_one_active_focus_unique
        ON practice_activities(user_id, activity_type, focus_area)
        WHERE status IN ('generated', 'in_progress')`,
     ),
   ]);
+  await ensureColumn(database, "practice_activity_results", "practice_attempt_id", "TEXT");
+  await ensureColumn(database, "practice_attempts", "completed_shot_count", "INTEGER");
+  await ensureColumn(database, "practice_attempts", "completed_set_count", "INTEGER");
+  await ensureColumn(database, "practice_attempts", "completed_minutes", "INTEGER");
+  await ensureColumn(database, "practice_attempts", "linked_session_id", "TEXT");
+  await ensureColumn(database, "practice_attempts", "linked_challenge_attempt_id", "TEXT");
+  await ensureColumn(database, "practice_attempts", "member_difficulty_rating", "INTEGER");
+  await ensureColumn(database, "practice_attempts", "member_difficulty_label", "TEXT");
+  await ensureColumn(database, "practice_attempts", "member_confidence_rating", "INTEGER");
+  await ensureColumn(database, "practice_attempts", "member_completed_amount", "TEXT NOT NULL DEFAULT 'unknown'");
+  await ensureColumn(database, "practice_attempts", "member_notes", "TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, "practice_attempts", "training_aid_used", "INTEGER");
+  await ensureColumn(database, "practice_attempts", "training_aid_helpfulness", "INTEGER");
+  await ensureColumn(database, "practice_attempts", "measured_outcome_json", "TEXT NOT NULL DEFAULT '{}'");
+  await ensureColumn(database, "practice_attempts", "evaluation_json", "TEXT NOT NULL DEFAULT '{}'");
+  await ensureColumn(database, "practice_attempts", "source_snapshot_json", "TEXT NOT NULL DEFAULT '{}'");
+  await ensureColumn(database, "practice_attempts", "coach_review_status", "TEXT NOT NULL DEFAULT 'not_required'");
+  await ensureColumn(database, "practice_attempts", "coach_review_note", "TEXT NOT NULL DEFAULT ''");
+  await ensureColumn(database, "practice_attempts", "coach_reviewed_by", "TEXT");
+  await ensureColumn(database, "practice_attempts", "coach_reviewed_at", "TEXT");
 }
 
 export async function ensureChallengeSchema(database = getRequiredDatabase()) {

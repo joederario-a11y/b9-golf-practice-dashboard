@@ -16,6 +16,15 @@ import {
   visibleTrainingAidRecommendation,
 } from "@/lib/training-aid-policy.mjs";
 import {
+  buildPracticeProgress,
+  coachReviewStatusForOutcome,
+  evaluatePracticeOutcome,
+  mapOutcomeToProgressStatus,
+  nextActionVisibility,
+  normalizePracticeAssignment,
+  practiceEventActionForOutcome,
+} from "@/lib/practice-completion-policy.mjs";
+import {
   sanitizeSessionList,
   summarizeShotDataQuality,
 } from "@/lib/session-data-policy.mjs";
@@ -37,6 +46,7 @@ import {
 type ActivityType = "drill" | "challenge";
 type PracticeStatus = "generated" | "in_progress" | "completed" | "results_submitted" | "cancelled" | "superseded";
 type SubmissionType = "session_upload" | "csv" | "photo" | "manual" | "score" | "reflection";
+type PracticeAttemptStatus = "active" | "completed" | "abandoned" | "needs_review";
 type PlatformDatabase = ReturnType<typeof getRequiredDatabase>;
 
 type PracticeActivityRow = {
@@ -66,6 +76,7 @@ type PracticeActivityRow = {
   completed_at: string | null;
   updated_at: string;
   result_id?: string | null;
+  result_attempt_id?: string | null;
   result_progress_status?: string | null;
   result_score?: number | null;
   result_attempts?: number | null;
@@ -75,6 +86,74 @@ type PracticeActivityRow = {
   result_evidence_json?: string | null;
   result_next_json?: string | null;
   result_created_at?: string | null;
+  active_attempt_id?: string | null;
+  active_attempt_status?: PracticeAttemptStatus | null;
+  active_attempt_started_at?: string | null;
+  active_attempt_completed_at?: string | null;
+  active_attempt_completed_shot_count?: number | null;
+  active_attempt_completed_set_count?: number | null;
+  active_attempt_completed_minutes?: number | null;
+  active_attempt_linked_session_id?: string | null;
+  active_attempt_member_difficulty_rating?: number | null;
+  active_attempt_member_difficulty_label?: string | null;
+  active_attempt_member_confidence_rating?: number | null;
+  active_attempt_member_completed_amount?: string | null;
+  active_attempt_member_notes?: string | null;
+  active_attempt_training_aid_used?: number | null;
+  active_attempt_training_aid_helpfulness?: number | null;
+  active_attempt_measured_outcome_json?: string | null;
+  active_attempt_evaluation_json?: string | null;
+  active_attempt_source_snapshot_json?: string | null;
+  active_attempt_coach_review_status?: string | null;
+  latest_attempt_id?: string | null;
+  latest_attempt_status?: PracticeAttemptStatus | null;
+  latest_attempt_started_at?: string | null;
+  latest_attempt_completed_at?: string | null;
+  latest_attempt_completed_shot_count?: number | null;
+  latest_attempt_completed_set_count?: number | null;
+  latest_attempt_completed_minutes?: number | null;
+  latest_attempt_linked_session_id?: string | null;
+  latest_attempt_member_difficulty_rating?: number | null;
+  latest_attempt_member_difficulty_label?: string | null;
+  latest_attempt_member_confidence_rating?: number | null;
+  latest_attempt_member_completed_amount?: string | null;
+  latest_attempt_member_notes?: string | null;
+  latest_attempt_training_aid_used?: number | null;
+  latest_attempt_training_aid_helpfulness?: number | null;
+  latest_attempt_measured_outcome_json?: string | null;
+  latest_attempt_evaluation_json?: string | null;
+  latest_attempt_source_snapshot_json?: string | null;
+  latest_attempt_coach_review_status?: string | null;
+};
+
+type PracticeAttemptRow = {
+  id: string;
+  practice_activity_id: string;
+  user_id: string;
+  status: PracticeAttemptStatus;
+  started_at: string;
+  completed_at: string | null;
+  completed_shot_count: number | null;
+  completed_set_count: number | null;
+  completed_minutes: number | null;
+  linked_session_id: string | null;
+  linked_challenge_attempt_id: string | null;
+  member_difficulty_rating: number | null;
+  member_difficulty_label: string | null;
+  member_confidence_rating: number | null;
+  member_completed_amount: string | null;
+  member_notes: string | null;
+  training_aid_used: number | null;
+  training_aid_helpfulness: number | null;
+  measured_outcome_json: string;
+  evaluation_json: string;
+  source_snapshot_json: string;
+  coach_review_status: string;
+  coach_review_note: string;
+  coach_reviewed_by: string | null;
+  coach_reviewed_at: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 type StoredSession = {
@@ -147,6 +226,18 @@ function safeArrayJson(value: unknown) {
   return JSON.stringify(Array.isArray(value) ? value : []);
 }
 
+function booleanOrNull(value: unknown) {
+  if (value === true || value === "true" || value === "1" || value === 1) return 1;
+  if (value === false || value === "false" || value === "0" || value === 0) return 0;
+  return null;
+}
+
+function clampInteger(value: unknown, min: number, max: number) {
+  const parsed = numberOrNull(value);
+  if (parsed === null) return null;
+  return Math.min(max, Math.max(min, Math.round(parsed)));
+}
+
 async function preparePracticeDatabase(database: PlatformDatabase) {
   await ensurePlatformSchema(database);
   await ensureUserDataOwnershipSchema(database);
@@ -183,6 +274,21 @@ function summarizeSession(session: StoredSession | undefined) {
     usableShotCount: shots.length,
     club,
   };
+}
+
+async function storedSessionsForUser(database: PlatformDatabase, userId: string) {
+  const row = await database
+    .prepare("SELECT sessions_json FROM golf_session_snapshots WHERE user_id = ?")
+    .bind(userId)
+    .first<{ sessions_json: string }>();
+  return parseSessions(row?.sessions_json);
+}
+
+async function loadOwnedSession(database: PlatformDatabase, userId: string, sessionId: string) {
+  const requestedSessionId = text(sessionId, 180);
+  if (!requestedSessionId) return null;
+  const sessions = await storedSessionsForUser(database, userId);
+  return sessions.find((session) => session.id === requestedSessionId) ?? null;
 }
 
 async function resolveTargetUser(identity: AuthIdentity, database: PlatformDatabase, requestedMemberId?: string | null) {
@@ -462,9 +568,32 @@ function serializePracticeActivity(row: PracticeActivityRow) {
   const instructions = parseJson(row.instructions_json, {});
   const resultEvidence = parseJson(row.result_evidence_json ?? "", []);
   const nextRecommendation = parseJson(row.result_next_json ?? "", {});
+  const activeAttempt = serializePrefixedAttempt(row, "active_attempt");
+  const latestAttempt = serializePrefixedAttempt(row, "latest_attempt");
+  const assignment = normalizePracticeAssignment({
+    id: row.id,
+    userId: row.user_id,
+    coachId: row.coach_id,
+    activityType: row.activity_type,
+    focusArea: row.focus_area,
+    title: row.title,
+    reasonSelected: row.reason_selected,
+    instructions,
+    club: row.club,
+    durationMinutes: row.duration_minutes,
+    attemptCount: row.attempt_count,
+    target: parseJson(row.target_json, {}),
+    status: row.status,
+    generatedBy: row.generated_by,
+    coachFeedbackSourceId: row.coach_feedback_source_id,
+    createdAt: row.created_at,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+  });
   return {
     id: row.id,
     userId: row.user_id,
+    assignment,
     generatedBy: row.generated_by,
     activityType: row.activity_type,
     focusArea: row.focus_area,
@@ -488,9 +617,12 @@ function serializePracticeActivity(row: PracticeActivityRow) {
     startedAt: row.started_at ?? undefined,
     completedAt: row.completed_at ?? undefined,
     updatedAt: row.updated_at,
+    activeAttempt,
+    latestAttempt,
     latestResult: row.result_id
       ? {
           id: row.result_id,
+          practiceAttemptId: row.result_attempt_id ?? undefined,
           progressStatus: row.result_progress_status ?? "insufficient_data",
           score: row.result_score ?? undefined,
           attempts: row.result_attempts ?? undefined,
@@ -507,12 +639,98 @@ function serializePracticeActivity(row: PracticeActivityRow) {
 
 type SerializedPracticeActivity = ReturnType<typeof serializePracticeActivity>;
 
+function serializeAttempt(row: PracticeAttemptRow | null | undefined, activity?: Pick<PracticeActivityRow, "attempt_count" | "duration_minutes"> | null) {
+  if (!row) return null;
+  const evaluation = parseJson(row.evaluation_json ?? "", {});
+  const measuredOutcome = parseJson(row.measured_outcome_json ?? "", {});
+  return {
+    id: row.id,
+    practiceActivityId: row.practice_activity_id,
+    userId: row.user_id,
+    status: row.status,
+    startedAt: row.started_at,
+    completedAt: row.completed_at ?? undefined,
+    completedShotCount: row.completed_shot_count ?? undefined,
+    completedSetCount: row.completed_set_count ?? undefined,
+    completedMinutes: row.completed_minutes ?? undefined,
+    linkedSessionId: row.linked_session_id ?? undefined,
+    linkedChallengeAttemptId: row.linked_challenge_attempt_id ?? undefined,
+    memberDifficultyRating: row.member_difficulty_rating ?? undefined,
+    memberDifficultyLabel: row.member_difficulty_label ?? undefined,
+    memberConfidenceRating: row.member_confidence_rating ?? undefined,
+    memberCompletedAmount: row.member_completed_amount ?? "unknown",
+    memberNotes: row.member_notes ?? "",
+    trainingAidUsed: row.training_aid_used === null ? null : row.training_aid_used === 1,
+    trainingAidHelpfulness: row.training_aid_helpfulness ?? undefined,
+    measuredOutcome,
+    evaluation,
+    sourceSnapshot: parseJson(row.source_snapshot_json ?? "", {}),
+    coachReviewStatus: row.coach_review_status ?? "not_required",
+    coachReviewNote: row.coach_review_note ?? "",
+    coachReviewedBy: row.coach_reviewed_by ?? undefined,
+    coachReviewedAt: row.coach_reviewed_at ?? undefined,
+    progress: buildPracticeProgress({
+      activity: activity
+        ? {
+            attemptCount: activity.attempt_count,
+            durationMinutes: activity.duration_minutes,
+          }
+        : {},
+      attempt: {
+        completedShotCount: row.completed_shot_count,
+        completedSetCount: row.completed_set_count,
+        completedMinutes: row.completed_minutes,
+        status: row.status,
+      },
+      outcome: evaluation,
+    }),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function serializePrefixedAttempt(row: PracticeActivityRow, prefix: "active_attempt" | "latest_attempt") {
+  const prefixed = row as unknown as Record<string, string | number | null | undefined>;
+  const id = prefixed[`${prefix}_id`] as string | null | undefined;
+  if (!id) return null;
+  return serializeAttempt({
+    id,
+    practice_activity_id: row.id,
+    user_id: row.user_id,
+    status: (prefixed[`${prefix}_status`] as PracticeAttemptStatus | null) ?? "active",
+    started_at: (prefixed[`${prefix}_started_at`] as string | null | undefined) ?? row.started_at ?? row.created_at,
+    completed_at: (prefixed[`${prefix}_completed_at`] as string | null | undefined) ?? null,
+    completed_shot_count: (prefixed[`${prefix}_completed_shot_count`] as number | null | undefined) ?? null,
+    completed_set_count: (prefixed[`${prefix}_completed_set_count`] as number | null | undefined) ?? null,
+    completed_minutes: (prefixed[`${prefix}_completed_minutes`] as number | null | undefined) ?? null,
+    linked_session_id: (prefixed[`${prefix}_linked_session_id`] as string | null | undefined) ?? null,
+    linked_challenge_attempt_id: null,
+    member_difficulty_rating: (prefixed[`${prefix}_member_difficulty_rating`] as number | null | undefined) ?? null,
+    member_difficulty_label: (prefixed[`${prefix}_member_difficulty_label`] as string | null | undefined) ?? null,
+    member_confidence_rating: (prefixed[`${prefix}_member_confidence_rating`] as number | null | undefined) ?? null,
+    member_completed_amount: (prefixed[`${prefix}_member_completed_amount`] as string | null | undefined) ?? null,
+    member_notes: (prefixed[`${prefix}_member_notes`] as string | null | undefined) ?? "",
+    training_aid_used: (prefixed[`${prefix}_training_aid_used`] as number | null | undefined) ?? null,
+    training_aid_helpfulness: (prefixed[`${prefix}_training_aid_helpfulness`] as number | null | undefined) ?? null,
+    measured_outcome_json: (prefixed[`${prefix}_measured_outcome_json`] as string | null | undefined) ?? "{}",
+    evaluation_json: (prefixed[`${prefix}_evaluation_json`] as string | null | undefined) ?? "{}",
+    source_snapshot_json: (prefixed[`${prefix}_source_snapshot_json`] as string | null | undefined) ?? "{}",
+    coach_review_status: (prefixed[`${prefix}_coach_review_status`] as string | null | undefined) ?? "not_required",
+    coach_review_note: "",
+    coach_reviewed_by: null,
+    coach_reviewed_at: null,
+    created_at: (prefixed[`${prefix}_started_at`] as string | null | undefined) ?? row.created_at,
+    updated_at: row.updated_at,
+  }, row);
+}
+
 async function loadActivities(database: PlatformDatabase, userId: string): Promise<SerializedPracticeActivity[]> {
   const result = await database
     .prepare(
       `SELECT
         practice_activities.*,
         latest_result.id AS result_id,
+        latest_result.practice_attempt_id AS result_attempt_id,
         latest_result.progress_status AS result_progress_status,
         latest_result.score AS result_score,
         latest_result.attempts AS result_attempts,
@@ -521,12 +739,67 @@ async function loadActivities(database: PlatformDatabase, userId: string): Promi
         latest_result.user_reflection AS result_reflection,
         latest_result.progress_evidence_json AS result_evidence_json,
         latest_result.next_recommendation_json AS result_next_json,
-        latest_result.created_at AS result_created_at
+        latest_result.created_at AS result_created_at,
+        active_attempt.id AS active_attempt_id,
+        active_attempt.status AS active_attempt_status,
+        active_attempt.started_at AS active_attempt_started_at,
+        active_attempt.completed_at AS active_attempt_completed_at,
+        active_attempt.completed_shot_count AS active_attempt_completed_shot_count,
+        active_attempt.completed_set_count AS active_attempt_completed_set_count,
+        active_attempt.completed_minutes AS active_attempt_completed_minutes,
+        active_attempt.linked_session_id AS active_attempt_linked_session_id,
+        active_attempt.member_difficulty_rating AS active_attempt_member_difficulty_rating,
+        active_attempt.member_difficulty_label AS active_attempt_member_difficulty_label,
+        active_attempt.member_confidence_rating AS active_attempt_member_confidence_rating,
+        active_attempt.member_completed_amount AS active_attempt_member_completed_amount,
+        active_attempt.member_notes AS active_attempt_member_notes,
+        active_attempt.training_aid_used AS active_attempt_training_aid_used,
+        active_attempt.training_aid_helpfulness AS active_attempt_training_aid_helpfulness,
+        active_attempt.measured_outcome_json AS active_attempt_measured_outcome_json,
+        active_attempt.evaluation_json AS active_attempt_evaluation_json,
+        active_attempt.source_snapshot_json AS active_attempt_source_snapshot_json,
+        active_attempt.coach_review_status AS active_attempt_coach_review_status,
+        latest_attempt.id AS latest_attempt_id,
+        latest_attempt.status AS latest_attempt_status,
+        latest_attempt.started_at AS latest_attempt_started_at,
+        latest_attempt.completed_at AS latest_attempt_completed_at,
+        latest_attempt.completed_shot_count AS latest_attempt_completed_shot_count,
+        latest_attempt.completed_set_count AS latest_attempt_completed_set_count,
+        latest_attempt.completed_minutes AS latest_attempt_completed_minutes,
+        latest_attempt.linked_session_id AS latest_attempt_linked_session_id,
+        latest_attempt.member_difficulty_rating AS latest_attempt_member_difficulty_rating,
+        latest_attempt.member_difficulty_label AS latest_attempt_member_difficulty_label,
+        latest_attempt.member_confidence_rating AS latest_attempt_member_confidence_rating,
+        latest_attempt.member_completed_amount AS latest_attempt_member_completed_amount,
+        latest_attempt.member_notes AS latest_attempt_member_notes,
+        latest_attempt.training_aid_used AS latest_attempt_training_aid_used,
+        latest_attempt.training_aid_helpfulness AS latest_attempt_training_aid_helpfulness,
+        latest_attempt.measured_outcome_json AS latest_attempt_measured_outcome_json,
+        latest_attempt.evaluation_json AS latest_attempt_evaluation_json,
+        latest_attempt.source_snapshot_json AS latest_attempt_source_snapshot_json,
+        latest_attempt.coach_review_status AS latest_attempt_coach_review_status
        FROM practice_activities
        LEFT JOIN practice_activity_results AS latest_result
          ON latest_result.id = (
            SELECT id FROM practice_activity_results
            WHERE practice_activity_id = practice_activities.id
+           ORDER BY created_at DESC
+           LIMIT 1
+         )
+       LEFT JOIN practice_attempts AS active_attempt
+         ON active_attempt.id = (
+           SELECT id FROM practice_attempts
+           WHERE practice_activity_id = practice_activities.id
+             AND user_id = practice_activities.user_id
+             AND status = 'active'
+           ORDER BY started_at DESC, created_at DESC
+           LIMIT 1
+         )
+       LEFT JOIN practice_attempts AS latest_attempt
+         ON latest_attempt.id = (
+           SELECT id FROM practice_attempts
+           WHERE practice_activity_id = practice_activities.id
+             AND user_id = practice_activities.user_id
            ORDER BY created_at DESC
            LIMIT 1
          )
@@ -765,6 +1038,226 @@ export async function generatePracticeActivity(
   return Response.json({ activity: saved ? serializePracticeActivity(saved) : null, reused: false });
 }
 
+async function loadAttemptById(database: PlatformDatabase, attemptId: string) {
+  const id = text(attemptId, 120);
+  if (!id) return null;
+  return database
+    .prepare("SELECT * FROM practice_attempts WHERE id = ?")
+    .bind(id)
+    .first<PracticeAttemptRow>();
+}
+
+async function loadActiveAttempt(database: PlatformDatabase, activity: PracticeActivityRow) {
+  return database
+    .prepare(
+      `SELECT * FROM practice_attempts
+       WHERE practice_activity_id = ? AND user_id = ? AND status = 'active'
+       ORDER BY started_at DESC, created_at DESC
+       LIMIT 1`,
+    )
+    .bind(activity.id, activity.user_id)
+    .first<PracticeAttemptRow>();
+}
+
+async function createOrReuseActiveAttempt(identity: AuthIdentity, database: PlatformDatabase, activity: PracticeActivityRow) {
+  if (activity.status === "cancelled" || activity.status === "superseded") {
+    throw new Response("This practice assignment is no longer active.", { status: 409 });
+  }
+  if (identity.id !== activity.user_id && identity.role !== "admin") {
+    throw new Response("Members can only start their own practice assignments.", { status: 403 });
+  }
+  const existing = await loadActiveAttempt(database, activity);
+  if (existing) return { attempt: existing, created: false };
+
+  const attemptId = crypto.randomUUID();
+  const assignmentSnapshot = normalizePracticeAssignment({
+    id: activity.id,
+    userId: activity.user_id,
+    coachId: activity.coach_id,
+    activityType: activity.activity_type,
+    focusArea: activity.focus_area,
+    title: activity.title,
+    reasonSelected: activity.reason_selected,
+    instructions: parseJson(activity.instructions_json, {}),
+    club: activity.club,
+    durationMinutes: activity.duration_minutes,
+    attemptCount: activity.attempt_count,
+    target: parseJson(activity.target_json, {}),
+    status: activity.status,
+    generatedBy: activity.generated_by,
+    coachFeedbackSourceId: activity.coach_feedback_source_id,
+    createdAt: activity.created_at,
+    startedAt: activity.started_at,
+    completedAt: activity.completed_at,
+  });
+  await database
+    .prepare(
+      `INSERT OR IGNORE INTO practice_attempts (
+        id, practice_activity_id, user_id, status, source_snapshot_json,
+        coach_review_status, created_at, updated_at
+      ) VALUES (?, ?, ?, 'active', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+    )
+    .bind(
+      attemptId,
+      activity.id,
+      activity.user_id,
+      safeJson({ assignment: assignmentSnapshot }),
+      activity.coach_id ? "not_started" : "not_required",
+    )
+    .run();
+  const attempt = await loadActiveAttempt(database, activity);
+  if (!attempt) throw new Response("Practice attempt could not be started.", { status: 500 });
+  const created = attempt.id === attemptId;
+  return { attempt, created };
+}
+
+function difficultyFromValues(values: Record<string, unknown>) {
+  const label = text(values.memberDifficultyLabel ?? values.difficulty, 40).toLowerCase();
+  const explicit = clampInteger(values.memberDifficultyRating, -1, 1);
+  if (explicit !== null) {
+    return {
+      label: explicit < 0 ? "easier" : explicit > 0 ? "harder" : "about_same",
+      rating: explicit,
+    };
+  }
+  if (label.includes("easy")) return { label: "easier", rating: -1 };
+  if (label.includes("hard")) return { label: "harder", rating: 1 };
+  if (label.includes("same") || label.includes("about")) return { label: "about_same", rating: 0 };
+  return { label: "", rating: null };
+}
+
+function completedAmount(value: unknown) {
+  const amount = text(value, 20).toLowerCase();
+  return amount === "partial" || amount === "partially" ? "partial" : amount === "yes" || amount === "complete" || amount === "completed" ? "yes" : "unknown";
+}
+
+function outcomeEvidenceLabels(outcome: { evidence?: Array<Record<string, unknown>> }) {
+  const evidence = Array.isArray(outcome.evidence) ? outcome.evidence : [];
+  return evidence.map((item) => {
+    const label = text(item.label, "Practice evidence");
+    const source = text(item.source);
+    const details = text(item.details);
+    const before = numberOrNull(item.before);
+    const after = numberOrNull(item.after);
+    const unit = text(item.unit);
+    if (before !== null && after !== null) return `${label}: ${before}${unit ? ` ${unit}` : ""} to ${after}${unit ? ` ${unit}` : ""} (${source || "measured"}).`;
+    if (after !== null) return `${label}: ${after}${unit ? ` ${unit}` : ""} (${source || "member recorded"}).`;
+    return details || `${label} (${source || "member recorded"}).`;
+  });
+}
+
+async function upsertPracticeResultForAttempt(
+  database: PlatformDatabase,
+  values: {
+    activity: PracticeActivityRow;
+    attempt: PracticeAttemptRow;
+    evaluation: ReturnType<typeof evaluatePracticeOutcome>;
+    relatedSessionId: string | null;
+    score: number | null;
+    attempts: number | null;
+    successfulAttempts: number | null;
+    submissionType: SubmissionType;
+    notes: string;
+    reflection: string;
+    sharedWithCoach: number;
+  },
+) {
+  const existing = await database
+    .prepare("SELECT id FROM practice_activity_results WHERE practice_attempt_id = ?")
+    .bind(values.attempt.id)
+    .first<{ id: string }>();
+  const progressStatus = mapOutcomeToProgressStatus(values.evaluation);
+  const evidenceLabels = outcomeEvidenceLabels(values.evaluation);
+  const nextRecommendation = {
+    recommendation: values.evaluation.recommendedReason,
+    recommendedNextAction: values.evaluation.recommendedNextAction,
+    visibility: nextActionVisibility(values.activity, values.evaluation),
+  };
+  if (existing) {
+    await database
+      .prepare(
+        `UPDATE practice_activity_results
+         SET related_session_id = ?, submission_type = ?, score = ?, attempts = ?,
+             successful_attempts = ?, metrics_json = ?, result_notes = ?,
+             user_reflection = ?, progress_status = ?, progress_evidence_json = ?,
+             next_recommendation_json = ?, shared_with_coach = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+      )
+      .bind(
+        values.relatedSessionId,
+        values.submissionType,
+        values.score,
+        values.attempts,
+        values.successfulAttempts,
+        safeJson({ outcome: values.evaluation }),
+        values.notes,
+        values.reflection,
+        progressStatus,
+        safeArrayJson(evidenceLabels),
+        safeJson(nextRecommendation),
+        values.sharedWithCoach,
+        existing.id,
+      )
+      .run();
+    return existing.id;
+  }
+  const resultId = crypto.randomUUID();
+  await database
+    .prepare(
+      `INSERT INTO practice_activity_results (
+        id, practice_activity_id, practice_attempt_id, user_id, related_session_id,
+        submission_type, score, attempts, successful_attempts, metrics_json,
+        result_notes, user_reflection, media_reference_json, progress_status,
+        progress_evidence_json, next_recommendation_json, shared_with_coach,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+    )
+    .bind(
+      resultId,
+      values.activity.id,
+      values.attempt.id,
+      values.activity.user_id,
+      values.relatedSessionId,
+      values.submissionType,
+      values.score,
+      values.attempts,
+      values.successfulAttempts,
+      safeJson({ outcome: values.evaluation }),
+      values.notes,
+      values.reflection,
+      safeJson({}),
+      progressStatus,
+      safeArrayJson(evidenceLabels),
+      safeJson(nextRecommendation),
+      values.sharedWithCoach,
+    )
+    .run();
+  return resultId;
+}
+
+export async function getPracticeActivityDetail(identity: AuthIdentity, activityId: string) {
+  const database = getRequiredDatabase();
+  await preparePracticeDatabase(database);
+  const activity = await requireActivityAccess(identity, database, text(activityId, 120));
+  const activities = await loadActivities(database, activity.user_id);
+  const serializedActivity = activities.find((item) => item.id === activity.id) ?? serializePracticeActivity(activity);
+  const attemptsResult = await database
+    .prepare(
+      `SELECT * FROM practice_attempts
+       WHERE practice_activity_id = ? AND user_id = ?
+       ORDER BY created_at DESC
+       LIMIT 20`,
+    )
+    .bind(activity.id, activity.user_id)
+    .all<PracticeAttemptRow>();
+  const sessions = await storedSessionsForUser(database, activity.user_id);
+  return Response.json({
+    activity: serializedActivity,
+    attempts: attemptsResult.results.map((attempt) => serializeAttempt(attempt, activity)),
+    eligibleSessions: sessions.map(summarizeSession),
+  });
+}
+
 export async function updatePracticeActivity(
   identity: AuthIdentity,
   values: {
@@ -777,6 +1270,18 @@ export async function updatePracticeActivity(
     reflection?: unknown;
     submissionType?: unknown;
     relatedSessionId?: unknown;
+    attemptId?: unknown;
+    completedShotCount?: unknown;
+    completedSetCount?: unknown;
+    completedMinutes?: unknown;
+    completedAmount?: unknown;
+    memberDifficultyLabel?: unknown;
+    memberDifficultyRating?: unknown;
+    memberConfidenceRating?: unknown;
+    memberNotes?: unknown;
+    trainingAidUsed?: unknown;
+    trainingAidHelpfulness?: unknown;
+    coachReviewNote?: unknown;
     shareWithCoach?: unknown;
     aidId?: unknown;
     noEquipmentAlternative?: unknown;
@@ -793,112 +1298,211 @@ export async function updatePracticeActivity(
   const action = text(values.action, 60);
 
   if (action === "start") {
+    const { attempt, created } = await createOrReuseActiveAttempt(identity, database, activity);
     await database
       .prepare("UPDATE practice_activities SET status = 'in_progress', started_at = COALESCE(started_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .bind(activity.id)
       .run();
-    await recordActivity({
-      action: "practice_activity_started",
-      actor: identity,
-      database,
-      entityId: activity.id,
-      entityType: "practice_activity",
-      memberId: activity.user_id,
-      metadata: { activityType: activity.activity_type, focus: activity.focus_area },
-      summary: `Started ${activity.title}.`,
-      targetUserId: activity.user_id,
-    });
+    if (created) {
+      await recordActivity({
+        action: "practice_started",
+        actor: identity,
+        database,
+        entityId: attempt.id,
+        entityType: "practice_attempt",
+        memberId: activity.user_id,
+        metadata: { activityId: activity.id, activityType: activity.activity_type, focus: activity.focus_area },
+        summary: `Started ${activity.title}.`,
+        targetUserId: activity.user_id,
+      });
+    }
   } else if (action === "complete") {
+    await createOrReuseActiveAttempt(identity, database, activity);
     await database
-      .prepare("UPDATE practice_activities SET status = 'completed', completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .prepare("UPDATE practice_activities SET status = 'in_progress', started_at = COALESCE(started_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .bind(activity.id)
       .run();
-    await recordActivity({
-      action: "practice_activity_completed",
-      actor: identity,
-      database,
-      entityId: activity.id,
-      entityType: "practice_activity",
-      memberId: activity.user_id,
-      metadata: { activityType: activity.activity_type, focus: activity.focus_area },
-      summary: `Completed ${activity.title}.`,
-      targetUserId: activity.user_id,
-    });
   } else if (action === "submit_result") {
     if (identity.role === "coach") {
       throw new Response("Coaches can view shared results but cannot submit private member results.", { status: 403 });
     }
-    const previous = await database
-      .prepare(
-        `SELECT score FROM practice_activity_results
-         WHERE practice_activity_id = ? AND score IS NOT NULL
-         ORDER BY created_at DESC LIMIT 1`,
-      )
-      .bind(activity.id)
-      .first<{ score: number }>();
+    if (activity.status === "cancelled" || activity.status === "superseded") {
+      throw new Response("This practice assignment is no longer active.", { status: 409 });
+    }
+    if (identity.id !== activity.user_id && identity.role !== "admin") {
+      throw new Response("Members can only complete their own practice assignments.", { status: 403 });
+    }
+    const requestedAttempt = text(values.attemptId, 120);
+    let attempt = requestedAttempt ? await loadAttemptById(database, requestedAttempt) : await loadActiveAttempt(database, activity);
+    if (attempt && (attempt.practice_activity_id !== activity.id || attempt.user_id !== activity.user_id)) {
+      throw new Response("Practice attempt does not belong to this assignment.", { status: 403 });
+    }
+    if (!attempt) {
+      const created = await createOrReuseActiveAttempt(identity, database, activity);
+      attempt = created.attempt;
+    }
+    if (!attempt) throw new Response("Practice attempt could not be loaded.", { status: 500 });
     const score = numberOrNull(values.score);
     const attempts = numberOrNull(values.attempts);
     const successfulAttempts = numberOrNull(values.successfulAttempts);
-    const evaluation = evaluatePracticeResult({
-      score,
-      attempts,
-      successfulAttempts,
-      previousScore: previous?.score ?? null,
-      notes: text(values.notes) || text(values.reflection),
-    });
-    const resultId = crypto.randomUUID();
     const rawSubmissionType = text(values.submissionType, 40);
     const submissionType: SubmissionType = ["session_upload", "csv", "photo", "manual", "score", "reflection"].includes(rawSubmissionType)
       ? rawSubmissionType as SubmissionType
       : score !== null ? "score" : "manual";
-    await database.batch([
-      database
-        .prepare(
-          `INSERT INTO practice_activity_results (
-            id, practice_activity_id, user_id, related_session_id, submission_type,
-            score, attempts, successful_attempts, metrics_json, result_notes,
-            user_reflection, media_reference_json, progress_status,
-            progress_evidence_json, next_recommendation_json, shared_with_coach,
-            created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-        )
-        .bind(
-          resultId,
-          activity.id,
-          activity.user_id,
-          text(values.relatedSessionId, 160) || null,
-          submissionType,
-          score,
-          attempts,
-          successfulAttempts,
-          safeJson({}),
-          text(values.notes, 2000),
-          text(values.reflection, 2000),
-          safeJson({}),
-          evaluation.progressStatus,
-          safeArrayJson(evaluation.evidence),
-          safeJson({ recommendation: evaluation.nextRecommendation }),
-        ),
-      database
-        .prepare("UPDATE practice_activities SET status = 'results_submitted', completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-        .bind(activity.id),
-    ]);
+    const relatedSessionId = text(values.relatedSessionId, 160) || null;
+    const linkedSession = relatedSessionId ? await loadOwnedSession(database, activity.user_id, relatedSessionId) : null;
+    if (relatedSessionId && !linkedSession) {
+      throw new Response("Only this member's saved sessions can be attached to practice results.", { status: 403 });
+    }
+    const difficulty = difficultyFromValues(values as Record<string, unknown>);
+    const completed = completedAmount(values.completedAmount);
+    const completedShotCount = clampInteger(values.completedShotCount ?? values.attempts, 0, 999);
+    const completedSetCount = clampInteger(values.completedSetCount, 0, 999);
+    const completedMinutes = clampInteger(values.completedMinutes, 0, 600);
+    const memberConfidenceRating = clampInteger(values.memberConfidenceRating, 1, 5);
+    const trainingAidUsed = booleanOrNull(values.trainingAidUsed);
+    const trainingAidHelpfulness = clampInteger(values.trainingAidHelpfulness, 1, 5);
+    const notes = text(values.notes ?? values.memberNotes, 2000);
+    const reflection = text(values.reflection, 2000);
+    const memberNotes = text(values.memberNotes ?? values.reflection ?? values.notes, 2000);
+    const outcome = evaluatePracticeOutcome({
+      activity: {
+        id: activity.id,
+        userId: activity.user_id,
+        coachId: activity.coach_id,
+        activityType: activity.activity_type,
+        focusArea: activity.focus_area,
+        title: activity.title,
+        instructions: parseJson(activity.instructions_json, {}),
+        club: activity.club,
+        durationMinutes: activity.duration_minutes,
+        attemptCount: activity.attempt_count,
+      },
+      attempt: {
+        completedShotCount,
+        completedSetCount,
+        completedMinutes,
+        completedAmount: completed,
+        memberDifficultyRating: difficulty.rating,
+        memberConfidenceRating,
+        trainingAidUsed,
+        trainingAidHelpfulness,
+        memberNotes,
+      },
+      linkedSession,
+    }) as ReturnType<typeof evaluatePracticeOutcome>;
+    const coachReviewStatus = coachReviewStatusForOutcome(activity, outcome);
+    await database
+      .prepare(
+        `UPDATE practice_attempts
+         SET status = ?, completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
+             completed_shot_count = ?, completed_set_count = ?, completed_minutes = ?,
+             linked_session_id = ?, member_difficulty_rating = ?,
+             member_difficulty_label = ?, member_confidence_rating = ?,
+             member_completed_amount = ?, member_notes = ?, training_aid_used = ?,
+             training_aid_helpfulness = ?, measured_outcome_json = ?,
+             evaluation_json = ?, coach_review_status = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND practice_activity_id = ? AND user_id = ?`,
+      )
+      .bind(
+        coachReviewStatus === "pending" ? "needs_review" : "completed",
+        completedShotCount,
+        completedSetCount,
+        completedMinutes,
+        relatedSessionId,
+        difficulty.rating,
+        difficulty.label || null,
+        memberConfidenceRating,
+        completed,
+        memberNotes,
+        trainingAidUsed,
+        trainingAidHelpfulness,
+        safeJson({
+          linkedSessionId: relatedSessionId,
+          measurementSource: outcome.measurementSource,
+          evidence: outcome.evidence,
+        }),
+        safeJson({
+          ...outcome,
+          nextActionVisibility: nextActionVisibility(activity, outcome),
+        }),
+        coachReviewStatus,
+        attempt.id,
+        activity.id,
+        activity.user_id,
+      )
+      .run();
+    const refreshedAttempt = await loadAttemptById(database, attempt.id) ?? attempt;
+    const resultId = await upsertPracticeResultForAttempt(database, {
+      activity,
+      attempt: refreshedAttempt,
+      evaluation: outcome,
+      relatedSessionId,
+      score,
+      attempts,
+      successfulAttempts,
+      submissionType,
+      notes,
+      reflection,
+      sharedWithCoach: coachReviewStatus === "pending" ? 1 : 0,
+    });
+    await database
+      .prepare("UPDATE practice_activities SET status = ?, completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .bind(coachReviewStatus === "pending" ? "results_submitted" : "completed", activity.id)
+      .run();
     await recordActivity({
-      action: "practice_result_submitted",
+      action: "practice_completed",
       actor: identity,
       database,
-      entityId: resultId,
-      entityType: "practice_activity_result",
+      entityId: attempt.id,
+      entityType: "practice_attempt",
       memberId: activity.user_id,
       metadata: {
         activityId: activity.id,
+        resultId,
         activityType: activity.activity_type,
         focus: activity.focus_area,
-        progressStatus: evaluation.progressStatus,
+        classification: outcome.classification,
+        recommendedNextAction: outcome.recommendedNextAction,
+        measurementSource: outcome.measurementSource,
+        trainingAidUsed: trainingAidUsed === null ? null : trainingAidUsed === 1,
+        trainingAidHelpfulness,
       },
-      summary: `Submitted result for ${activity.title}.`,
+      summary: `Completed ${activity.title}.`,
       targetUserId: activity.user_id,
     });
+    await recordActivity({
+      action: practiceEventActionForOutcome(outcome),
+      actor: identity,
+      database,
+      entityId: attempt.id,
+      entityType: "practice_attempt",
+      memberId: activity.user_id,
+      metadata: {
+        activityId: activity.id,
+        classification: outcome.classification,
+        evidence: outcomeEvidenceLabels(outcome),
+      },
+      summary: outcome.biggestWin,
+      targetUserId: activity.user_id,
+    });
+    if (coachReviewStatus === "pending") {
+      await recordActivity({
+        action: "coach_review_requested",
+        actor: identity,
+        database,
+        entityId: attempt.id,
+        entityType: "practice_attempt",
+        memberId: activity.user_id,
+        metadata: {
+          activityId: activity.id,
+          coachId: activity.coach_id,
+          recommendedNextAction: outcome.recommendedNextAction,
+        },
+        summary: `${activity.title} is ready for Coach review.`,
+        targetUserId: activity.user_id,
+      });
+    }
   } else if (action === "share_with_coach") {
     if (identity.id !== activity.user_id && identity.role !== "admin") {
       throw new Response("Only the member or an admin can share results with a coach.", { status: 403 });
@@ -920,6 +1524,90 @@ export async function updatePracticeActivity(
       memberId: activity.user_id,
       metadata: { activityType: activity.activity_type, focus: activity.focus_area, coachId: activity.coach_id },
       summary: `Shared results for ${activity.title} with coach.`,
+      targetUserId: activity.user_id,
+    });
+  } else if (["approve_repeat", "approve_progress", "modify_practice_next", "replace_practice", "complete_priority", "change_training_aid"].includes(action)) {
+    if (identity.role !== "coach" && identity.role !== "admin") {
+      throw new Response("Only a Coach or Admin can review practice outcomes.", { status: 403 });
+    }
+    const latestAttempt = await database
+      .prepare(
+        `SELECT * FROM practice_attempts
+         WHERE practice_activity_id = ? AND user_id = ?
+         ORDER BY created_at DESC
+         LIMIT 1`,
+      )
+      .bind(activity.id, activity.user_id)
+      .first<PracticeAttemptRow>();
+    if (!latestAttempt) throw new Response("No practice attempt is ready for review.", { status: 404 });
+    const reviewStatus = action === "approve_repeat"
+      ? "approved_repeat"
+      : action === "approve_progress"
+        ? "approved_progress"
+        : action === "modify_practice_next"
+          ? "modified"
+          : action === "replace_practice"
+            ? "replaced"
+            : action === "complete_priority"
+              ? "priority_completed"
+              : "training_aid_changed";
+    const reviewNote = text(values.coachReviewNote, 2000);
+    const existingEvaluation = parseJson(latestAttempt.evaluation_json, {});
+    await database
+      .prepare(
+        `UPDATE practice_attempts
+         SET coach_review_status = ?, coach_review_note = ?, coach_reviewed_by = ?,
+             coach_reviewed_at = CURRENT_TIMESTAMP,
+             evaluation_json = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+      )
+      .bind(
+        reviewStatus,
+        reviewNote,
+        identity.id,
+        safeJson({
+          ...(existingEvaluation && typeof existingEvaluation === "object" ? existingEvaluation : {}),
+          coachReview: {
+            status: reviewStatus,
+            note: reviewNote,
+            reviewedBy: identity.id,
+            reviewedAt: new Date().toISOString(),
+          },
+        }),
+        latestAttempt.id,
+      )
+      .run();
+    if (action === "replace_practice") {
+      await database
+        .prepare("UPDATE practice_activities SET status = 'superseded', updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .bind(activity.id)
+        .run();
+    }
+    if (action === "complete_priority") {
+      await database
+        .prepare("UPDATE practice_activities SET status = 'completed', completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        .bind(activity.id)
+        .run();
+    }
+    await recordActivity({
+      action: action === "approve_progress"
+        ? "practice_progressed"
+        : action === "replace_practice"
+          ? "practice_replaced"
+          : action === "complete_priority"
+            ? "practice_priority_completed"
+            : "practice_coach_reviewed",
+      actor: identity,
+      database,
+      entityId: latestAttempt.id,
+      entityType: "practice_attempt",
+      memberId: activity.user_id,
+      metadata: {
+        activityId: activity.id,
+        reviewStatus,
+        coachId: identity.role === "coach" ? identity.id : activity.coach_id,
+      },
+      summary: `Reviewed ${activity.title}.`,
       targetUserId: activity.user_id,
     });
   } else if (["approve_training_aid", "modify_training_aid", "remove_training_aid", "reject_training_aid"].includes(action)) {

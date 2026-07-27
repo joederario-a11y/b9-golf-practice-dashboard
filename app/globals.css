@@ -11374,6 +11374,97 @@ input::file-selector-button {
   color: var(--ink);
 }
 
+.practice-detail-panel {
+  max-width: 1180px;
+}
+
+.practice-detail-steps {
+  margin-top: 12px;
+}
+
+.practice-focus-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.practice-focus-card {
+  display: grid;
+  gap: 14px;
+}
+
+.practice-focus-card h2,
+.practice-focus-card p {
+  margin: 0;
+}
+
+.practice-complete-card p {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.practice-measured-result {
+  display: grid;
+  gap: 8px;
+  border: 1px solid rgba(51, 239, 123, 0.28);
+  border-radius: 8px;
+  background: rgba(51, 239, 123, 0.07);
+  padding: 14px;
+}
+
+.practice-measured-result span,
+.practice-history-row span,
+.practice-history-row small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.practice-measured-result strong,
+.practice-history-row strong {
+  color: var(--ink);
+}
+
+.practice-completion-form select {
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+  color: var(--ink);
+  padding: 10px;
+  font-weight: 850;
+}
+
+.practice-segment-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.practice-segment-row button {
+  min-height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+  color: var(--ink);
+  font-weight: 950;
+}
+
+.practice-segment-row button.selected {
+  border-color: var(--green);
+  background: rgba(150, 203, 57, 0.18);
+  color: var(--green);
+}
+
+.practice-history-row {
+  display: grid;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+  padding: 12px;
+}
+
 .practice-empty-panel {
   min-height: 260px;
 }
@@ -11444,6 +11535,8 @@ input::file-selector-button {
   .practice-activity-actions,
   .practice-training-aid-actions,
   .practice-challenge-criteria,
+  .practice-focus-grid,
+  .practice-segment-row,
   .member-mission-context,
   .practice-progress-strip {
     grid-template-columns: 1fr;
