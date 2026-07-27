@@ -5880,6 +5880,122 @@ button:disabled {
   color: var(--muted);
 }
 
+.member-dashboard-mission {
+  display: grid;
+  gap: 18px;
+  border-color: rgba(150, 203, 57, 0.34);
+  background:
+    radial-gradient(circle at 16% 10%, rgba(150, 203, 57, 0.18), transparent 34%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02)),
+    var(--surface);
+}
+
+.member-dashboard-mission.coach_led,
+.member-dashboard-mission.hybrid.coach,
+.member-dashboard-mission.hybrid.coach_approved_ai {
+  border-color: rgba(47, 235, 118, 0.42);
+}
+
+.member-dashboard-mission.independent,
+.member-dashboard-mission.hybrid.mai {
+  border-color: rgba(80, 180, 255, 0.32);
+}
+
+.member-mission-greeting {
+  display: grid;
+  gap: 8px;
+}
+
+.member-mission-greeting h2,
+.member-mission-greeting p,
+.member-mission-primary h3,
+.member-mission-primary p {
+  margin: 0;
+}
+
+.member-mission-greeting h2 {
+  color: var(--ink);
+  font-size: clamp(34px, 4vw, 62px);
+  line-height: 0.98;
+}
+
+.member-mission-greeting p {
+  max-width: 780px;
+  color: var(--muted);
+  font-size: 17px;
+  line-height: 1.45;
+}
+
+.member-mission-primary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: center;
+  border: 1px solid rgba(150, 203, 57, 0.28);
+  border-radius: 8px;
+  background: rgba(5, 17, 13, 0.46);
+  padding: 18px;
+}
+
+.member-mission-primary span {
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 950;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.member-mission-primary h3 {
+  margin-top: 8px;
+  color: var(--ink);
+  font-size: clamp(24px, 2.6vw, 40px);
+  line-height: 1.05;
+}
+
+.member-mission-primary p {
+  max-width: 820px;
+  margin-top: 8px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.member-mission-context {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.member-mission-context div {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 14px;
+}
+
+.member-mission-context dt {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.member-mission-context dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.member-mission-context small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .next-best-action-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -7748,6 +7864,7 @@ button:disabled {
   .coach-primary-dashboard-row,
   .coach-secondary-dashboard-row,
   .coached-student-detail-grid,
+  .member-mission-primary,
   .next-best-action-card,
   .lesson-session-link-card {
     grid-template-columns: 1fr;
@@ -7759,6 +7876,7 @@ button:disabled {
   }
 
   .coached-student-actions > button,
+  .member-mission-primary > .primary-action,
   .next-best-action-card > .primary-action,
   .lesson-session-link-card .button-row > button {
     width: 100%;
@@ -10854,6 +10972,7 @@ input::file-selector-button {
 @media (max-width: 760px) {
   .onboarding-form-grid,
   .import-review-grid,
+  .member-mission-context,
   .practice-drill-detail {
     grid-template-columns: 1fr;
   }
@@ -10865,6 +10984,7 @@ input::file-selector-button {
     grid-template-columns: 1fr;
   }
 
+  .member-mission-context,
   .practice-progress-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -10873,6 +10993,7 @@ input::file-selector-button {
 @media (max-width: 760px) {
   .practice-activity-meta,
   .practice-activity-actions,
+  .member-mission-context,
   .practice-progress-strip {
     grid-template-columns: 1fr;
   }

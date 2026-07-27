@@ -41,8 +41,8 @@ const insight = {
 
 test("coach-led member follows coach-assigned practice before lesson and AI items", () => {
   const action = getMemberNextBestAction({
-    coaches: [coach],
-    currentActivity: {
+    activeCoachRelationships: [coach],
+    activeMemberActivity: {
       id: "practice-1",
       activityType: "drill",
       durationMinutes: 15,
@@ -58,7 +58,7 @@ test("coach-led member follows coach-assigned practice before lesson and AI item
     videos: [playableLesson],
   });
 
-  assert.equal(getMemberExperienceMode({ coaches: [coach] }), "coach_led");
+  assert.equal(getMemberExperienceMode({ activeCoachRelationships: [coach] }), "coach_led");
   assert.equal(action.type, "coach_practice");
   assert.equal(action.source, "coach");
   assert.equal(action.primaryActionUrl, "/practice");
@@ -66,8 +66,8 @@ test("coach-led member follows coach-assigned practice before lesson and AI item
 
 test("independent member gets MAI practice before session opportunity and upload prompts", () => {
   const action = getMemberNextBestAction({
-    coaches: [],
-    currentActivity: {
+    activeCoachRelationships: [],
+    activeMemberActivity: {
       id: "practice-2",
       activityType: "drill",
       durationMinutes: 20,
@@ -83,7 +83,7 @@ test("independent member gets MAI practice before session opportunity and upload
     sessions: [session],
   });
 
-  assert.equal(getMemberExperienceMode({ coaches: [], sessions: [session], insights: [insight] }), "independent");
+  assert.equal(getMemberExperienceMode({ activeCoachRelationships: [], sessions: [session], insights: [insight] }), "independent");
   assert.equal(action.type, "mai_practice");
   assert.equal(action.source, "mai");
   assert.equal(action.supportingRecordId, "practice-2");
@@ -91,22 +91,56 @@ test("independent member gets MAI practice before session opportunity and upload
 
 test("hybrid member keeps coach lesson ahead of independent MAI session opportunity", () => {
   const action = getMemberNextBestAction({
-    coaches: [coach],
+    activeCoachRelationships: [coach],
     insights: [insight],
     practiceProfile: { path: "Competitive" },
     sessions: [session],
     videos: [playableLesson],
   });
 
-  assert.equal(getMemberExperienceMode({ coaches: [coach], sessions: [session], insights: [insight] }), "hybrid");
+  assert.equal(getMemberExperienceMode({ activeCoachRelationships: [coach], sessions: [session], insights: [insight] }), "hybrid");
   assert.equal(action.type, "coach_lesson_review");
   assert.equal(action.source, "coach");
   assert.equal(action.supportingRecordId, "video-1");
 });
 
+test("experience mode ignores inactive display relationships and uses canonical active counts", () => {
+  assert.equal(getMemberExperienceMode({
+    activeCoachRelationships: [{ ...coach, accountStatus: "inactive" }],
+    sessions: [session],
+  }), "independent");
+
+  assert.equal(getMemberExperienceMode({
+    activeCoachCount: 1,
+    sessions: [session],
+  }), "hybrid");
+});
+
+test("next-best-action policy returns exactly one primary recommendation", () => {
+  const action = getMemberNextBestAction({
+    activeCoachRelationships: [coach],
+    activeMemberActivity: {
+      id: "practice-3",
+      activityType: "drill",
+      instructions: {
+        coachConnection: { connected: true },
+        sourceMode: "coach_feedback",
+      },
+      status: "generated",
+      title: "Coach drill",
+    },
+    insights: [insight],
+    sessions: [session],
+    videos: [playableLesson],
+  });
+
+  assert.equal(Array.isArray(action), false);
+  assert.equal(action.type, "coach_practice");
+});
+
 test("members without data are directed to upload before generic practice", () => {
   const action = getMemberNextBestAction({
-    coaches: [],
+    activeCoachRelationships: [],
     practiceProfile: { path: "Beginner" },
     sessions: [],
   });
@@ -120,6 +154,9 @@ test("dashboard and practice surfaces use the shared next-best-action policy", a
   const pageSource = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(pageSource, /getMemberNextBestAction/);
   assert.match(pageSource, /NextBestActionCard/);
+  assert.match(pageSource, /MemberDashboardMission/);
   assert.match(pageSource, /memberNextBestAction/);
+  assert.match(pageSource, /activeCoachRelationships/);
   assert.match(pageSource, /Coach-first when a Coach exists/);
+  assert.doesNotMatch(pageSource, /coachedPriority/);
 });

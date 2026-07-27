@@ -6825,8 +6825,8 @@ export default function Home() {
   const visibleNavItems = navItemsForAccount(accountMode, accountUser);
   const activeNavItem = visibleNavItems.find((item) => item.id === activeTab) ?? NAV_ITEMS.find((item) => item.id === activeTab);
   const memberExperienceMode = useMemo(() => getMemberExperienceMode({
-    coaches: accountMode === "user" && accountUser?.role === "member" ? dashboardCoaches : [],
-    currentActivity: dashboardPracticeActivity,
+    activeCoachRelationships: accountMode === "user" && accountUser?.role === "member" ? dashboardCoaches : [],
+    activeMemberActivity: dashboardPracticeActivity,
     insights: performanceInsights,
     practiceProfile,
     sessions: performanceSessions.length ? performanceSessions : sessions,
@@ -6845,8 +6845,8 @@ export default function Home() {
   const memberNextBestAction = useMemo(() => {
     if (accountMode === "user" && accountUser?.role !== "member") return null;
     return getMemberNextBestAction({
-      coaches: accountMode === "user" && accountUser?.role === "member" ? dashboardCoaches : [],
-      currentActivity: dashboardPracticeActivity,
+      activeCoachRelationships: accountMode === "user" && accountUser?.role === "member" ? dashboardCoaches : [],
+      activeMemberActivity: dashboardPracticeActivity,
       experienceMode: memberExperienceMode,
       insights: performanceInsights,
       practiceProfile,
@@ -8036,36 +8036,29 @@ export default function Home() {
 
         {activeTab === "dashboard" && (
           <DashboardView
+            accountUser={accountUser}
             avgCarry={performanceAvgCarry}
             avgDispersion={performanceAvgDispersion}
             avgSmash={performanceAvgSmash}
             clubs={performanceClubs}
-            coachedPriority={
-              accountMode === "user" && workspaceRole === "user" ? (
-                <CoachedStudentDashboardPriority
-                  coaches={dashboardCoaches}
-                  onOpenLatestLesson={(videoId) => {
-                    setRequestedVideoId(videoId);
-                    setActiveTab("videos");
-                    if (typeof window !== "undefined") {
-                      const url = new URL(window.location.href);
-                      url.pathname = pathForTab("videos");
-                      url.searchParams.set("video", videoId);
-                      window.history.pushState(null, "", `${url.pathname}${url.search}${url.hash}`);
-                    }
-                  }}
-                  onOpenPractice={() => setActiveTab("practice")}
-                  onOpenVideos={() => setActiveTab("videos")}
-                  videos={dashboardVideos}
-                />
-              ) : undefined
-            }
+            coaches={accountMode === "user" && workspaceRole === "user" ? dashboardCoaches : []}
+            currentActivity={dashboardPracticeActivity}
             hasAnySessions={sessions.length > 0}
             insights={performanceInsights}
             memberExperienceMode={memberExperienceMode}
             nextBestAction={memberNextBestAction}
             onTimeframeChange={setPerformanceTimeframe}
             onNextBestAction={openNextBestAction}
+            onOpenLatestLesson={(videoId) => {
+              setRequestedVideoId(videoId);
+              setActiveTab("videos");
+              if (typeof window !== "undefined") {
+                const url = new URL(window.location.href);
+                url.pathname = pathForTab("videos");
+                url.searchParams.set("video", videoId);
+                window.history.pushState(null, "", `${url.pathname}${url.search}${url.hash}`);
+              }
+            }}
             onOpenSessionForClub={(sessionId, club) => openSessionView(sessionId, { club, shotId: null })}
             performanceIndex={filteredPerformanceIndex}
             practiceProfile={practiceProfile}
@@ -8080,6 +8073,7 @@ export default function Home() {
             topInsight={performanceTopInsight}
             setActiveTab={setActiveTab}
             setSelectedClub={setSelectedClub}
+            videos={dashboardVideos}
           />
         )}
 
@@ -8282,7 +8276,6 @@ function CoachedStudentDashboardPriority({
   const linkedSessionTotal = playableLessons.reduce((count, video) => count + linkedSessionCount(video), 0);
   const currentFocus = mainFocus || latestLesson?.focusArea || "Your next lesson";
   const newerLessonProcessing = latestLesson ? hasNewerProcessingCoachLesson(videos, latestLesson) : false;
-  const hasAnyCoachLesson = videos.some((video) => isCoachLessonCandidate(video));
   const hasProcessingOnlyLesson = !latestLesson && videos.some((video) => (
     isCoachLessonCandidate(video) &&
     getVideoPublicationStatus(video) !== "Archived" &&
@@ -8312,23 +8305,10 @@ function CoachedStudentDashboardPriority({
           }
         : null;
   const videoFeedbackReady = Boolean(lessonSummary || mainFocus || nextGoal || latestLesson?.improvement);
+  if (!latestLesson && !hasProcessingOnlyLesson) return null;
 
   return (
-    <section className="coached-student-dashboard" aria-labelledby="coached-dashboard-title">
-      <div className="coached-student-hero">
-        <div>
-          <p className="eyebrow">Your Coach</p>
-          <h2 id="coached-dashboard-title">{coachName}</h2>
-          <p>{latestLesson ? "Your latest coaching feedback and practice focus are ready below." : `You're connected with ${coachName}.`}</p>
-        </div>
-        <CoachAvatar coach={coach} />
-        <div className="coached-student-actions">
-          {latestLesson && <button className="primary-action" onClick={() => onOpenLatestLesson(latestLesson.id)} type="button">Open Full Lesson</button>}
-          <button className="secondary-action" onClick={onOpenPractice} type="button">View Practice Plan</button>
-          <button className="secondary-action" onClick={onOpenVideos} type="button">View All Lessons</button>
-        </div>
-      </div>
-
+    <section className="coached-student-dashboard" aria-label="Coach guidance">
       {latestLesson ? (
         <>
           <div className="coach-primary-dashboard-row">
@@ -8433,23 +8413,7 @@ function CoachedStudentDashboardPriority({
             <button className="secondary-action" onClick={onOpenPractice} type="button">Continue Practice</button>
           </div>
         </article>
-      ) : (
-        <article className="panel coached-empty-lesson-card">
-          <p className="eyebrow">Latest Lesson</p>
-          <h3>{`You're connected with ${coachName}`}</h3>
-          <p>{hasAnyCoachLesson ? "Your Coach has not published a playable lesson yet." : "Your Coach has not published a lesson yet."}</p>
-          <div className="button-row">
-            <button className="primary-action" onClick={onOpenVideos} type="button">View Lessons</button>
-            <button className="secondary-action" onClick={onOpenPractice} type="button">Continue Practice</button>
-          </div>
-        </article>
-      )}
-
-      <section className="panel coached-more-ways">
-        <p className="eyebrow">More ways to improve with MAI Coach</p>
-        <h3>Self-guided tools are still available</h3>
-        <p>Upload independent sessions, review club data, and build additional practice around your Coach's direction.</p>
-      </section>
+      ) : null}
     </section>
   );
 }
@@ -8498,18 +8462,183 @@ function NextBestActionCard({
   );
 }
 
+function daypartGreeting(date = new Date()) {
+  const hour = date.getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 17) return "Good afternoon";
+  return "Good evening";
+}
+
+function dashboardFirstName(user: AccountUser | null) {
+  const firstName = user?.firstName?.trim();
+  if (firstName) return firstName;
+  const displayName = user?.displayName?.trim();
+  if (displayName) return displayName.split(/\s+/)[0] ?? displayName;
+  return "there";
+}
+
+function dashboardMissionKicker(mode: MemberExperienceMode, source?: NextActionSource) {
+  if (mode === "coach_led") return "Coach Priority / Today's Assignment";
+  if (mode === "hybrid") return source === "coach" || source === "coach_approved_ai" ? "Coach Priority" : "Supplemental MAI Mission";
+  return "Today's MAI Mission";
+}
+
+function dashboardModeCopy(mode: MemberExperienceMode, coaches: CoachSummary[]) {
+  const name = coaches[0]?.name || "your Coach";
+  if (mode === "coach_led") return `${name} is the lead voice today. MAI Coach keeps the data organized behind that direction.`;
+  if (mode === "hybrid") return `Coach guidance leads. MAI Coach adds supporting observations from your saved sessions.`;
+  return "MAI Coach is using your saved sessions and practice activity to choose the next focused step.";
+}
+
+function practiceStatusLabel(activity: PracticeActivity) {
+  return activity.status.replaceAll("_", " ");
+}
+
+function dashboardMissionContextItems({
+  action,
+  currentActivity,
+  experienceMode,
+  latestCoachLesson,
+  selectedSession,
+  topInsight,
+}: {
+  action: NextBestAction | null;
+  currentActivity: PracticeActivity | null;
+  experienceMode: MemberExperienceMode;
+  latestCoachLesson: VideoLibraryItem | null;
+  selectedSession: Session;
+  topInsight?: Insight;
+}) {
+  const items: Array<{ label: string; value: string; note?: string }> = [];
+  if (action?.estimatedMinutes) {
+    items.push({ label: "Estimated practice time", value: `${action.estimatedMinutes} min` });
+  }
+  if (currentActivity?.focusArea) {
+    items.push({
+      label: "Current focus",
+      note: currentActivity.title,
+      value: currentActivity.focusArea,
+    });
+  } else if (latestCoachLesson) {
+    const mainFocus = getLessonMainFocus(latestCoachLesson) || latestCoachLesson.focusArea;
+    if (mainFocus) items.push({ label: "Current focus", value: mainFocus });
+  }
+  if (currentActivity) {
+    items.push({
+      label: "Progress toward completion",
+      value: practiceStatusLabel(currentActivity),
+    });
+  }
+  if (action?.source) {
+    items.push({ label: "Source", value: nextActionSourceLabel(action.source) });
+  }
+  if (latestCoachLesson?.improvement) {
+    items.push({
+      label: "Latest meaningful improvement",
+      value: latestCoachLesson.improvement,
+    });
+  } else if (currentActivity?.latestResult?.progressStatus === "improved") {
+    items.push({
+      label: "Latest meaningful improvement",
+      note: currentActivity.latestResult.notes || currentActivity.latestResult.reflection,
+      value: "Practice result improved",
+    });
+  }
+  if (selectedSession.id !== EMPTY_SESSION.id && selectedSession.shots.length) {
+    items.push({
+      label: "Latest session result",
+      note: selectedSession.source,
+      value: `${selectedSession.title} · ${selectedSession.shots.length} shots`,
+    });
+  }
+  if (experienceMode !== "coach_led" && topInsight) {
+    items.push({
+      label: experienceMode === "hybrid" ? "Supplemental MAI observation" : "Current MAI observation",
+      note: topInsight.metric,
+      value: topInsight.title,
+    });
+  }
+  return items.slice(0, 6);
+}
+
+function MemberDashboardMission({
+  accountUser,
+  action,
+  coaches,
+  currentActivity,
+  experienceMode,
+  latestCoachLesson,
+  onOpen,
+  selectedSession,
+  topInsight,
+}: {
+  accountUser: AccountUser | null;
+  action: NextBestAction | null;
+  coaches: CoachSummary[];
+  currentActivity: PracticeActivity | null;
+  experienceMode: MemberExperienceMode;
+  latestCoachLesson: VideoLibraryItem | null;
+  onOpen: (action: NextBestAction) => void;
+  selectedSession: Session;
+  topInsight?: Insight;
+}) {
+  const contextItems = dashboardMissionContextItems({
+    action,
+    currentActivity,
+    experienceMode,
+    latestCoachLesson,
+    selectedSession,
+    topInsight,
+  });
+  return (
+    <section className={cls("panel member-dashboard-mission", experienceMode, action?.source)}>
+      <div className="member-mission-greeting">
+        <p className="eyebrow">{nextActionModeLabel(experienceMode)}</p>
+        <h2>{daypartGreeting()}, {dashboardFirstName(accountUser)}</h2>
+        <p>{dashboardModeCopy(experienceMode, coaches)}</p>
+      </div>
+      {action && (
+        <div className="member-mission-primary">
+          <div>
+            <span>{dashboardMissionKicker(experienceMode, action.source)}</span>
+            <h3>{action.title}</h3>
+            <p>{action.description}</p>
+          </div>
+          <button className="primary-action" onClick={() => onOpen(action)} type="button">
+            {action.primaryActionLabel}
+          </button>
+        </div>
+      )}
+      {contextItems.length > 0 && (
+        <dl className="member-mission-context">
+          {contextItems.map((item) => (
+            <div key={`${item.label}-${item.value}`}>
+              <dt>{item.label}</dt>
+              <dd>{item.value}</dd>
+              {item.note && <small>{item.note}</small>}
+            </div>
+          ))}
+        </dl>
+      )}
+    </section>
+  );
+}
+
 function DashboardView({
+  accountUser,
   avgCarry,
   avgDispersion,
   avgSmash,
   clubs,
-  coachedPriority,
+  coaches,
+  currentActivity,
   hasAnySessions,
   insights,
   memberExperienceMode,
   nextBestAction,
   onTimeframeChange,
   onNextBestAction,
+  onOpenLatestLesson,
   onOpenSessionForClub,
   performanceIndex,
   practiceProfile,
@@ -8524,18 +8653,22 @@ function DashboardView({
   timeframe,
   timeframeSummary,
   topInsight,
+  videos,
 }: {
+  accountUser: AccountUser | null;
   avgCarry: number;
   avgDispersion: number;
   avgSmash: number;
   clubs: ClubSummary[];
-  coachedPriority?: ReactNode;
+  coaches: CoachSummary[];
+  currentActivity: PracticeActivity | null;
   hasAnySessions: boolean;
   insights: Insight[];
   memberExperienceMode: MemberExperienceMode;
   nextBestAction: NextBestAction | null;
   onTimeframeChange: (timeframe: PerformanceTimeframe) => void;
   onNextBestAction: (action: NextBestAction) => void;
+  onOpenLatestLesson: (videoId: string) => void;
   onOpenSessionForClub: (sessionId: string, club: string) => void;
   performanceIndex: number;
   practiceProfile?: UserPracticeProfile | null;
@@ -8548,6 +8681,7 @@ function DashboardView({
   timeframe: PerformanceTimeframe;
   timeframeSummary: string;
   topInsight?: Insight;
+  videos: VideoLibraryItem[];
   setActiveTab: (tab: Tab) => void;
   setSelectedClub: (club: string) => void;
 }) {
@@ -8574,16 +8708,33 @@ function DashboardView({
   );
   const [expandedMetricId, setExpandedMetricId] = useState<string | null>(null);
   const activeMetricId = expandedMetricId ?? dashboardMetrics[0]?.id ?? null;
+  const latestCoachLesson = selectLatestPlayableCoachLesson(videos) as VideoLibraryItem | null;
+  const showMemberMission = !accountUser || accountUser.role === "member";
+  const showCoachSupport = memberExperienceMode !== "independent" && coaches.length > 0;
 
   if (!sessions.length) {
     return (
       <div className="view-stack">
-        {coachedPriority}
-        {nextBestAction && (
-          <NextBestActionCard
+        {showMemberMission && (
+          <MemberDashboardMission
+            accountUser={accountUser}
             action={nextBestAction}
+            coaches={coaches}
+            currentActivity={currentActivity}
             experienceMode={memberExperienceMode}
+            latestCoachLesson={latestCoachLesson}
+            selectedSession={selectedSession}
+            topInsight={topInsight}
             onOpen={onNextBestAction}
+          />
+        )}
+        {showMemberMission && showCoachSupport && (
+          <CoachedStudentDashboardPriority
+            coaches={coaches}
+            onOpenLatestLesson={onOpenLatestLesson}
+            onOpenPractice={() => setActiveTab("practice")}
+            onOpenVideos={() => setActiveTab("videos")}
+            videos={videos}
           />
         )}
         <PerformanceReviewControls
@@ -8610,12 +8761,26 @@ function DashboardView({
 
   return (
     <div className="view-stack">
-      {coachedPriority}
-      {nextBestAction && (
-        <NextBestActionCard
+      {showMemberMission && (
+        <MemberDashboardMission
+          accountUser={accountUser}
           action={nextBestAction}
+          coaches={coaches}
+          currentActivity={currentActivity}
           experienceMode={memberExperienceMode}
+          latestCoachLesson={latestCoachLesson}
+          selectedSession={selectedSession}
+          topInsight={topInsight}
           onOpen={onNextBestAction}
+        />
+      )}
+      {showMemberMission && showCoachSupport && (
+        <CoachedStudentDashboardPriority
+          coaches={coaches}
+          onOpenLatestLesson={onOpenLatestLesson}
+          onOpenPractice={() => setActiveTab("practice")}
+          onOpenVideos={() => setActiveTab("videos")}
+          videos={videos}
         />
       )}
       <PerformanceReviewControls
@@ -8657,7 +8822,11 @@ function DashboardView({
         </article>
 
         <article className="panel">
-          <PanelHeader kicker="Coach priority" title={topInsight ? getClubDisplayName(topInsight.club) : "All clubs"} meta={topInsight?.metric ?? "No urgent flags"} />
+          <PanelHeader
+            kicker={memberExperienceMode === "independent" ? "Current MAI observation" : memberExperienceMode === "hybrid" ? "Supplemental MAI observation" : "Session insight"}
+            title={topInsight ? getClubDisplayName(topInsight.club) : "All clubs"}
+            meta={topInsight?.metric ?? "No urgent flags"}
+          />
           {topInsight ? (
             <div className="priority-card">
               <span className={cls("severity-dot", topInsight.severity)} />

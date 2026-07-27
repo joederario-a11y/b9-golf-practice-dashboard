@@ -72,11 +72,13 @@ test("member and staff authorization helpers keep ownership scoped", () => {
   assert.equal(canStaffManageLessonSessionLink({ id: "coach-1", role: "coach" }, "member-2", ["member-1"]), false);
 });
 
-test("lesson and dashboard source expose post-upload session linking and coached-student priority", async () => {
+test("lesson and dashboard source expose post-upload session linking and mission-first coached support", async () => {
   const pageSource = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(pageSource, /Add session data to this lesson/);
   assert.match(pageSource, /Add your session data/);
   assert.match(pageSource, /LessonSessionDataModal/);
+  assert.match(pageSource, /MemberDashboardMission/);
+  assert.match(pageSource, /Coach Priority \/ Today's Assignment/);
   assert.match(pageSource, /CoachedStudentDashboardPriority/);
   assert.match(pageSource, /Coach Feedback/);
   assert.match(pageSource, /Practice Next/);
@@ -87,7 +89,7 @@ test("lesson and dashboard source expose post-upload session linking and coached
   assert.match(pageSource, /coach-feedback-card/);
   assert.match(pageSource, /coach-secondary-dashboard-row/);
   assert.match(pageSource, /practice-next-card/);
-  assert.match(pageSource, /More ways to improve with MAI Coach/);
+  assert.doesNotMatch(pageSource, /More ways to improve with MAI Coach/);
   assert.doesNotMatch(pageSource, /latest-lesson-card/);
   assert.ok(pageSource.indexOf("coach-latest-video-card") < pageSource.indexOf("coach-feedback-card"));
   assert.ok(pageSource.indexOf("coach-feedback-card") < pageSource.indexOf("practice-next-card"));
