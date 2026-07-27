@@ -10,6 +10,9 @@ import {
 
 const ACCOUNT_SETUP_TTL_SECONDS = 60 * 60 * 72;
 const EMAIL_PROVIDER_URL = "https://api.resend.com/emails";
+const EMAIL_LOGO_PATH = "/brand/mai-coach/mai-coach-email-v2.png";
+const EMAIL_LOGO_WIDTH = 300;
+const EMAIL_LOGO_HEIGHT = 84;
 
 export type EmailSendResult = {
   success: boolean;
@@ -57,12 +60,47 @@ function setupBaseUrl(request: Request) {
   return new URL("/setup-account", baseUrlForRequest(request)).toString();
 }
 
+export function getMaiCoachEmailLogoUrl() {
+  const runtime = getPlatformEnvironment();
+  const baseUrl = runtime.APP_BASE_URL?.replace(/\/$/, "");
+  return baseUrl ? `${baseUrl}${EMAIL_LOGO_PATH}` : "";
+}
+
 function plainTextFromHtml(html: string) {
   return html
     .replace(/<style[\s\S]*?<\/style>/gi, "")
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function brandedPlainText(text: string) {
+  const normalized = text.trim();
+  if (normalized.startsWith("MAI Coach\nMy AI Golf Coach")) return normalized;
+  return `MAI Coach\nMy AI Golf Coach${normalized ? `\n\n${normalized}` : ""}`;
+}
+
+function brandedEmailHtml(bodyHtml: string) {
+  const logoUrl = getMaiCoachEmailLogoUrl();
+  const logoMarkup = logoUrl
+    ? `<img src="${escapeHtml(logoUrl)}" width="${EMAIL_LOGO_WIDTH}" height="${EMAIL_LOGO_HEIGHT}" alt="MAI Coach — My AI Golf Coach" style="display:block;width:${EMAIL_LOGO_WIDTH}px;max-width:100%;height:auto;border:0;outline:none;text-decoration:none;" />`
+    : `<div style="color:#ffffff;font-size:26px;font-weight:800;line-height:1.1;">MAI Coach</div><div style="margin-top:4px;color:#9bd032;font-size:12px;font-weight:800;letter-spacing:.22em;text-transform:uppercase;">My AI Golf Coach</div>`;
+
+  return `
+    <div style="margin:0;padding:0;background:#07110d;color:#f7fbf8;font-family:Arial,Helvetica,sans-serif;">
+      <div style="max-width:640px;margin:0 auto;padding:28px 18px;">
+        <div style="border:1px solid #263b33;border-radius:18px;overflow:hidden;background:#111c23;">
+          <div style="background:#07110d;padding:26px 28px 22px;">
+            ${logoMarkup}
+          </div>
+          <div style="padding:28px;background:#f7fbf8;color:#10171f;font-size:16px;line-height:1.6;">
+            ${bodyHtml}
+          </div>
+        </div>
+        <p style="margin:16px 4px 0;color:#7f8c85;font-size:12px;line-height:1.5;">MAI Coach · My AI Golf Coach</p>
+      </div>
+    </div>
+  `;
 }
 
 function providerErrorCode(status: number, message = "") {
@@ -77,13 +115,15 @@ function providerErrorCode(status: number, message = "") {
 export function getEmailConfigurationDiagnostic() {
   const runtime = getPlatformEnvironment();
   const apiKeyPresent = Boolean(runtime.RESEND_API_KEY);
-  const fromAddressConfigured = Boolean(getEmailFromAddress());
+  const fromAddress = getEmailFromAddress();
+  const fromAddressConfigured = Boolean(fromAddress);
   const appBaseUrlConfigured = Boolean(runtime.APP_BASE_URL);
   return {
     configured: apiKeyPresent && fromAddressConfigured && appBaseUrlConfigured,
     apiKeyPresent,
     fromAddressConfigured,
     appBaseUrlConfigured,
+    fromAddress,
     provider: "resend" as const,
   };
 }
@@ -144,10 +184,11 @@ export async function sendEmailMessage(values: {
   text?: string;
   toEmail: string;
 }) {
+  const html = brandedEmailHtml(values.html);
   return sendResendEmail({
-    html: values.html,
+    html,
     subject: values.subject,
-    text: values.text,
+    text: brandedPlainText(values.text ?? plainTextFromHtml(values.html)),
     to: values.toEmail,
   });
 }
@@ -171,25 +212,18 @@ export async function sendWelcomeEmail(values: {
 }): Promise<EmailSendResult> {
   const subject = "Welcome to MAI Coach - Set up your account";
   const html = `
-    <div style="margin:0;padding:0;background:#07110d;color:#f7fbf8;font-family:Arial,Helvetica,sans-serif;">
-      <div style="max-width:640px;margin:0 auto;padding:32px 20px;">
-        <div style="border:1px solid #263b33;border-radius:18px;background:#111c23;padding:28px;">
-          <p style="margin:0 0 8px;color:#9bd032;font-size:13px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;">MAI Coach</p>
-          <h1 style="margin:0 0 18px;color:#ffffff;font-size:30px;line-height:1.15;">Welcome to MAI Coach</h1>
-          <p style="margin:0 0 16px;color:#d6ded8;font-size:16px;line-height:1.6;">Hi ${escapeHtml(values.toFirstName || "there")},</p>
-          <p style="margin:0 0 16px;color:#d6ded8;font-size:16px;line-height:1.6;">${escapeHtml(values.actorName || "Your coach")} has created your MAI Coach account.</p>
-          <p style="margin:0 0 16px;color:#d6ded8;font-size:16px;line-height:1.6;">MAI Coach helps organize your golf sessions, coaching feedback, lesson videos, practice plans, and progress in one place.</p>
-          <p style="margin:0 0 24px;color:#d6ded8;font-size:16px;line-height:1.6;">${escapeHtml(welcomeCopyForRole(values.userRole))}</p>
-          <p style="margin:30px 0;">
-            <a href="${escapeHtml(values.setupUrl)}" style="display:inline-block;background:#9bd032;color:#06100b;text-decoration:none;padding:14px 22px;border-radius:10px;font-weight:800;font-size:16px;">Set Up My Account</a>
-          </p>
-          <p style="margin:0 0 12px;color:#adb9b2;font-size:14px;line-height:1.5;">This secure link expires in 72 hours and can only be used once.</p>
-          <p style="margin:0;color:#adb9b2;font-size:14px;line-height:1.5;">If you were not expecting this invitation, you can ignore this email.</p>
-        </div>
-      </div>
-    </div>
+    <h1 style="margin:0 0 18px;color:#10171f;font-size:30px;line-height:1.15;">Welcome to MAI Coach</h1>
+    <p style="margin:0 0 16px;color:#2d3a34;font-size:16px;line-height:1.6;">Hi ${escapeHtml(values.toFirstName || "there")},</p>
+    <p style="margin:0 0 16px;color:#2d3a34;font-size:16px;line-height:1.6;">${escapeHtml(values.actorName || "Your coach")} has created your MAI Coach account.</p>
+    <p style="margin:0 0 16px;color:#2d3a34;font-size:16px;line-height:1.6;">MAI Coach helps organize your golf sessions, coaching feedback, lesson videos, practice plans, and progress in one place.</p>
+    <p style="margin:0 0 24px;color:#2d3a34;font-size:16px;line-height:1.6;">${escapeHtml(welcomeCopyForRole(values.userRole))}</p>
+    <p style="margin:30px 0;">
+      <a href="${escapeHtml(values.setupUrl)}" style="display:inline-block;background:#9bd032;color:#06100b;text-decoration:none;padding:14px 22px;border-radius:10px;font-weight:800;font-size:16px;">Set Up My Account</a>
+    </p>
+    <p style="margin:0 0 12px;color:#5d6b64;font-size:14px;line-height:1.5;">This secure link expires in 72 hours and can only be used once.</p>
+    <p style="margin:0;color:#5d6b64;font-size:14px;line-height:1.5;">If you were not expecting this invitation, you can ignore this email.</p>
   `;
-  return sendResendEmail({ html, subject, to: values.toEmail });
+  return sendEmailMessage({ html, subject, toEmail: values.toEmail });
 }
 
 export async function sendInvitationEmail(values: Parameters<typeof sendWelcomeEmail>[0]) {

@@ -25,6 +25,7 @@ type ResendMessage = {
 const jsonHeaders = { "Content-Type": "application/json" };
 const defaultFrom = "notifications@n3xconsulting.com";
 const resendEndpoint = "https://api.resend.com/emails";
+const emailLogoPath = "/brand/mai-coach/mai-coach-email-v2.png";
 
 function jsonResponse(body: Record<string, unknown>, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: jsonHeaders });
@@ -100,6 +101,33 @@ function escapeHtml(value: unknown) {
     .replaceAll("'", "&#39;");
 }
 
+function getEmailLogoUrl() {
+  const baseUrl = (Deno.env.get("APP_BASE_URL") ?? "").replace(/\/$/, "");
+  return baseUrl ? `${baseUrl}${emailLogoPath}` : "";
+}
+
+function brandPlainText(lines: string[]) {
+  return ["MAI Coach", "My AI Golf Coach", "", ...lines].join("\n");
+}
+
+function brandedEmailHtml(bodyHtml: string) {
+  const logoUrl = getEmailLogoUrl();
+  const logoMarkup = logoUrl
+    ? `<img src="${escapeHtml(logoUrl)}" width="300" height="84" alt="MAI Coach — My AI Golf Coach" style="display:block;width:300px;max-width:100%;height:auto;border:0;outline:none;text-decoration:none;" />`
+    : `<div style="color:#ffffff;font-size:26px;font-weight:800;line-height:1.1;">MAI Coach</div><div style="margin-top:4px;color:#9bd032;font-size:12px;font-weight:800;letter-spacing:.22em;text-transform:uppercase;">My AI Golf Coach</div>`;
+
+  return `
+    <div style="margin:0;padding:0;background:#07110d;font-family:Arial,Helvetica,sans-serif;color:#10171F;">
+      <div style="max-width:640px;margin:0 auto;padding:28px 18px;">
+        <div style="border:1px solid #263b33;border-radius:18px;overflow:hidden;background:#111c23;">
+          <div style="background:#07110d;padding:26px 28px 22px;">${logoMarkup}</div>
+          <div style="padding:28px;background:#f7fbf8;color:#10171F;font-size:16px;line-height:1.6;">${bodyHtml}</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function compactJson(value: unknown) {
   try {
     return JSON.stringify(value ?? {}, null, 2);
@@ -161,26 +189,17 @@ function buildWelcomeEmail(record: SignupRecord): ResendMessage | null {
   return {
     to: record.email,
     subject: "Welcome to MAI Coach",
-    text: [
+    text: brandPlainText([
       `Hi ${displayName},`,
       "",
       "Welcome to MAI Coach. Your account has been created.",
       "You can now sign in to view your dashboard, videos, and practice sessions.",
-      "",
-      "MAI Coach",
-    ].join("\n"),
-    html: `
-      <div style="margin:0;padding:0;background:#f6f8f7;font-family:Arial,Helvetica,sans-serif;color:#10171F;">
-        <div style="max-width:560px;margin:0 auto;padding:32px 20px;">
-          <div style="background:#ffffff;border:1px solid #dce7e1;border-radius:16px;padding:28px;">
-            <p style="margin:0 0 12px;font-size:13px;line-height:18px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#333333;">MAI Coach</p>
-            <h1 style="margin:0 0 16px;font-size:28px;line-height:34px;color:#10171F;">Welcome, ${safeName}.</h1>
-            <p style="margin:0 0 18px;font-size:16px;line-height:24px;color:#333333;">Your account has been created. You can now sign in to view your dashboard, lesson videos, and practice sessions.</p>
-            <p style="margin:0;font-size:14px;line-height:22px;color:#333333;">This email was sent automatically after your MAI Coach signup.</p>
-          </div>
-        </div>
-      </div>
-    `,
+    ]),
+    html: brandedEmailHtml(`
+      <h1 style="margin:0 0 16px;font-size:28px;line-height:34px;color:#10171F;">Welcome, ${safeName}.</h1>
+      <p style="margin:0 0 18px;font-size:16px;line-height:24px;color:#333333;">Your account has been created. You can now sign in to view your dashboard, lesson videos, and practice sessions.</p>
+      <p style="margin:0;font-size:14px;line-height:22px;color:#333333;">This email was sent automatically after your MAI Coach signup.</p>
+    `),
   };
 }
 
@@ -200,7 +219,7 @@ function buildInternalNotification(record: SignupRecord): ResendMessage | null {
   return {
     to: notifyTo,
     subject: "New MAI Coach signup",
-    text: [
+    text: brandPlainText([
       "A new user signed up.",
       "",
       `Name: ${displayName}`,
@@ -210,19 +229,17 @@ function buildInternalNotification(record: SignupRecord): ResendMessage | null {
       "",
       "Metadata:",
       compactJson(metadata),
-    ].join("\n"),
-    html: `
-      <div style="font-family:Arial,Helvetica,sans-serif;color:#10171F;">
-        <h2 style="margin:0 0 16px;">New MAI Coach signup</h2>
-        <table style="border-collapse:collapse;font-size:14px;line-height:22px;">
-          <tr><td style="padding:4px 16px 4px 0;font-weight:700;">Name</td><td>${escapeHtml(displayName)}</td></tr>
-          <tr><td style="padding:4px 16px 4px 0;font-weight:700;">Email</td><td>${escapeHtml(record.email ?? "Unknown")}</td></tr>
-          <tr><td style="padding:4px 16px 4px 0;font-weight:700;">User ID</td><td>${escapeHtml(record.id ?? "Unknown")}</td></tr>
-          <tr><td style="padding:4px 16px 4px 0;font-weight:700;">Created</td><td>${escapeHtml(record.created_at ?? "Unknown")}</td></tr>
-        </table>
-        <pre style="margin-top:16px;padding:12px;background:#f6f8f7;border-radius:10px;white-space:pre-wrap;">${escapeHtml(compactJson(metadata))}</pre>
-      </div>
-    `,
+    ]),
+    html: brandedEmailHtml(`
+      <h2 style="margin:0 0 16px;">New MAI Coach signup</h2>
+      <table style="border-collapse:collapse;font-size:14px;line-height:22px;">
+        <tr><td style="padding:4px 16px 4px 0;font-weight:700;">Name</td><td>${escapeHtml(displayName)}</td></tr>
+        <tr><td style="padding:4px 16px 4px 0;font-weight:700;">Email</td><td>${escapeHtml(record.email ?? "Unknown")}</td></tr>
+        <tr><td style="padding:4px 16px 4px 0;font-weight:700;">User ID</td><td>${escapeHtml(record.id ?? "Unknown")}</td></tr>
+        <tr><td style="padding:4px 16px 4px 0;font-weight:700;">Created</td><td>${escapeHtml(record.created_at ?? "Unknown")}</td></tr>
+      </table>
+      <pre style="margin-top:16px;padding:12px;background:#edf3ef;border-radius:10px;white-space:pre-wrap;">${escapeHtml(compactJson(metadata))}</pre>
+    `),
   };
 }
 

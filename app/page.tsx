@@ -1,7 +1,7 @@
 "use client";
 
 import { type CSSProperties, type FormEvent, type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { MaiCoachLogoFull, MaiCoachLogoMark } from "@/components/brand/mai-coach-logo";
+import { MaiCoachLogoCompact, MaiCoachLogoFull, MaiCoachLogoMark } from "@/components/brand/mai-coach-logo";
 import { APP_BUILD_INFO } from "@/lib/build-info";
 import { accountPayloadConfirmsUser } from "@/lib/auth-session-policy.mjs";
 import { splitDisplayNameForRegistration } from "@/lib/admin-user-policy.mjs";
@@ -8116,14 +8116,8 @@ export default function Home() {
   return (
     <main className="app-shell">
       <aside className="rail" aria-label="MAI Coach navigation">
-        <div className="brand-lockup">
-          <div className="brand-logo">
-            <MaiCoachLogoMark />
-          </div>
-          <div>
-            <strong>MAI Coach</strong>
-            <span>Your swing, explained.</span>
-          </div>
+        <div className="brand-lockup sidebar-brand">
+          <MaiCoachLogoCompact className="sidebar-brand-logo" priority />
         </div>
         <div className={cls("rail-account-status", accountMode)}>
           {accountMode === "user" && accountUser && <AccountAvatar user={accountUser} />}
@@ -20099,7 +20093,7 @@ function OnboardingFlow({
         <header className="onboarding-brand">
           <MaiCoachLogoFull className="onboarding-logo-full" />
           <div>
-            <span>Your swing, explained.</span>
+            <span>Welcome to MAI Coach</span>
             <strong>Personalized practice setup</strong>
           </div>
         </header>
@@ -20459,9 +20453,8 @@ function LoginRequestModal({
         <div className="video-modal-header">
           <div>
             <MaiCoachLogoFull className="auth-modal-logo" />
-            <p className="eyebrow">Your swing, explained.</p>
+            <p className="eyebrow">Welcome to MAI Coach</p>
             <h2>{mode === "register" ? "Create your account" : "Sign in to your account"}</h2>
-            <small>My AI Golf Coach</small>
           </div>
           <button aria-label="Close login dialog" className="icon-button" onClick={onClose} type="button">×</button>
         </div>
@@ -20735,9 +20728,8 @@ function AccountGate({
       <section className="account-modal">
         <div className="account-brand-header">
           <MaiCoachLogoFull className="account-logo-full" />
-          <p className="eyebrow">Your swing, explained.</p>
+          <p className="eyebrow">Welcome to MAI Coach</p>
           <h2>Create your account or continue as guest.</h2>
-          <small>My AI Golf Coach</small>
           <span>{syncStatus}</span>
         </div>
         <div className="account-choice-grid">

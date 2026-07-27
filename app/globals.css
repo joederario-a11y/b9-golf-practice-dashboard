@@ -108,13 +108,28 @@ button {
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #fff;
+  background: #07110d;
 }
 
 .brand-logo img {
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+
+.sidebar-brand-logo {
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+}
+
+.sidebar-brand {
+  display: block;
+}
+
+.sidebar-brand-logo {
+  display: block;
+  max-width: 232px;
 }
 
 .onboarding-logo-full,
@@ -3868,7 +3883,7 @@ button:disabled {
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 8px;
-  background: #fff;
+  background: #07110d;
 }
 
 .onboarding-logo img {
@@ -4842,6 +4857,7 @@ button:disabled {
 
 .setup-account-logo {
   width: min(320px, 100%);
+  height: auto;
 }
 
 .setup-account-card h1 {
