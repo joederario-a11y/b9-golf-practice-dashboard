@@ -533,7 +533,6 @@ export async function ensurePracticeActivitySchema(database = getRequiredDatabas
     database.prepare("CREATE INDEX IF NOT EXISTS practice_activities_session_idx ON practice_activities(related_session_id)"),
     database.prepare("CREATE INDEX IF NOT EXISTS practice_activity_results_activity_idx ON practice_activity_results(practice_activity_id, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS practice_activity_results_user_idx ON practice_activity_results(user_id, created_at)"),
-    database.prepare("CREATE INDEX IF NOT EXISTS practice_activity_results_attempt_idx ON practice_activity_results(practice_attempt_id)"),
     database.prepare("CREATE INDEX IF NOT EXISTS practice_attempts_activity_idx ON practice_attempts(practice_activity_id, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS practice_attempts_user_idx ON practice_attempts(user_id, created_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS practice_attempts_session_idx ON practice_attempts(linked_session_id)"),
@@ -543,17 +542,20 @@ export async function ensurePracticeActivitySchema(database = getRequiredDatabas
        WHERE status = 'active'`,
     ),
     database.prepare(
-      `CREATE UNIQUE INDEX IF NOT EXISTS practice_activity_results_one_per_attempt_unique
-       ON practice_activity_results(practice_attempt_id)
-       WHERE practice_attempt_id IS NOT NULL`,
-    ),
-    database.prepare(
       `CREATE UNIQUE INDEX IF NOT EXISTS practice_activities_one_active_focus_unique
        ON practice_activities(user_id, activity_type, focus_area)
        WHERE status IN ('generated', 'in_progress')`,
     ),
   ]);
   await ensureColumn(database, "practice_activity_results", "practice_attempt_id", "TEXT");
+  await database.batch([
+    database.prepare("CREATE INDEX IF NOT EXISTS practice_activity_results_attempt_idx ON practice_activity_results(practice_attempt_id)"),
+    database.prepare(
+      `CREATE UNIQUE INDEX IF NOT EXISTS practice_activity_results_one_per_attempt_unique
+       ON practice_activity_results(practice_attempt_id)
+       WHERE practice_attempt_id IS NOT NULL`,
+    ),
+  ]);
   await ensureColumn(database, "practice_attempts", "completed_shot_count", "INTEGER");
   await ensureColumn(database, "practice_attempts", "completed_set_count", "INTEGER");
   await ensureColumn(database, "practice_attempts", "completed_minutes", "INTEGER");
