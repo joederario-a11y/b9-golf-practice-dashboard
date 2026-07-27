@@ -148,7 +148,7 @@ function parseJsonObject(value: string) {
 
 function isMissingTableError(error: unknown) {
   const message = error instanceof Error ? error.message.toLowerCase() : "";
-  return message.includes("no such table");
+  return message.includes("no such table") || message.includes("no such column");
 }
 
 async function optionalRows<T>(database: D1Database, query: string, ...bindings: unknown[]) {

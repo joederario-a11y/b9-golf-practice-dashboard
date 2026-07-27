@@ -863,6 +863,18 @@ type MembersResponsePayload = {
   members?: CoachMember[];
 };
 
+type ExistingMemberPrompt = {
+  accountStatus?: string;
+  email: string;
+  firstName?: string;
+  id: string;
+  inviteStatus?: string;
+  lastName?: string;
+  message?: string;
+  name: string;
+  passwordConfigured?: boolean;
+};
+
 function memberCountsAsActive(member: CoachMember) {
   return (member.accountStatus ?? "active") !== "inactive";
 }
@@ -11295,9 +11307,22 @@ function AdminView({
     );
     if (!confirmed) return;
     try {
-      await postStaffAction({ action: "deleteUser", userId: user.id });
+      const result = await postStaffAction<StaffDashboardPayload & { ok?: boolean }>({ action: "deleteUser", userId: user.id });
+      if (Array.isArray(result.users)) {
+        setDashboard(result);
+      } else {
+        setDashboard((current) => current
+          ? {
+              ...current,
+              coaches: current.coaches.filter((item) => item.id !== user.id),
+              users: current.users.filter((item) => item.id !== user.id),
+            }
+          : current);
+      }
+      const nextMemberId = selectedMemberId === user.id ? "" : selectedMemberId;
+      setSelectedMemberId(nextMemberId);
+      await refreshWorkspace(nextMemberId);
       setMessage(`${user.name} was deleted.`);
-      await refreshWorkspace(selectedMemberId === user.id ? "" : selectedMemberId);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "The user could not be deleted.");
     }
@@ -11997,6 +12022,7 @@ function CoachVideoWorkspace({
   const [firstMemberOnboardingStatus, setFirstMemberOnboardingStatus] = useState<FirstMemberOnboardingStatus>("pending");
   const [activeMemberCount, setActiveMemberCount] = useState(0);
   const [memberInviteRecovery, setMemberInviteRecovery] = useState<CoachMember | null>(null);
+  const [pendingExistingMember, setPendingExistingMember] = useState<ExistingMemberPrompt | null>(null);
   const [showLessonDetails, setShowLessonDetails] = useState(false);
   const [uploadResult, setUploadResult] = useState<{
     memberId: string;
@@ -12168,6 +12194,7 @@ function CoachVideoWorkspace({
   function openAddMemberDialog(mode: "manual" | "first-member" = "manual") {
     setAddMemberMode(mode);
     setMemberInviteRecovery(null);
+    setPendingExistingMember(null);
     setShowAddMember(true);
   }
 
@@ -12207,6 +12234,7 @@ function CoachVideoWorkspace({
     }
     setShowAddMember(false);
     setMemberInviteRecovery(null);
+    setPendingExistingMember(null);
   }
 
   useEffect(() => {
@@ -12445,14 +12473,30 @@ function CoachVideoWorkspace({
       const response = await fetch("/api/members", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(newMember),
+        body: JSON.stringify({
+          ...newMember,
+          confirmExisting: Boolean(pendingExistingMember),
+        }),
       });
-      const payload = await readApiJson<{
+      const payload = await response.json().catch(() => ({})) as {
+        error?: string | { code?: string; message?: string };
+        existingMember?: ExistingMemberPrompt;
         firstMemberOnboardingStatus?: FirstMemberOnboardingStatus | string;
         invite?: { status?: string };
         member?: CoachMember;
         passwordConfigured?: boolean;
-      }>(response, "The member could not be added.");
+        publicMessage?: string;
+        result?: string;
+      };
+      if (!response.ok) {
+        const errorCode = typeof payload.error === "object" ? payload.error.code : "";
+        if (errorCode === "existing_member_available" && payload.existingMember) {
+          setPendingExistingMember(payload.existingMember);
+          setWorkspaceMessage(payload.existingMember.message ?? apiErrorMessage(payload, "This member already has an account.", response.status));
+          return;
+        }
+        throw new Error(apiErrorMessage(payload, "The member could not be added.", response.status));
+      }
       if (!payload.member) throw new Error("The member could not be added.");
       const member = payload.member as CoachMember;
       const inviteStatus = payload.invite?.status ?? "";
@@ -12474,8 +12518,9 @@ function CoachVideoWorkspace({
       setUploadResult(null);
       if (addMemberMode === "first-member") setShowUploadPanel(true);
       void loadCoachMemberDetail(member.id);
+      setPendingExistingMember(null);
 
-      if (addMemberMode === "first-member" && !inviteCompleted) {
+      if (addMemberMode === "first-member" && !inviteCompleted && payload.passwordConfigured === false) {
         setMemberInviteRecovery(member);
         setWorkspaceMessage(
           `${member.name} was added to your roster, but the welcome email needs attention. Try resending it or copying a setup link before closing this step.`,
@@ -12488,6 +12533,7 @@ function CoachVideoWorkspace({
       }
       setShowAddMember(false);
       setMemberInviteRecovery(null);
+      setPendingExistingMember(null);
       setNewMember({
         firstName: "",
         lastName: "",
@@ -12497,7 +12543,13 @@ function CoachVideoWorkspace({
         notes: "",
       });
       setWorkspaceMessage(
-        inviteStatus === "delivered"
+        payload.result === "member_already_linked"
+          ? `${member.name} is already on your roster.`
+          : payload.result === "linked_existing_member"
+          ? payload.invite?.status && payload.passwordConfigured === false
+            ? `${member.name} was added to your roster. You can resend setup if needed.`
+            : `${member.name} was added to your roster.`
+          : inviteStatus === "delivered"
           ? `${member.name} was added and the welcome email was sent.`
           : inviteStatus === "not_sent"
           ? `${member.name} is already connected.`
@@ -14094,10 +14146,28 @@ function CoachVideoWorkspace({
                 </div>
               </div>
             )}
+            {pendingExistingMember && (
+              <div className="coach-inline-warning existing-member-confirmation">
+                <strong>{pendingExistingMember.name} already has a MAI Coach account.</strong>
+                <p>{pendingExistingMember.message ?? "Add this existing member to your roster without changing their password or profile."}</p>
+                {!pendingExistingMember.passwordConfigured && (
+                  <p>Their password is not configured yet. After adding them, you can resend the setup email from the roster.</p>
+                )}
+              </div>
+            )}
             <div className="video-form-grid">
-              <label><span>First name</span><input required value={newMember.firstName} onChange={(event) => setNewMember((current) => ({ ...current, firstName: event.target.value }))} /></label>
-              <label><span>Last name</span><input required value={newMember.lastName} onChange={(event) => setNewMember((current) => ({ ...current, lastName: event.target.value }))} /></label>
-              <label className="video-form-wide"><span>Email</span><input required type="email" value={newMember.email} onChange={(event) => setNewMember((current) => ({ ...current, email: event.target.value }))} /></label>
+              <label><span>First name</span><input required value={newMember.firstName} onChange={(event) => {
+                setPendingExistingMember(null);
+                setNewMember((current) => ({ ...current, firstName: event.target.value }));
+              }} /></label>
+              <label><span>Last name</span><input required value={newMember.lastName} onChange={(event) => {
+                setPendingExistingMember(null);
+                setNewMember((current) => ({ ...current, lastName: event.target.value }));
+              }} /></label>
+              <label className="video-form-wide"><span>Email</span><input required type="email" value={newMember.email} onChange={(event) => {
+                setPendingExistingMember(null);
+                setNewMember((current) => ({ ...current, email: event.target.value }));
+              }} /></label>
               <label><span>Phone optional</span><input type="tel" value={newMember.phone} onChange={(event) => setNewMember((current) => ({ ...current, phone: event.target.value }))} /></label>
               <label><span>Skill level optional</span><input placeholder="Beginner, 12 handicap, competitive..." value={newMember.skillLevel} onChange={(event) => setNewMember((current) => ({ ...current, skillLevel: event.target.value }))} /></label>
               <label className="video-form-wide"><span>Coach notes optional</span><textarea placeholder="Goals, tendencies, or lesson context..." value={newMember.notes} onChange={(event) => setNewMember((current) => ({ ...current, notes: event.target.value }))} /></label>
@@ -14109,7 +14179,7 @@ function CoachVideoWorkspace({
                   {addMemberMode === "first-member" ? "I'll do this later" : "Cancel"}
                 </button>
                 <button className="primary-action" disabled={memberSaveState === "saving"} type="submit">
-                  {memberSaveState === "saving" ? "Adding..." : "Add Member"}
+                  {memberSaveState === "saving" ? "Adding..." : pendingExistingMember ? "Add Existing Member" : "Add Member"}
                 </button>
               </div>
             </div>
