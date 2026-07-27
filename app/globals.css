@@ -10763,6 +10763,48 @@ input::file-selector-button {
   text-align: left;
 }
 
+.dashboard-challenge-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.28fr);
+  gap: 18px;
+  align-items: stretch;
+  border-color: rgba(150, 203, 57, 0.34);
+}
+
+.dashboard-challenge-copy,
+.dashboard-challenge-action {
+  display: grid;
+  gap: 12px;
+}
+
+.dashboard-challenge-copy h3,
+.dashboard-challenge-copy p,
+.dashboard-challenge-action span,
+.dashboard-challenge-action small {
+  margin: 0;
+}
+
+.dashboard-challenge-copy p,
+.dashboard-challenge-action span,
+.dashboard-challenge-action small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.dashboard-challenge-copy h3 {
+  color: var(--ink);
+  font-size: clamp(26px, 3vw, 42px);
+  line-height: 1;
+}
+
+.dashboard-challenge-action {
+  align-content: center;
+  border: 1px solid rgba(150, 203, 57, 0.24);
+  border-radius: 8px;
+  background: rgba(150, 203, 57, 0.08);
+  padding: 16px;
+}
+
 .practice-focus-picker button.selected,
 .practice-history-list button.selected {
   border-color: var(--green);
@@ -10838,6 +10880,134 @@ input::file-selector-button {
 .practice-challenge-score strong {
   font-size: clamp(34px, 4vw, 56px);
   line-height: 0.95;
+}
+
+.challenge-detail-shell {
+  display: block;
+  min-height: 100vh;
+  padding: clamp(18px, 3vw, 42px);
+}
+
+.challenge-detail-panel {
+  display: grid;
+  gap: 22px;
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+.challenge-detail-header,
+.challenge-detail-hero,
+.challenge-detail-section-heading,
+.session-challenge-result-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.challenge-detail-header,
+.challenge-detail-hero {
+  align-items: flex-start;
+}
+
+.challenge-detail-header .brand-lockup {
+  width: min(280px, 52vw);
+  height: auto;
+}
+
+.challenge-detail-hero h1,
+.challenge-detail-hero p,
+.challenge-complete-card h2,
+.challenge-complete-card p {
+  margin: 0;
+}
+
+.challenge-detail-hero h1 {
+  color: var(--ink);
+  font-size: clamp(40px, 6vw, 82px);
+  line-height: 0.95;
+}
+
+.challenge-detail-hero p {
+  max-width: 720px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.challenge-result-meter {
+  display: grid;
+  gap: 8px;
+  min-width: 190px;
+  border: 1px solid rgba(150, 203, 57, 0.3);
+  border-radius: 8px;
+  background: rgba(150, 203, 57, 0.08);
+  padding: 16px;
+}
+
+.challenge-result-meter span,
+.challenge-result-meter small,
+.challenge-detail-section-heading span,
+.session-challenge-result-card span,
+.session-challenge-result-card small {
+  color: var(--muted);
+}
+
+.challenge-result-meter strong {
+  color: var(--green);
+  font-size: 34px;
+  line-height: 1;
+}
+
+.challenge-detail-rules {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.challenge-action-grid,
+.session-result-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.challenge-complete-card {
+  display: grid;
+  gap: 18px;
+  border: 1px solid rgba(47, 235, 118, 0.38);
+  border-radius: 8px;
+  background: rgba(47, 235, 118, 0.08);
+  padding: 18px;
+}
+
+.session-result-summary-grid div,
+.session-challenge-result-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+  padding: 14px;
+}
+
+.session-result-summary-grid span,
+.session-challenge-result-card .eyebrow {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 950;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.session-result-summary-grid strong,
+.session-challenge-result-card strong,
+.session-challenge-result-card h3 {
+  color: var(--ink);
+}
+
+.session-challenge-result-card {
+  align-items: center;
+  margin: 16px 0;
+}
+
+.session-challenge-result-card p,
+.session-challenge-result-card h3 {
+  margin: 0;
 }
 
 .practice-coach-note {
@@ -11439,5 +11609,22 @@ input::file-selector-button {
   .annotation-toolbox,
   .annotation-control-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 820px) {
+  .dashboard-challenge-card,
+  .challenge-action-grid,
+  .session-result-summary-grid,
+  .challenge-detail-rules {
+    grid-template-columns: 1fr;
+  }
+
+  .challenge-detail-header,
+  .challenge-detail-hero,
+  .challenge-detail-section-heading,
+  .session-challenge-result-card {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

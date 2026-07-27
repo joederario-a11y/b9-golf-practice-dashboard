@@ -546,10 +546,14 @@ export async function ensureChallengeSchema(database = getRequiredDatabase()) {
         id TEXT PRIMARY KEY,
         member_challenge_id TEXT NOT NULL,
         session_id TEXT,
+        status TEXT NOT NULL DEFAULT 'active'
+          CHECK (status IN ('active', 'completed', 'cancelled')),
         shot_ids_json TEXT NOT NULL DEFAULT '[]',
         result_json TEXT NOT NULL DEFAULT '{}',
         started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         completed_at TEXT,
+        evaluated_at TEXT,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (member_challenge_id) REFERENCES member_challenges(id) ON DELETE CASCADE
       )`,
     ),
@@ -557,10 +561,23 @@ export async function ensureChallengeSchema(database = getRequiredDatabase()) {
     database.prepare("CREATE INDEX IF NOT EXISTS member_challenges_member_status_idx ON member_challenges(member_id, status, assigned_at)"),
     database.prepare("CREATE INDEX IF NOT EXISTS member_challenges_template_idx ON member_challenges(template_id, status)"),
     database.prepare("CREATE INDEX IF NOT EXISTS challenge_attempts_member_challenge_idx ON challenge_attempts(member_challenge_id, completed_at)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS challenge_attempts_session_idx ON challenge_attempts(session_id)"),
     database.prepare(
       `CREATE UNIQUE INDEX IF NOT EXISTS member_challenges_one_open_template_unique
        ON member_challenges(member_id, template_id)
        WHERE status IN ('assigned', 'active')`,
+    ),
+  ]);
+
+  await ensureColumn(database, "challenge_attempts", "status", "TEXT NOT NULL DEFAULT 'active'");
+  await ensureColumn(database, "challenge_attempts", "evaluated_at", "TEXT");
+  await ensureColumn(database, "challenge_attempts", "updated_at", "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP");
+  await database.batch([
+    database.prepare("UPDATE challenge_attempts SET status = 'completed' WHERE completed_at IS NOT NULL AND status = 'active'"),
+    database.prepare(
+      `CREATE UNIQUE INDEX IF NOT EXISTS challenge_attempts_one_open_unique
+       ON challenge_attempts(member_challenge_id)
+       WHERE status = 'active' AND completed_at IS NULL`,
     ),
   ]);
 

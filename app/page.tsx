@@ -1088,13 +1088,32 @@ type MemberChallengeStatus = "assigned" | "active" | "completed" | "failed" | "e
 type ChallengeApiState = {
   attempt?: {
     completedAt?: string | null;
+    evaluatedAt?: string | null;
     id: string;
     result?: {
+      averageQualifyingCarry?: number | null;
+      averageQualifyingOffline?: number | null;
+      biggestWin?: string;
       currentSuccessCount?: number;
+      evaluatedShotIds?: string[];
       measuredShotCount?: number;
+      nextStep?: string;
+      qualifiedShotIds?: string[];
       requiredSuccessCount?: number;
       sessionId?: string | null;
+      shotResults?: {
+        carry?: number | null;
+        club?: string | null;
+        id: string;
+        offline?: number | null;
+        qualified: boolean;
+        reason?: string;
+        shotNumber?: string;
+        status?: string;
+        statusLabel?: string;
+      }[];
       status?: MemberChallengeStatus;
+      totalAttemptedShotCount?: number;
       totalClubShots?: number;
       unavailableShotCount?: number;
       unqualifiedMeasuredShotCount?: number;
@@ -1102,13 +1121,24 @@ type ChallengeApiState = {
     sessionId?: string | null;
     shotIds?: string[];
     startedAt?: string;
+    status?: "active" | "completed" | "cancelled";
   } | null;
   challenge?: {
     currentSuccessCount: number;
     id: string;
     requiredSuccessCount: number;
+    source?: NextActionSource;
     status: MemberChallengeStatus;
   } | null;
+  eligibleSessions?: {
+    date: string;
+    id: string;
+    measuredShotCount: number;
+    qualifiedShotCount: number;
+    sessionSource: string;
+    title: string;
+    totalAttemptedShotCount: number;
+  }[];
   template?: typeof SEVEN_IRON_PRECISION_TEMPLATE;
 };
 
@@ -7834,6 +7864,42 @@ export default function Home() {
     });
   }
 
+  async function connectImportedSessionToChallenge(sessionId: string) {
+    if (accountMode !== "user" || typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    const challengeId = url.searchParams.get("challengeId");
+    if (!challengeId) return;
+    try {
+      const response = await fetch("/api/challenges", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "link_session",
+          challengeId,
+          sessionId,
+        }),
+      });
+      const payload = await readApiJson<ChallengeApiState>(response, "Challenge could not be updated.");
+      const result = payload.attempt?.result;
+      const progress = `${payload.challenge?.currentSuccessCount ?? result?.currentSuccessCount ?? 0}/${payload.challenge?.requiredSuccessCount ?? result?.requiredSuccessCount ?? SEVEN_IRON_PRECISION_TEMPLATE.successShotCount}`;
+      setImportMessage(
+        payload.challenge?.status === "completed" || result?.status === "completed"
+          ? `${SEVEN_IRON_PRECISION_TEMPLATE.title} completed from this session.`
+          : `${SEVEN_IRON_PRECISION_TEMPLATE.title} updated: ${progress} qualifying shots.`,
+      );
+      setImportConfirmation(
+        payload.challenge?.status === "completed" || result?.status === "completed"
+          ? `${SEVEN_IRON_PRECISION_TEMPLATE.title} completed from this session.`
+          : `${SEVEN_IRON_PRECISION_TEMPLATE.title} updated: ${progress} qualifying shots.`,
+      );
+      url.searchParams.delete("challengeId");
+      url.searchParams.delete("challengeAttemptId");
+      window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    } catch (error) {
+      setImportMessage(error instanceof Error ? error.message : "Challenge could not be updated from this session.");
+    }
+  }
+
   function confirmPendingImport() {
     if (!pendingImportReview) {
       setImportMessage("No import is waiting for review.");
@@ -7904,7 +7970,7 @@ export default function Home() {
       `${review.missingMetrics.length ? "Unavailable metrics display as NA." : "Core metrics are ready across the app."}`;
     setImportMessage(successMessage);
     setImportConfirmation(successMessage);
-    void saveUserSessions(nextSessions);
+    void saveUserSessions(nextSessions).then(() => connectImportedSessionToChallenge(nextSession.id));
   }
 
   function importCsv(submissionType: LastImport["submissionType"] = "CSV / Excel", notes = "", sourceFileName = "Uploaded CSV") {
@@ -8693,6 +8759,100 @@ function MemberDashboardMission({
   );
 }
 
+function DashboardChallengeCard({ accountUser }: { accountUser: AccountUser | null }) {
+  const [challengeState, setChallengeState] = useState<ChallengeApiState | null>(null);
+  const [statusMessage, setStatusMessage] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const criteria = parseChallengeCriteria(SEVEN_IRON_PRECISION_TEMPLATE.criteriaJson) as {
+    carryMax?: number;
+    carryMin?: number;
+    offlineMaxAbs?: number;
+  };
+  const challenge = challengeState?.challenge ?? null;
+  const result = challengeState?.attempt?.result ?? null;
+  const currentSuccessCount = challenge?.currentSuccessCount ?? result?.currentSuccessCount ?? 0;
+  const requiredSuccessCount = challenge?.requiredSuccessCount ?? result?.requiredSuccessCount ?? SEVEN_IRON_PRECISION_TEMPLATE.successShotCount;
+  const attemptedCount = result?.totalAttemptedShotCount ?? result?.measuredShotCount ?? 0;
+  const source = challenge?.source === "coach" ? "Coach" : challenge?.source === "coach_approved_ai" ? "Coach-approved MAI" : "MAI Coach";
+  const buttonLabel = challenge?.status === "completed"
+    ? "View Results"
+    : challenge?.status === "active"
+      ? "Continue Challenge"
+      : "Start Challenge";
+
+  useEffect(() => {
+    if (!accountUser || accountUser.role !== "member") {
+      setChallengeState(null);
+      return;
+    }
+    let active = true;
+    fetch("/api/challenges", { cache: "no-store" })
+      .then((response) => readApiJson<ChallengeApiState>(response, "Challenge data is unavailable."))
+      .then((payload) => {
+        if (active) setChallengeState(payload);
+      })
+      .catch(() => {
+        if (active) setChallengeState(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [accountUser?.id, accountUser?.role]);
+
+  async function openChallenge() {
+    if (!accountUser || accountUser.role !== "member") return;
+    if (challenge?.id) {
+      window.location.href = `/challenges/${encodeURIComponent(challenge.id)}`;
+      return;
+    }
+    setIsLoading(true);
+    setStatusMessage("Starting your measured 7-Iron Precision challenge.");
+    try {
+      const response = await fetch("/api/challenges", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "start" }),
+      });
+      const payload = await readApiJson<ChallengeApiState>(response, "Challenge could not be started.");
+      setChallengeState(payload);
+      if (payload.challenge?.id) {
+        window.location.href = `/challenges/${encodeURIComponent(payload.challenge.id)}`;
+      } else {
+        setStatusMessage("Challenge could not be opened.");
+      }
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Challenge could not be started.");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  if (!accountUser || accountUser.role !== "member") return null;
+
+  return (
+    <section className="panel dashboard-challenge-card">
+      <div className="dashboard-challenge-copy">
+        <p className="eyebrow">Today&apos;s Challenge</p>
+        <h3>{SEVEN_IRON_PRECISION_TEMPLATE.title}</h3>
+        <p>{SEVEN_IRON_PRECISION_TEMPLATE.description}</p>
+        <dl className="practice-challenge-criteria">
+          <div><dt>Carry</dt><dd>{criteria.carryMin ?? "NA"}-{criteria.carryMax ?? "NA"} yd</dd></div>
+          <div><dt>Offline</dt><dd>Within {criteria.offlineMaxAbs ?? "NA"} yd</dd></div>
+          <div><dt>Progress</dt><dd>{currentSuccessCount} of {requiredSuccessCount}</dd></div>
+          <div><dt>Source</dt><dd>{source}</dd></div>
+        </dl>
+      </div>
+      <div className="dashboard-challenge-action">
+        <span>{attemptedCount ? `${attemptedCount} measured ${attemptedCount === 1 ? "shot" : "shots"} evaluated` : "Measured shots only"}</span>
+        <button className="primary-action" disabled={isLoading} onClick={() => void openChallenge()} type="button">
+          {isLoading ? "Opening..." : buttonLabel}
+        </button>
+        {statusMessage && <small role="status">{statusMessage}</small>}
+      </div>
+    </section>
+  );
+}
+
 function DashboardView({
   accountUser,
   avgCarry,
@@ -8797,6 +8957,7 @@ function DashboardView({
             onOpen={onNextBestAction}
           />
         )}
+        {showMemberMission && <DashboardChallengeCard accountUser={accountUser} />}
         {showMemberMission && showCoachSupport && (
           <CoachedStudentDashboardPriority
             coaches={coaches}
@@ -8843,6 +9004,7 @@ function DashboardView({
           onOpen={onNextBestAction}
         />
       )}
+      {showMemberMission && <DashboardChallengeCard accountUser={accountUser} />}
       {showMemberMission && showCoachSupport && (
         <CoachedStudentDashboardPriority
           coaches={coaches}
@@ -9749,6 +9911,7 @@ function SessionsView({
   const [editSessionClub, setEditSessionClub] = useState("");
   const [editSessionNotes, setEditSessionNotes] = useState("");
   const [editShotClubs, setEditShotClubs] = useState<Record<string, string>>({});
+  const [sessionChallengeState, setSessionChallengeState] = useState<ChallengeApiState | null>(null);
   const canRequestAnalysis =
     canAnalyzeSession &&
     selectedSession.id !== EMPTY_SESSION.id &&
@@ -9777,6 +9940,25 @@ function SessionsView({
   useEffect(() => {
     setIsEditingSession(false);
   }, [selectedSession.id]);
+
+  useEffect(() => {
+    if (!canAnalyzeSession || selectedSession.id === EMPTY_SESSION.id) {
+      setSessionChallengeState(null);
+      return;
+    }
+    let active = true;
+    fetch("/api/challenges", { cache: "no-store" })
+      .then((response) => readApiJson<ChallengeApiState>(response, "Challenge data is unavailable."))
+      .then((payload) => {
+        if (active) setSessionChallengeState(payload);
+      })
+      .catch(() => {
+        if (active) setSessionChallengeState(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [canAnalyzeSession, selectedSession.id]);
 
   useEffect(() => {
     if (!canAnalyzeSession || selectedSession.id === EMPTY_SESSION.id || !activeSessionShots.length) return;
@@ -10091,6 +10273,22 @@ function SessionsView({
             <div className="button-row">
               <button className="secondary-action" onClick={() => setIsEditingSession(false)} type="button">Cancel</button>
               <button className="primary-action" onClick={saveSessionEditor} type="button">Save session edits</button>
+            </div>
+          </div>
+        )}
+        {sessionChallengeState?.attempt?.result?.sessionId === selectedSession.id && (
+          <div className="session-challenge-result-card">
+            <div>
+              <p className="eyebrow">Challenge result</p>
+              <h3>{SEVEN_IRON_PRECISION_TEMPLATE.title}</h3>
+              <span>
+                {sessionChallengeState.challenge?.currentSuccessCount ?? sessionChallengeState.attempt.result.currentSuccessCount ?? 0} of{" "}
+                {sessionChallengeState.challenge?.requiredSuccessCount ?? sessionChallengeState.attempt.result.requiredSuccessCount ?? SEVEN_IRON_PRECISION_TEMPLATE.successShotCount} qualifying shots
+              </span>
+            </div>
+            <div>
+              <strong>{sessionChallengeState.challenge?.status === "completed" ? "Completed" : "In progress"}</strong>
+              <small>{sessionChallengeState.attempt.result.nextStep ?? "Repeat this challenge once more before narrowing the target window."}</small>
             </div>
           </div>
         )}
@@ -13987,7 +14185,7 @@ function PracticeView({
       const response = await fetch("/api/challenges", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: sevenIronChallengeSession.id }),
+        body: JSON.stringify({ action: "link_session", sessionId: sevenIronChallengeSession.id }),
       });
       const payload = await readApiJson<ChallengeApiState>(response, "Challenge could not be scored.");
       setChallengeState(payload);
@@ -13999,6 +14197,28 @@ function PracticeView({
       }
     } catch (error) {
       setPracticeMessage(error instanceof Error ? error.message : "Challenge could not be scored.");
+    } finally {
+      setChallengeLoading(false);
+    }
+  }
+
+  async function openSevenIronChallenge() {
+    if (challengeState?.challenge?.id) {
+      window.location.href = `/challenges/${encodeURIComponent(challengeState.challenge.id)}`;
+      return;
+    }
+    setChallengeLoading(true);
+    try {
+      const response = await fetch("/api/challenges", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "start" }),
+      });
+      const payload = await readApiJson<ChallengeApiState>(response, "Challenge could not be started.");
+      setChallengeState(payload);
+      if (payload.challenge?.id) window.location.href = `/challenges/${encodeURIComponent(payload.challenge.id)}`;
+    } catch (error) {
+      setPracticeMessage(error instanceof Error ? error.message : "Challenge could not be opened.");
     } finally {
       setChallengeLoading(false);
     }
@@ -14177,11 +14397,19 @@ function PracticeView({
           </strong>
           <p>
             {challengeState?.attempt?.result
-              ? `${challengeState.attempt.result.measuredShotCount ?? 0} measured shots · ${challengeState.attempt.result.unavailableShotCount ?? 0} unavailable`
+              ? `${challengeState.attempt.result.totalAttemptedShotCount ?? challengeState.attempt.result.measuredShotCount ?? 0} attempted · ${challengeState.attempt.result.unavailableShotCount ?? 0} unavailable`
               : sevenIronChallengeSession
                 ? `Ready to score ${sevenIronChallengeSession.title}`
                 : "No saved 7-Iron session found."}
           </p>
+          <button
+            className="secondary-action"
+            disabled={challengeLoading || !accountUser}
+            onClick={() => void openSevenIronChallenge()}
+            type="button"
+          >
+            {challengeState?.challenge?.status === "completed" ? "View Results" : challengeState?.challenge?.status === "active" ? "Continue Challenge" : "Start Challenge"}
+          </button>
           <button
             className="primary-action"
             disabled={challengeLoading || !accountUser || !sevenIronChallengeSession}
