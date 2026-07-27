@@ -1119,7 +1119,7 @@ button {
 
 .home-dashboard-shell {
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid var(--line);
   border-radius: 8px;
   background:
@@ -1134,18 +1134,19 @@ button {
 
 .home-dashboard-header {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 132px;
-  gap: 22px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 24px;
   align-items: start;
-  margin-bottom: 20px;
+  margin-bottom: 24px;
 }
 
 .home-dashboard-header h2 {
   margin: 2px 0 4px;
   color: var(--ink);
-  font-size: clamp(28px, 4vw, 48px);
+  font-size: 56px;
   font-weight: 820;
-  line-height: 0.98;
+  line-height: 1.02;
+  overflow-wrap: anywhere;
 }
 
 .home-dashboard-header span,
@@ -1174,12 +1175,14 @@ button {
 .session-score-details {
   position: relative;
   justify-self: end;
+  max-width: 116px;
+  min-width: 0;
 }
 
 .session-score-ring {
   display: grid;
-  width: 126px;
-  height: 126px;
+  width: 112px;
+  height: 112px;
   place-items: center;
   border: 1px solid rgba(150, 203, 57, 0.28);
   border-radius: 50%;
@@ -1209,7 +1212,7 @@ button {
 
 .session-score-ring strong {
   color: var(--ink);
-  font-size: 34px;
+  font-size: 31px;
   font-weight: 850;
   line-height: 1;
 }
@@ -1287,9 +1290,9 @@ button {
 
 .home-dashboard-main {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr);
-  gap: 18px;
-  align-items: stretch;
+  grid-template-columns: minmax(0, 3fr) minmax(320px, 2fr);
+  gap: 22px;
+  align-items: start;
 }
 
 .home-visual-card,
@@ -1303,7 +1306,8 @@ button {
 }
 
 .home-visual-card {
-  min-height: 430px;
+  min-width: 0;
+  overflow: hidden;
   padding: 18px;
 }
 
@@ -1339,7 +1343,9 @@ button {
 .home-shot-visual {
   display: block;
   width: 100%;
-  min-height: 310px;
+  height: auto;
+  min-height: 260px;
+  aspect-ratio: 460 / 260;
 }
 
 .home-shot-field {
@@ -1390,23 +1396,28 @@ button {
 
 .home-results-stack {
   display: grid;
-  gap: 14px;
+  min-width: 0;
+  gap: 18px;
 }
 
 .session-summary-hierarchy {
   display: grid;
-  grid-template-columns: minmax(140px, 0.42fr) repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  min-width: 0;
 }
 
 .session-summary-card {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
-  min-height: 168px;
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(11, 21, 17, 0.84);
-  padding: 16px;
+  padding: 18px;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .session-summary-card span,
@@ -1420,14 +1431,15 @@ button {
 
 .session-summary-card strong {
   color: var(--ink);
-  font-size: 18px;
+  font-size: 21px;
   font-weight: 900;
-  line-height: 1.16;
+  line-height: 1.18;
+  max-width: 100%;
 }
 
 .session-result-card strong {
-  font-size: clamp(44px, 6vw, 76px);
-  line-height: 0.9;
+  font-size: 48px;
+  line-height: 0.95;
 }
 
 .session-summary-card p,
@@ -1435,13 +1447,34 @@ button {
   margin: 0;
   color: var(--muted);
   font-size: 13px;
-  line-height: 1.45;
+  line-height: 1.5;
+  max-width: 62ch;
+}
+
+.session-summary-card .session-result-score {
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 850;
+}
+
+.session-summary-disclosure {
+  margin-top: 4px;
+}
+
+.session-summary-disclosure[open] {
+  display: grid;
+  gap: 8px;
 }
 
 .session-summary-card summary {
   color: var(--green);
   cursor: pointer;
   font-weight: 900;
+  outline-offset: 4px;
+}
+
+.session-summary-card summary:focus-visible {
+  outline: 2px solid var(--green);
 }
 
 .session-summary-card.watch {
@@ -1455,19 +1488,23 @@ button {
 }
 
 .session-summary-card.next-assignment {
+  grid-column: 1 / -1;
   border-color: rgba(150, 203, 57, 0.34);
 }
 
 .session-summary-card.next-assignment .primary-action {
-  align-self: end;
-  justify-self: start;
+  align-self: flex-start;
+  max-width: 100%;
+  margin-top: auto;
+  white-space: normal;
 }
 
 .home-detail-heading {
   display: grid;
-  gap: 4px;
+  min-width: 0;
+  gap: 6px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
-  padding-top: 14px;
+  padding-top: 18px;
 }
 
 .home-detail-heading p {
@@ -1478,13 +1515,15 @@ button {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
+  min-width: 0;
 }
 
 .home-result-card {
   position: relative;
-  min-height: 148px;
+  min-width: 0;
   overflow: hidden;
   padding: 16px;
+  overflow-wrap: anywhere;
 }
 
 .home-result-card::after {
@@ -9978,6 +10017,10 @@ input::file-selector-button {
     grid-template-columns: 1fr;
   }
 
+  .home-dashboard-header h2 {
+    font-size: 46px;
+  }
+
   .home-result-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -10006,8 +10049,12 @@ input::file-selector-button {
     grid-template-columns: 1fr;
   }
 
+  .home-dashboard-header h2 {
+    font-size: 36px;
+  }
+
   .session-score-details {
-    justify-self: start;
+    display: none;
   }
 
   .session-score-ring {
@@ -10060,6 +10107,10 @@ input::file-selector-button {
   }
 
   .home-opportunity-card .primary-action {
+    width: 100%;
+  }
+
+  .session-summary-card.next-assignment .primary-action {
     width: 100%;
   }
 

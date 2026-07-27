@@ -5,6 +5,11 @@ import test from "node:test";
 const pageSource = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 const cssSource = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 
+function cssBlock(selector) {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return cssSource.match(new RegExp(`${escaped}\\s*\\{[\\s\\S]*?\\n\\}`))?.[0] ?? "";
+}
+
 test("videos navigation opens the library while direct lesson links stay supported", () => {
   assert.match(pageSource, /videoLibraryResetKey/);
   assert.match(pageSource, /setRequestedVideoId\(null\)/);
@@ -67,4 +72,31 @@ test("dashboard reduces repeated flags and explains session score", () => {
   assert.match(pageSource, /Why this result\?/);
   assert.match(pageSource, /Missing metrics stay out of the score instead of being counted as zero/);
   assert.match(cssSource, /\.session-score-popover/);
+});
+
+test("session summary cards use flexible overflow-safe layout", () => {
+  const cardBlock = cssBlock(".session-summary-card");
+
+  assert.match(pageSource, /session-result-score/);
+  assert.match(pageSource, /This score reflects carry consistency, contact quality, and dispersion/);
+  assert.match(pageSource, /previewSentence/);
+  assert.match(pageSource, /biggestWinHeadline/);
+  assert.doesNotMatch(pageSource, /transparent score for the selected club/);
+  assert.match(cssSource, /\.session-summary-hierarchy\s*\{[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(cssSource, /\.session-summary-card\.next-assignment\s*\{[\s\S]*grid-column: 1 \/ -1/);
+  assert.match(cssSource, /\.session-summary-card\.next-assignment \.primary-action\s*\{[\s\S]*margin-top: auto/);
+  assert.match(cardBlock, /min-width: 0/);
+  assert.match(cardBlock, /overflow-wrap: anywhere/);
+  assert.doesNotMatch(cardBlock, /\n\s*height:/);
+  assert.doesNotMatch(cardBlock, /overflow: hidden/);
+});
+
+test("session summary and dispersion respond across desktop tablet and mobile", () => {
+  assert.match(cssSource, /\.home-dashboard-main\s*\{[\s\S]*grid-template-columns: minmax\(0, 3fr\) minmax\(320px, 2fr\)/);
+  assert.match(cssSource, /\.home-shot-visual\s*\{[\s\S]*aspect-ratio: 460 \/ 260/);
+  assert.match(cssSource, /@media \(max-width: 1180px\)\s*\{[\s\S]*\.home-dashboard-main\s*\{[\s\S]*grid-template-columns: 1fr/);
+  assert.match(cssSource, /@media \(max-width: 760px\)\s*\{[\s\S]*\.session-score-details\s*\{[\s\S]*display: none/);
+  assert.match(cssSource, /@media \(max-width: 760px\)\s*\{[\s\S]*\.home-result-grid,\s*[\s\S]*\.session-summary-hierarchy,[\s\S]*grid-template-columns: 1fr/);
+  assert.match(cssSource, /\.home-dashboard-header h2\s*\{[\s\S]*font-size: 56px/);
+  assert.match(cssSource, /@media \(max-width: 760px\)\s*\{[\s\S]*\.home-dashboard-header h2\s*\{[\s\S]*font-size: 36px/);
 });

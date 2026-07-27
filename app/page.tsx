@@ -9325,7 +9325,13 @@ function HomepageDashboardHero({
   const dispersionValue = Number.isFinite(summary.dispersionWidth) ? `${summary.dispersionWidth} yd` : "NA";
   const scoreValue = Number.isFinite(summary.sessionScore) ? Math.round(summary.sessionScore).toString() : "NA";
   const gradeValue = dashboardSessionGrade(summary.sessionScore);
+  const biggestWinTitle = biggestWinHeadline(summary, selectedClubLabel);
+  const biggestWinDetail = biggestWinCopy(summary, selectedClubLabel);
+  const biggestWinMetric = biggestWinMetricLine(summary);
   const nextAssignment = nextAssignmentCopy(nextBestAction, opportunity);
+  const opportunityPreview = previewSentence(opportunity.body, 128);
+  const nextAssignmentPreview = previewSentence(nextAssignment.body, 138);
+  const detailedSummary = normalizeSummarySentence(summary.summaryText);
   const scoreExplanation = Number.isFinite(summary.sessionScore)
     ? "Composite of contact efficiency, shot pattern, launch window, and curve-control data for the selected club. Missing metrics stay out of the score instead of being counted as zero."
     : "MAI Coach needs at least two captured performance categories before it can calculate a session score.";
@@ -9372,25 +9378,47 @@ function HomepageDashboardHero({
             <article className="session-summary-card session-result-card">
               <span>Session Result</span>
               <strong>{gradeValue}</strong>
-              <p>{Number.isFinite(summary.sessionScore) ? `${scoreValue}/100 transparent score for the selected club.` : "More measured data is needed before grading."}</p>
-              <details>
+              <p className="session-result-score">{Number.isFinite(summary.sessionScore) ? `${scoreValue} / 100` : "Score pending"}</p>
+              <p>
+                {selectedClubShots.length
+                  ? `Based on ${selectedClubShots.length} ${selectedClubLabel} ${selectedClubShots.length === 1 ? "shot" : "shots"}.`
+                  : "More measured data is needed before grading."}
+              </p>
+              <details className="session-summary-disclosure">
                 <summary>Why this result?</summary>
-                <p>{scoreExplanation}</p>
+                <p>This score reflects carry consistency, contact quality, and dispersion from this session. {scoreExplanation}</p>
               </details>
             </article>
             <article className="session-summary-card">
               <span>Biggest Win</span>
-              <strong>{biggestWinCopy(summary, selectedClubLabel)}</strong>
+              <strong>{biggestWinTitle}</strong>
+              <p>{biggestWinMetric}</p>
+              <details className="session-summary-disclosure">
+                <summary>View details</summary>
+                <p>{biggestWinDetail}</p>
+              </details>
             </article>
             <article className={cls("session-summary-card", opportunity.tone)}>
               <span>Biggest Opportunity</span>
               <strong>{opportunity.title}</strong>
-              <p>{opportunity.body}</p>
+              <p>{opportunityPreview}</p>
+              {opportunity.body !== opportunityPreview && (
+                <details className="session-summary-disclosure">
+                  <summary>Why this matters</summary>
+                  <p>{opportunity.body}</p>
+                </details>
+              )}
             </article>
             <article className="session-summary-card next-assignment">
               <span>Next Assignment</span>
               <strong>{nextAssignment.title}</strong>
-              <p>{nextAssignment.body}</p>
+              <p>{nextAssignmentPreview}</p>
+              {nextAssignment.body !== nextAssignmentPreview && (
+                <details className="session-summary-disclosure">
+                  <summary>View details</summary>
+                  <p>{nextAssignment.body}</p>
+                </details>
+              )}
               <button className="primary-action" onClick={startPractice} type="button">
                 Start Practice
               </button>
@@ -9398,8 +9426,8 @@ function HomepageDashboardHero({
           </div>
 
           <div className="home-detail-heading">
-            <p className="eyebrow">Detailed statistics</p>
-            <span>{summary.summaryText}</span>
+            <p className="eyebrow">Detailed Statistics</p>
+            <span>{detailedSummary}</span>
           </div>
           <div className="home-result-grid">
             <DashboardResultCard
@@ -9501,6 +9529,26 @@ function biggestWinCopy(summary: DashboardSummary, selectedClubLabel: string) {
   return "You have enough saved shots to start building a repeatable baseline.";
 }
 
+function biggestWinHeadline(summary: DashboardSummary, selectedClubLabel: string) {
+  if (summary.contactTone === "good" && Number.isFinite(summary.contact)) {
+    return "Playable Contact Efficiency";
+  }
+  if (Number.isFinite(summary.carry)) {
+    return `${selectedClubLabel} Carry Baseline`;
+  }
+  return "Baseline Started";
+}
+
+function biggestWinMetricLine(summary: DashboardSummary) {
+  if (summary.contactTone === "good" && Number.isFinite(summary.contact)) {
+    return `Smash factor: ${summary.contact.toFixed(2)}`;
+  }
+  if (Number.isFinite(summary.carry)) {
+    return `Average carry: ${dashboardMetricValue(summary.carry, "yd")}`;
+  }
+  return "Saved shots are ready for comparison.";
+}
+
 function nextAssignmentCopy(nextBestAction: NextBestAction | null, opportunity: DashboardOpportunity) {
   if (nextBestAction) {
     return {
@@ -9514,6 +9562,29 @@ function nextAssignmentCopy(nextBestAction: NextBestAction | null, opportunity: 
     button: opportunity.action,
     title: opportunity.title,
   };
+}
+
+function previewSentence(text: string, maxLength: number) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) return normalized;
+  const sentenceEnd = normalized.search(/[.!?]\s/);
+  if (sentenceEnd > 24 && sentenceEnd + 1 <= maxLength) {
+    return normalized.slice(0, sentenceEnd + 1);
+  }
+  const slice = normalized.slice(0, maxLength + 1);
+  const lastSpace = slice.lastIndexOf(" ");
+  return `${slice.slice(0, lastSpace > 48 ? lastSpace : maxLength).trim()}...`;
+}
+
+function normalizeSummarySentence(text: string) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized || normalized.length <= 8 || normalized !== normalized.toUpperCase()) return normalized;
+  return normalized
+    .toLowerCase()
+    .replace(/(^|[.!?]\s+)([a-z])/g, (match) => match.toUpperCase())
+    .replace(/\bmai\b/gi, "MAI")
+    .replace(/\bai\b/gi, "AI")
+    .replace(/\bna\b/gi, "NA");
 }
 
 function DashboardHeroVisual({ shots }: { shots: Shot[] }) {

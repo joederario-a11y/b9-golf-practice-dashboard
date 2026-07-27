@@ -200,5 +200,5 @@ test("member dashboard presents mission and session-result hierarchy before deta
   assert.match(pageSource, /Biggest Opportunity/);
   assert.match(pageSource, /Next Assignment/);
   assert.match(pageSource, /Why this result\\?/);
-  assert.ok(pageSource.indexOf("Session Result") < pageSource.indexOf("Detailed statistics"));
+  assert.ok(pageSource.indexOf("Session Result") < pageSource.indexOf("Detailed Statistics"));
 });
