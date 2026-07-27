@@ -78,7 +78,8 @@ test("lesson and dashboard source expose post-upload session linking and mission
   assert.match(pageSource, /Add your session data/);
   assert.match(pageSource, /LessonSessionDataModal/);
   assert.match(pageSource, /MemberDashboardMission/);
-  assert.match(pageSource, /Coach Priority \/ Today's Assignment/);
+  assert.match(pageSource, /Today's Priority/);
+  assert.match(pageSource, /Coach Priority/);
   assert.match(pageSource, /CoachedStudentDashboardPriority/);
   assert.match(pageSource, /Coach Feedback/);
   assert.match(pageSource, /Practice Next/);

@@ -160,3 +160,16 @@ test("dashboard and practice surfaces use the shared next-best-action policy", a
   assert.match(pageSource, /Coach-first when a Coach exists/);
   assert.doesNotMatch(pageSource, /coachedPriority/);
 });
+
+test("member dashboard presents mission and session-result hierarchy before detailed stats", async () => {
+  const pageSource = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+
+  assert.match(pageSource, /Today's Mission/);
+  assert.match(pageSource, /Today's Priority/);
+  assert.match(pageSource, /Session Result/);
+  assert.match(pageSource, /Biggest Win/);
+  assert.match(pageSource, /Biggest Opportunity/);
+  assert.match(pageSource, /Next Assignment/);
+  assert.match(pageSource, /Why this result\\?/);
+  assert.ok(pageSource.indexOf("Session Result") < pageSource.indexOf("Detailed statistics"));
+});

@@ -9,6 +9,7 @@ import {
   OPENAI_CONFIGURATION_ERROR_CODES,
   getOpenAIConfigurationIssue as getOpenAIConfigurationIssueForRuntime,
 } from "@/lib/openai-config-policy.mjs";
+import { SEVEN_IRON_PRECISION_TEMPLATE } from "@/lib/challenge-policy.mjs";
 
 export type UserRole = "admin" | "coach" | "member";
 
@@ -501,6 +502,97 @@ export async function ensurePracticeActivitySchema(database = getRequiredDatabas
        WHERE status IN ('generated', 'in_progress')`,
     ),
   ]);
+}
+
+export async function ensureChallengeSchema(database = getRequiredDatabase()) {
+  await database.batch([
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS challenge_templates (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        challenge_type TEXT NOT NULL
+          CHECK (challenge_type IN ('carry_window', 'offline_window', 'combined_precision')),
+        club TEXT,
+        required_shot_count INTEGER NOT NULL,
+        success_shot_count INTEGER NOT NULL,
+        criteria_json TEXT NOT NULL DEFAULT '{}',
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`,
+    ),
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS member_challenges (
+        id TEXT PRIMARY KEY,
+        member_id TEXT NOT NULL,
+        template_id TEXT NOT NULL,
+        source TEXT NOT NULL
+          CHECK (source IN ('coach', 'coach_approved_ai', 'mai')),
+        status TEXT NOT NULL DEFAULT 'assigned'
+          CHECK (status IN ('assigned', 'active', 'completed', 'failed', 'expired', 'cancelled')),
+        current_success_count INTEGER NOT NULL DEFAULT 0,
+        required_success_count INTEGER NOT NULL,
+        assigned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        started_at TEXT,
+        completed_at TEXT,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (member_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (template_id) REFERENCES challenge_templates(id) ON DELETE CASCADE
+      )`,
+    ),
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS challenge_attempts (
+        id TEXT PRIMARY KEY,
+        member_challenge_id TEXT NOT NULL,
+        session_id TEXT,
+        shot_ids_json TEXT NOT NULL DEFAULT '[]',
+        result_json TEXT NOT NULL DEFAULT '{}',
+        started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        completed_at TEXT,
+        FOREIGN KEY (member_challenge_id) REFERENCES member_challenges(id) ON DELETE CASCADE
+      )`,
+    ),
+    database.prepare("CREATE INDEX IF NOT EXISTS challenge_templates_active_idx ON challenge_templates(active, challenge_type)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS member_challenges_member_status_idx ON member_challenges(member_id, status, assigned_at)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS member_challenges_template_idx ON member_challenges(template_id, status)"),
+    database.prepare("CREATE INDEX IF NOT EXISTS challenge_attempts_member_challenge_idx ON challenge_attempts(member_challenge_id, completed_at)"),
+    database.prepare(
+      `CREATE UNIQUE INDEX IF NOT EXISTS member_challenges_one_open_template_unique
+       ON member_challenges(member_id, template_id)
+       WHERE status IN ('assigned', 'active')`,
+    ),
+  ]);
+
+  await database
+    .prepare(
+      `INSERT INTO challenge_templates (
+        id, title, description, challenge_type, club, required_shot_count,
+        success_shot_count, criteria_json, active, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT(id) DO UPDATE SET
+        title = excluded.title,
+        description = excluded.description,
+        challenge_type = excluded.challenge_type,
+        club = excluded.club,
+        required_shot_count = excluded.required_shot_count,
+        success_shot_count = excluded.success_shot_count,
+        criteria_json = excluded.criteria_json,
+        active = excluded.active,
+        updated_at = CURRENT_TIMESTAMP`,
+    )
+    .bind(
+      SEVEN_IRON_PRECISION_TEMPLATE.id,
+      SEVEN_IRON_PRECISION_TEMPLATE.title,
+      SEVEN_IRON_PRECISION_TEMPLATE.description,
+      SEVEN_IRON_PRECISION_TEMPLATE.challengeType,
+      SEVEN_IRON_PRECISION_TEMPLATE.club,
+      SEVEN_IRON_PRECISION_TEMPLATE.requiredShotCount,
+      SEVEN_IRON_PRECISION_TEMPLATE.successShotCount,
+      SEVEN_IRON_PRECISION_TEMPLATE.criteriaJson,
+      SEVEN_IRON_PRECISION_TEMPLATE.active ? 1 : 0,
+    )
+    .run();
 }
 
 export async function ensureCoachFeedbackSchema(database = getRequiredDatabase()) {
@@ -1227,6 +1319,7 @@ export async function ensurePlatformSchema(database = getRequiredDatabase()) {
   ]);
   await ensureVideoAiProcessingSchema(database);
   await ensurePracticeActivitySchema(database);
+  await ensureChallengeSchema(database);
   await ensureVideoAnnotationSchema(database);
 }
 

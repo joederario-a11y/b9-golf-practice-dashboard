@@ -91,6 +91,10 @@ import {
   getMemberExperienceMode,
   getMemberNextBestAction,
 } from "@/lib/member-next-action-policy.mjs";
+import {
+  SEVEN_IRON_PRECISION_TEMPLATE,
+  parseChallengeCriteria,
+} from "@/lib/challenge-policy.mjs";
 
 type Tab = "dashboard" | "sessions" | "clubs" | "videos" | "coach" | "admin" | "practice" | "import";
 type AccountMode = "pending" | "user" | "guest";
@@ -1077,6 +1081,35 @@ type PracticeActivity = {
     };
     createdAt: string;
   } | null;
+};
+
+type MemberChallengeStatus = "assigned" | "active" | "completed" | "failed" | "expired" | "cancelled";
+
+type ChallengeApiState = {
+  attempt?: {
+    completedAt?: string | null;
+    id: string;
+    result?: {
+      currentSuccessCount?: number;
+      measuredShotCount?: number;
+      requiredSuccessCount?: number;
+      sessionId?: string | null;
+      status?: MemberChallengeStatus;
+      totalClubShots?: number;
+      unavailableShotCount?: number;
+      unqualifiedMeasuredShotCount?: number;
+    };
+    sessionId?: string | null;
+    shotIds?: string[];
+    startedAt?: string;
+  } | null;
+  challenge?: {
+    currentSuccessCount: number;
+    id: string;
+    requiredSuccessCount: number;
+    status: MemberChallengeStatus;
+  } | null;
+  template?: typeof SEVEN_IRON_PRECISION_TEMPLATE;
 };
 
 type VideoEmailNotificationLog = {
@@ -8478,9 +8511,9 @@ function dashboardFirstName(user: AccountUser | null) {
 }
 
 function dashboardMissionKicker(mode: MemberExperienceMode, source?: NextActionSource) {
-  if (mode === "coach_led") return "Coach Priority / Today's Assignment";
+  if (mode === "coach_led") return "Today's Priority";
   if (mode === "hybrid") return source === "coach" || source === "coach_approved_ai" ? "Coach Priority" : "Supplemental MAI Mission";
-  return "Today's MAI Mission";
+  return "Today's Mission";
 }
 
 function dashboardModeCopy(mode: MemberExperienceMode, coaches: CoachSummary[]) {
@@ -8488,6 +8521,29 @@ function dashboardModeCopy(mode: MemberExperienceMode, coaches: CoachSummary[]) 
   if (mode === "coach_led") return `${name} is the lead voice today. MAI Coach keeps the data organized behind that direction.`;
   if (mode === "hybrid") return `Coach guidance leads. MAI Coach adds supporting observations from your saved sessions.`;
   return "MAI Coach is using your saved sessions and practice activity to choose the next focused step.";
+}
+
+function missionSourceLine(action: NextBestAction, coaches: CoachSummary[], currentActivity: PracticeActivity | null) {
+  if (action.source === "coach" || action.source === "coach_approved_ai") {
+    const coachName = currentActivity?.instructions?.coachConnection?.coachName || coaches[0]?.name;
+    return coachName ? `Assigned by ${coachName}` : "Assigned by your Coach";
+  }
+  if (action.source === "mai") return "Selected from your saved MAI Coach data";
+  return "System setup step";
+}
+
+function missionWorkloadLine(action: NextBestAction, currentActivity: PracticeActivity | null) {
+  const shots = Number.isFinite(Number(currentActivity?.attemptCount))
+    ? `${Number(currentActivity?.attemptCount)} shots`
+    : action.type === "challenge"
+      ? "5 qualifying shots"
+      : "";
+  const minutes = Number.isFinite(Number(action.estimatedMinutes))
+    ? `Approximately ${Number(action.estimatedMinutes)} minutes`
+    : Number.isFinite(Number(currentActivity?.durationMinutes))
+      ? `Approximately ${Number(currentActivity?.durationMinutes)} minutes`
+      : "";
+  return [shots, minutes].filter(Boolean).join(" · ");
 }
 
 function practiceStatusLabel(activity: PracticeActivity) {
@@ -8561,6 +8617,17 @@ function dashboardMissionContextItems({
   return items.slice(0, 6);
 }
 
+function normalizedClubKey(value: string) {
+  return value.toLowerCase().replace(/[\s_-]+/g, "");
+}
+
+function latestSessionForSevenIronPrecision(sessions: Session[]) {
+  return sessions
+    .filter((session) => session.shots.some((shot) => normalizedClubKey(shot.club) === "7iron"))
+    .slice()
+    .sort((left, right) => new Date(right.date).getTime() - new Date(left.date).getTime())[0] ?? null;
+}
+
 function MemberDashboardMission({
   accountUser,
   action,
@@ -8602,7 +8669,9 @@ function MemberDashboardMission({
           <div>
             <span>{dashboardMissionKicker(experienceMode, action.source)}</span>
             <h3>{action.title}</h3>
+            <strong>{missionSourceLine(action, coaches, currentActivity)}</strong>
             <p>{action.description}</p>
+            {missionWorkloadLine(action, currentActivity) && <small>{missionWorkloadLine(action, currentActivity)}</small>}
           </div>
           <button className="primary-action" onClick={() => onOpen(action)} type="button">
             {action.primaryActionLabel}
@@ -8795,6 +8864,8 @@ function DashboardView({
       />
 
       <HomepageDashboardHero
+        nextBestAction={nextBestAction}
+        onNextBestAction={onNextBestAction}
         opportunity={dashboardOpportunity}
         selectedClubLabel={selectedClubLabel}
         selectedClubShots={selectedClubShots}
@@ -8973,6 +9044,8 @@ function TimeframeEmptyState({
 }
 
 function HomepageDashboardHero({
+  nextBestAction,
+  onNextBestAction,
   opportunity,
   selectedClubLabel,
   selectedClubShots,
@@ -8980,6 +9053,8 @@ function HomepageDashboardHero({
   setActiveTab,
   summary,
 }: {
+  nextBestAction: NextBestAction | null;
+  onNextBestAction: (action: NextBestAction) => void;
   opportunity: DashboardOpportunity;
   selectedClubLabel: string;
   selectedClubShots: Shot[];
@@ -8990,50 +9065,83 @@ function HomepageDashboardHero({
   const carryValue = dashboardMetricValue(summary.carry, "yd");
   const dispersionValue = Number.isFinite(summary.dispersionWidth) ? `${summary.dispersionWidth} yd` : "NA";
   const scoreValue = Number.isFinite(summary.sessionScore) ? Math.round(summary.sessionScore).toString() : "NA";
+  const gradeValue = dashboardSessionGrade(summary.sessionScore);
+  const nextAssignment = nextAssignmentCopy(nextBestAction, opportunity);
   const scoreExplanation = Number.isFinite(summary.sessionScore)
     ? "Composite of contact efficiency, shot pattern, launch window, and curve-control data for the selected club. Missing metrics stay out of the score instead of being counted as zero."
     : "MAI Coach needs at least two captured performance categories before it can calculate a session score.";
+  const startPractice = () => {
+    if (nextBestAction) {
+      onNextBestAction(nextBestAction);
+    } else {
+      setActiveTab("practice");
+    }
+  };
 
   return (
     <section className="home-dashboard-shell">
       <div className="home-dashboard-header">
         <div>
-          <p className="eyebrow">Your Performance</p>
-          <h2>Your {selectedClubLabel}</h2>
+          <p className="eyebrow">Performance Review</p>
+          <h2>{selectedClubLabel} session summary</h2>
           <span>
             {selectedClubShots.length} {selectedClubShots.length === 1 ? "shot" : "shots"} analyzed
             {selectedSession.title ? ` from ${selectedSession.title}` : ""}
           </span>
-          <p>{summary.summaryText}</p>
+          <p>Start with the result, then the reason, then the next assignment. Detailed stats and shot data stay available below.</p>
         </div>
         <details className="session-score-details">
           <summary className="session-score-ring" aria-label={`Session score ${scoreValue} out of 100. Open to see how it is calculated.`}>
-            <strong>{scoreValue}</strong>
-            <span>Session Score</span>
+            <strong>{gradeValue}</strong>
+            <span>Session Result</span>
           </summary>
           <div className="session-score-popover">
-            <strong>How this score is built</strong>
+            <strong>Why this result?</strong>
             <p>{scoreExplanation}</p>
             <dl>
+              <div><dt>Score</dt><dd>{scoreValue}/100</dd></div>
               <div><dt>Carry</dt><dd>{carryValue}</dd></div>
               <div><dt>Spread</dt><dd>{dispersionValue}</dd></div>
-              <div><dt>Contact</dt><dd>{summary.contactLabel}</dd></div>
             </dl>
           </div>
         </details>
       </div>
 
       <div className="home-dashboard-main">
-        <article className="home-visual-card">
-          <div className="home-visual-copy">
-            <span>Shot Summary</span>
-            <strong>{selectedClubLabel} pattern</strong>
-            <p>Distance grid and left-right finish pattern for the selected club.</p>
-          </div>
-          <DashboardHeroVisual shots={selectedClubShots.length ? selectedClubShots : selectedSession.shots} />
-        </article>
-
         <div className="home-results-stack">
+          <div className="session-summary-hierarchy">
+            <article className="session-summary-card session-result-card">
+              <span>Session Result</span>
+              <strong>{gradeValue}</strong>
+              <p>{Number.isFinite(summary.sessionScore) ? `${scoreValue}/100 transparent score for the selected club.` : "More measured data is needed before grading."}</p>
+              <details>
+                <summary>Why this result?</summary>
+                <p>{scoreExplanation}</p>
+              </details>
+            </article>
+            <article className="session-summary-card">
+              <span>Biggest Win</span>
+              <strong>{biggestWinCopy(summary, selectedClubLabel)}</strong>
+            </article>
+            <article className={cls("session-summary-card", opportunity.tone)}>
+              <span>Biggest Opportunity</span>
+              <strong>{opportunity.title}</strong>
+              <p>{opportunity.body}</p>
+            </article>
+            <article className="session-summary-card next-assignment">
+              <span>Next Assignment</span>
+              <strong>{nextAssignment.title}</strong>
+              <p>{nextAssignment.body}</p>
+              <button className="primary-action" onClick={startPractice} type="button">
+                Start Practice
+              </button>
+            </article>
+          </div>
+
+          <div className="home-detail-heading">
+            <p className="eyebrow">Detailed statistics</p>
+            <span>{summary.summaryText}</span>
+          </div>
           <div className="home-result-grid">
             <DashboardResultCard
               label="Average Carry"
@@ -9054,9 +9162,16 @@ function HomepageDashboardHero({
               value={dispersionValue}
             />
           </div>
-
-          <DashboardOpportunityPanel opportunity={opportunity} setActiveTab={setActiveTab} />
         </div>
+
+        <article className="home-visual-card">
+          <div className="home-visual-copy">
+            <span>Shot dispersion and full data</span>
+            <strong>{selectedClubLabel} pattern</strong>
+            <p>Distance grid and left-right finish pattern for the selected club.</p>
+          </div>
+          <DashboardHeroVisual shots={selectedClubShots.length ? selectedClubShots : selectedSession.shots} />
+        </article>
       </div>
     </section>
   );
@@ -9102,6 +9217,44 @@ function DashboardOpportunityPanel({
       </button>
     </article>
   );
+}
+
+function dashboardSessionGrade(score: number) {
+  if (!Number.isFinite(score)) return "NA";
+  if (score >= 93) return "A";
+  if (score >= 87) return "B+";
+  if (score >= 83) return "B";
+  if (score >= 80) return "B-";
+  if (score >= 77) return "C+";
+  if (score >= 73) return "C";
+  if (score >= 70) return "C-";
+  if (score >= 60) return "D";
+  return "D";
+}
+
+function biggestWinCopy(summary: DashboardSummary, selectedClubLabel: string) {
+  if (summary.contactTone === "good" && Number.isFinite(summary.contact)) {
+    return `Contact efficiency is playable at ${summary.contact.toFixed(2)} smash.`;
+  }
+  if (Number.isFinite(summary.carry)) {
+    return `${selectedClubLabel} carry has a usable baseline at ${dashboardMetricValue(summary.carry, "yd")}.`;
+  }
+  return "You have enough saved shots to start building a repeatable baseline.";
+}
+
+function nextAssignmentCopy(nextBestAction: NextBestAction | null, opportunity: DashboardOpportunity) {
+  if (nextBestAction) {
+    return {
+      body: nextBestAction.description,
+      button: nextBestAction.primaryActionLabel,
+      title: nextBestAction.title,
+    };
+  }
+  return {
+    body: opportunity.body,
+    button: opportunity.action,
+    title: opportunity.title,
+  };
 }
 
 function DashboardHeroVisual({ shots }: { shots: Shot[] }) {
@@ -13727,7 +13880,9 @@ function PracticeView({
   const [selectedFocus, setSelectedFocus] = useState(defaultFocus);
   const [activities, setActivities] = useState<PracticeActivity[]>([]);
   const [currentActivity, setCurrentActivity] = useState<PracticeActivity | null>(null);
+  const [challengeState, setChallengeState] = useState<ChallengeApiState | null>(null);
   const [loadingAction, setLoadingAction] = useState<"" | PracticeActivityType | "load" | "update">("");
+  const [challengeLoading, setChallengeLoading] = useState(false);
   const [practiceMessage, setPracticeMessage] = useState("");
   const [showFocusChoices, setShowFocusChoices] = useState(false);
   const [showResultEntry, setShowResultEntry] = useState(false);
@@ -13742,6 +13897,12 @@ function PracticeView({
   const coachConnection = currentActivity?.instructions.coachConnection;
   const hasSessionData = sessions.some((session) => session.shots.length > 0);
   const latestSession = sessions.find((session) => session.shots.length > 0);
+  const sevenIronChallengeSession = latestSessionForSevenIronPrecision(sessions);
+  const sevenIronCriteria = parseChallengeCriteria(SEVEN_IRON_PRECISION_TEMPLATE.criteriaJson) as {
+    carryMax?: number;
+    carryMin?: number;
+    offlineMaxAbs?: number;
+  };
   const recentActivity = activities[0];
   const lastResult = activities.find((activity) => activity.latestResult)?.latestResult ?? null;
   const improvementTrend = lastResult
@@ -13791,6 +13952,57 @@ function PracticeView({
       active = false;
     };
   }, [accountUser]);
+
+  useEffect(() => {
+    if (!accountUser) {
+      setChallengeState(null);
+      return;
+    }
+    let active = true;
+    fetch("/api/challenges")
+      .then((response) => readApiJson<ChallengeApiState>(response, "Challenge data is unavailable."))
+      .then((payload) => {
+        if (active) setChallengeState(payload);
+      })
+      .catch(() => {
+        if (active) setChallengeState(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [accountUser]);
+
+  async function evaluateSevenIronPrecision() {
+    if (!accountUser) {
+      setPracticeMessage("Sign in to score a measured MAI Coach challenge.");
+      return;
+    }
+    if (!sevenIronChallengeSession) {
+      setPracticeMessage("Upload or save a measured 7-Iron session before scoring this challenge.");
+      return;
+    }
+    setChallengeLoading(true);
+    setPracticeMessage("Scoring 7-Iron Precision from saved shot data.");
+    try {
+      const response = await fetch("/api/challenges", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: sevenIronChallengeSession.id }),
+      });
+      const payload = await readApiJson<ChallengeApiState>(response, "Challenge could not be scored.");
+      setChallengeState(payload);
+      const result = payload.attempt?.result;
+      if (payload.challenge?.status === "completed" || result?.status === "completed") {
+        setPracticeMessage("7-Iron Precision completed from measured session data.");
+      } else {
+        setPracticeMessage("Challenge scored. Keep going until 5 measured shots qualify.");
+      }
+    } catch (error) {
+      setPracticeMessage(error instanceof Error ? error.message : "Challenge could not be scored.");
+    } finally {
+      setChallengeLoading(false);
+    }
+  }
 
   async function requestActivity(activityType: PracticeActivityType, options: { replace?: boolean } = {}) {
     if (!accountUser) {
@@ -13940,6 +14152,46 @@ function PracticeView({
       </div>
 
       {practiceMessage && <div className="practice-status-message" role="status">{practiceMessage}</div>}
+
+      <section className="panel practice-challenge-panel">
+        <div className="practice-challenge-copy">
+          <PanelHeader
+            kicker="Challenge engine"
+            title={SEVEN_IRON_PRECISION_TEMPLATE.title}
+            meta="Measured 7-Iron data only"
+          />
+          <p>{SEVEN_IRON_PRECISION_TEMPLATE.description}</p>
+          <dl className="practice-challenge-criteria">
+            <div><dt>Qualifying shots</dt><dd>{SEVEN_IRON_PRECISION_TEMPLATE.successShotCount}</dd></div>
+            <div><dt>Carry window</dt><dd>{sevenIronCriteria.carryMin ?? "NA"}-{sevenIronCriteria.carryMax ?? "NA"} yd</dd></div>
+            <div><dt>Offline window</dt><dd>Inside +/-{sevenIronCriteria.offlineMaxAbs ?? "NA"} yd</dd></div>
+          </dl>
+          <small>Shots missing carry or offline are marked unavailable. MAI Coach will not estimate whether they qualified.</small>
+        </div>
+        <div className="practice-challenge-score">
+          <span>Current result</span>
+          <strong>
+            {challengeState?.challenge
+              ? `${challengeState.challenge.currentSuccessCount}/${challengeState.challenge.requiredSuccessCount}`
+              : "Not scored"}
+          </strong>
+          <p>
+            {challengeState?.attempt?.result
+              ? `${challengeState.attempt.result.measuredShotCount ?? 0} measured shots · ${challengeState.attempt.result.unavailableShotCount ?? 0} unavailable`
+              : sevenIronChallengeSession
+                ? `Ready to score ${sevenIronChallengeSession.title}`
+                : "No saved 7-Iron session found."}
+          </p>
+          <button
+            className="primary-action"
+            disabled={challengeLoading || !accountUser || !sevenIronChallengeSession}
+            onClick={() => void evaluateSevenIronPrecision()}
+            type="button"
+          >
+            {challengeLoading ? "Scoring..." : "Score Latest 7-Iron Session"}
+          </button>
+        </div>
+      </section>
 
       {!accountUser ? (
         <div className="panel practice-empty-panel">

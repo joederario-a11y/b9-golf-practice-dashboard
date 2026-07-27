@@ -64,7 +64,7 @@ test("canonical club selector is reused across import, session edit, lesson, and
 test("dashboard reduces repeated flags and explains session score", () => {
   assert.match(pageSource, /function consolidateInsightsByIssue/);
   assert.match(pageSource, /are showing the same pattern/);
-  assert.match(pageSource, /How this score is built/);
+  assert.match(pageSource, /Why this result\?/);
   assert.match(pageSource, /Missing metrics stay out of the score instead of being counted as zero/);
   assert.match(cssSource, /\.session-score-popover/);
 });

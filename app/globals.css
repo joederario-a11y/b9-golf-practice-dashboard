@@ -1378,6 +1378,87 @@ button {
   gap: 14px;
 }
 
+.session-summary-hierarchy {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.42fr) repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.session-summary-card {
+  display: grid;
+  gap: 8px;
+  min-height: 168px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(11, 21, 17, 0.84);
+  padding: 16px;
+}
+
+.session-summary-card span,
+.home-detail-heading span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.session-summary-card strong {
+  color: var(--ink);
+  font-size: 18px;
+  font-weight: 900;
+  line-height: 1.16;
+}
+
+.session-result-card strong {
+  font-size: clamp(44px, 6vw, 76px);
+  line-height: 0.9;
+}
+
+.session-summary-card p,
+.session-summary-card details {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.session-summary-card summary {
+  color: var(--green);
+  cursor: pointer;
+  font-weight: 900;
+}
+
+.session-summary-card.watch {
+  border-color: rgba(250, 204, 21, 0.28);
+  background: linear-gradient(145deg, rgba(250, 204, 21, 0.11), rgba(11, 21, 17, 0.84) 72%);
+}
+
+.session-summary-card.needs-work {
+  border-color: rgba(239, 68, 68, 0.3);
+  background: linear-gradient(145deg, rgba(239, 68, 68, 0.12), rgba(11, 21, 17, 0.84) 72%);
+}
+
+.session-summary-card.next-assignment {
+  border-color: rgba(150, 203, 57, 0.34);
+}
+
+.session-summary-card.next-assignment .primary-action {
+  align-self: end;
+  justify-self: start;
+}
+
+.home-detail-heading {
+  display: grid;
+  gap: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 14px;
+}
+
+.home-detail-heading p {
+  margin: 0;
+}
+
 .home-result-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -5959,6 +6040,23 @@ button:disabled {
   line-height: 1.45;
 }
 
+.member-mission-primary strong,
+.member-mission-primary small {
+  display: block;
+  margin-top: 8px;
+}
+
+.member-mission-primary strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.member-mission-primary small {
+  color: var(--muted);
+  font-weight: 850;
+}
+
 .member-mission-context {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -9868,6 +9966,10 @@ input::file-selector-button {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .session-summary-hierarchy {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .dashboard-metric-detail.has-video {
     grid-template-columns: 1fr;
   }
@@ -9916,6 +10018,7 @@ input::file-selector-button {
   }
 
   .home-result-grid,
+  .session-summary-hierarchy,
   .home-opportunity-card,
   .metric-education-card-grid {
     grid-template-columns: 1fr;
@@ -10678,6 +10781,65 @@ input::file-selector-button {
   line-height: 1.45;
 }
 
+.practice-challenge-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.32fr);
+  gap: 18px;
+  align-items: stretch;
+  border-color: rgba(150, 203, 57, 0.3);
+}
+
+.practice-challenge-copy {
+  display: grid;
+  gap: 12px;
+}
+
+.practice-challenge-copy p,
+.practice-challenge-copy small,
+.practice-challenge-score p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.practice-challenge-criteria {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.practice-challenge-criteria div,
+.practice-challenge-score {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+  padding: 14px;
+}
+
+.practice-challenge-criteria dt,
+.practice-challenge-score span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 950;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.practice-challenge-criteria dd,
+.practice-challenge-score strong {
+  margin: 0;
+  color: var(--ink);
+  font-weight: 950;
+}
+
+.practice-challenge-score strong {
+  font-size: clamp(34px, 4vw, 56px);
+  line-height: 0.95;
+}
+
 .practice-coach-note {
   display: grid;
   gap: 6px;
@@ -10980,6 +11142,7 @@ input::file-selector-button {
 
 @media (max-width: 1020px) {
   .practice-hero,
+  .practice-challenge-panel,
   .practice-current-grid {
     grid-template-columns: 1fr;
   }
@@ -10993,6 +11156,7 @@ input::file-selector-button {
 @media (max-width: 760px) {
   .practice-activity-meta,
   .practice-activity-actions,
+  .practice-challenge-criteria,
   .member-mission-context,
   .practice-progress-strip {
     grid-template-columns: 1fr;
