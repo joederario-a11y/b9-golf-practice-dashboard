@@ -5684,6 +5684,75 @@ button:disabled {
   gap: 8px;
 }
 
+.practice-next-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.practice-next-detail-grid div {
+  display: grid;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 10px;
+}
+
+.practice-next-detail-grid span,
+.student-follow-up-form label > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.practice-next-detail-grid p,
+.student-follow-up-panel p {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.student-follow-up-panel {
+  display: grid;
+  gap: 14px;
+  max-width: 1280px;
+  justify-self: center;
+  width: 100%;
+}
+
+.student-follow-up-form {
+  display: grid;
+  gap: 12px;
+}
+
+.student-follow-up-form label {
+  display: grid;
+  gap: 8px;
+}
+
+.student-follow-up-form input[type="file"],
+.student-follow-up-form textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(3, 9, 12, 0.76);
+  color: var(--text);
+  font: inherit;
+  padding: 12px;
+}
+
+.student-follow-up-form textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+
+.student-follow-up-form small {
+  color: var(--muted);
+  font-weight: 800;
+}
+
 .lesson-secondary-disclosure {
   max-width: 1280px;
   justify-self: center;
@@ -7052,6 +7121,58 @@ button:disabled {
   color: var(--green);
 }
 
+.coach-upload-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.coach-guided-upload-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.coach-guided-upload-steps li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+  color: var(--muted);
+  padding: 10px;
+}
+
+.coach-guided-upload-steps li span {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ink);
+  font-weight: 950;
+}
+
+.coach-guided-upload-steps li.current,
+.coach-guided-upload-steps li.complete {
+  border-color: color-mix(in srgb, var(--green) 58%, var(--line));
+  background: color-mix(in srgb, var(--green) 12%, var(--field));
+  color: var(--ink);
+}
+
+.coach-guided-upload-steps li.current span,
+.coach-guided-upload-steps li.complete span {
+  background: var(--green);
+  color: #03100a;
+}
+
 .coach-simple-empty {
   display: grid;
   justify-items: start;
@@ -7074,6 +7195,15 @@ button:disabled {
   line-height: 1.5;
 }
 
+.coach-simple-empty.compact {
+  padding: 14px;
+  box-shadow: none;
+}
+
+.coach-simple-empty.compact strong {
+  font-size: 16px;
+}
+
 .coach-simple-upload-grid {
   display: grid;
   grid-template-columns: minmax(280px, 0.9fr) minmax(320px, 1.1fr);
@@ -7087,6 +7217,33 @@ button:disabled {
   display: grid;
   gap: 10px;
   min-width: 0;
+}
+
+.coach-guided-step-hidden {
+  display: none;
+}
+
+.coach-guided-step-copy {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.coach-guided-step-copy h4 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 20px;
+}
+
+.coach-guided-step-copy p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.coach-guided-step-copy > strong {
+  color: var(--green);
+  font-size: 13px;
 }
 
 .coach-member-results.simple {
@@ -7145,6 +7302,39 @@ button:disabled {
   justify-self: start;
 }
 
+.coach-video-selection-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  gap: 10px;
+  align-items: stretch;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+  padding: 10px;
+}
+
+.coach-video-selection-summary div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.coach-video-selection-summary span,
+.coach-mai-option-list span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.coach-video-selection-summary strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .selected-member-confirmation.simple {
   grid-template-columns: 42px minmax(0, 1fr) minmax(170px, 0.6fr) auto;
   border: 1px solid var(--line);
@@ -7172,6 +7362,69 @@ button:disabled {
 
 .coach-video-form-grid.simple {
   padding: 14px;
+}
+
+.coach-mai-assistance-panel {
+  display: grid;
+  gap: 14px;
+  border: 1px solid color-mix(in srgb, var(--green) 38%, var(--line));
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--green) 10%, transparent), transparent 52%),
+    var(--field);
+  padding: 14px;
+}
+
+.coach-mai-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.coach-mai-choice {
+  display: grid;
+  gap: 6px;
+  min-height: 110px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  cursor: pointer;
+  padding: 14px;
+  text-align: left;
+}
+
+.coach-mai-choice.selected {
+  border-color: var(--green);
+  background: color-mix(in srgb, var(--green) 14%, rgba(255, 255, 255, 0.04));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--green) 20%, transparent);
+}
+
+.coach-mai-choice strong {
+  color: var(--ink);
+  font-size: 16px;
+}
+
+.coach-mai-choice span {
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.coach-mai-customize {
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.coach-mai-option-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 14px;
+}
+
+.coach-mai-option-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .coach-session-upload-fields {
@@ -8714,13 +8967,25 @@ button:disabled {
     grid-template-columns: 42px minmax(0, 1fr);
   }
 
-  .coach-simple-upload-grid {
-    grid-template-columns: 1fr;
-  }
+	  .coach-simple-upload-grid {
+	    grid-template-columns: 1fr;
+	  }
 
-  .coach-simple-upload-actions > span {
-    white-space: normal;
-  }
+	  .coach-guided-upload-steps,
+	  .coach-mai-choice-grid,
+	  .coach-mai-option-list,
+	  .coach-video-selection-summary,
+	  .practice-next-detail-grid {
+	    grid-template-columns: 1fr;
+	  }
+
+	  .coach-upload-heading-actions {
+	    justify-content: stretch;
+	  }
+
+	  .coach-simple-upload-actions > span {
+	    white-space: normal;
+	  }
 
   .coach-member-row > span:nth-child(3),
   .coach-member-row > span:nth-child(4) {

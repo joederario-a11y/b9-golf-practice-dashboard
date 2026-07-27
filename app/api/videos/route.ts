@@ -1105,6 +1105,44 @@ export async function PATCH(request: Request) {
       return Response.json({ video: updated ? await serializeSingleVideo(database, updated, identity.role) : null });
     }
 
+    if (payload.action === "studentFollowUp") {
+      if (identity.role !== "member" || identity.id !== video.member_id || video.publication_status !== "Published") {
+        return Response.json({ error: "Only the assigned Student can send a follow-up on a published lesson." }, { status: 403 });
+      }
+      const note = text(payload.note, 1200);
+      const hasVideo = payload.hasVideo === true;
+      const attachSessionData = payload.attachSessionData === true;
+      if (!note && !hasVideo && !attachSessionData) {
+        return Response.json({ error: "Add a note, video, or session data before sending a follow-up." }, { status: 400 });
+      }
+      const followUpId = crypto.randomUUID();
+      await recordActivity({
+        action: "student_follow_up_sent",
+        actor: identity,
+        database,
+        entityId: video.id,
+        entityType: "video",
+        memberId: video.member_id,
+        metadata: {
+          attachSessionData,
+          fileName: text(payload.fileName, 255) || null,
+          fileSize: typeof payload.fileSize === "number" ? Math.max(0, Math.round(payload.fileSize)) : null,
+          followUpId,
+          hasNote: Boolean(note),
+          hasVideo,
+          lessonTitle: video.title,
+        },
+        summary: `${identity.displayName} sent a follow-up for ${video.title}.`,
+        targetUserId: video.coach_id,
+      });
+      return Response.json({
+        followUp: {
+          id: followUpId,
+          summary: "Follow-up sent to Coach.",
+        },
+      });
+    }
+
     const assignedMemberIds = await getAssignedMemberIds(identity, database);
     if (!canManageVideo(identity, {
       memberId: video.member_id,

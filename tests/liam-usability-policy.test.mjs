@@ -61,8 +61,8 @@ test("coach lesson review uses sticky publish and full-width feedback workflow",
 });
 
 test("MAI visual suggestions expose include, dismiss, undo, and reduced-motion dismissal", () => {
-  assert.match(pageSource, /These suggestions are private until you include them in the lesson recap/);
-  assert.match(pageSource, /Include in Recap/);
+  assert.match(pageSource, /These suggestions are private until you include them in the lesson feedback/);
+  assert.match(pageSource, /Include in Feedback/);
   assert.match(pageSource, /Suggestion dismissed/);
   assert.match(pageSource, /restoreDismissedFinding/);
   assert.match(pageSource, /reviewFindingWithRollback\(finding, "dismissed"\)/);

@@ -6,6 +6,8 @@ import {
   canStartCoachLessonUpload,
   canAttachCoachSessionData,
   chooseLessonVideoCompressionPlan,
+  coachLessonMaiAssistanceSummary,
+  coachLessonUploadMode,
   coachVideoDeliveryStatusLabel,
   COACH_LESSON_UPLOAD_FACTS,
   coachLessonUploadStatusLabel,
@@ -17,6 +19,7 @@ import {
   shouldPrepareLessonVideoAudioSidecar,
   shouldPrepareLessonVideoCompression,
   shouldShowLessonUploadStallWarning,
+  studentFollowUpCanSubmit,
   validateLessonVideoAudioPreservation,
 } from "../lib/coach-video-upload-policy.mjs";
 
@@ -85,6 +88,26 @@ test("coach dashboard with members exposes one compact add action and one upload
   });
 });
 
+test("coach lesson upload mode separates first upload from returning quick upload", () => {
+  assert.equal(coachLessonUploadMode({ hasUploadedLesson: false }), "guided");
+  assert.equal(coachLessonUploadMode({ hasUploadedLesson: true }), "quick");
+});
+
+test("MAI assistance summary stays plain-language and only lists selected support", () => {
+  assert.equal(coachLessonMaiAssistanceSummary({ audio: true, visual: true, practice: true, sessionData: false }), "audio, swing review, and practice suggestion");
+  assert.equal(coachLessonMaiAssistanceSummary({ audio: false, visual: false, practice: false, sessionData: false }), "Off");
+  assert.equal(coachLessonMaiAssistanceSummary({ audio: true, sessionData: true }), "audio and session data");
+});
+
+test("student follow-up requires the assigned Student, a published lesson, and content", () => {
+  assert.equal(studentFollowUpCanSubmit({ isStudent: true, isPublished: true, note: "I tried the drill." }), true);
+  assert.equal(studentFollowUpCanSubmit({ isStudent: true, isPublished: true, hasVideo: true }), true);
+  assert.equal(studentFollowUpCanSubmit({ isStudent: true, isPublished: true, hasSessionData: true }), true);
+  assert.equal(studentFollowUpCanSubmit({ isStudent: false, isPublished: true, note: "Coach text" }), false);
+  assert.equal(studentFollowUpCanSubmit({ isStudent: true, isPublished: false, note: "Draft" }), false);
+  assert.equal(studentFollowUpCanSubmit({ isStudent: true, isPublished: true, note: "" }), false);
+});
+
 test("member-dependent coach tools stay visible but disabled until a member is selected", () => {
   const state = getCoachDashboardActionState({
     authenticated: true,
@@ -109,6 +132,37 @@ test("coach dashboard source has a single first-member card and upload panel ope
   assert.match(pageSource, /coach-first-member-card/);
   assert.match(pageSource, /setShowUploadPanel\(true\)/);
   assert.match(pageSource, /shouldRenderUploadPanel/);
+});
+
+test("coach lesson upload source includes guided first upload and returning quick upload paths", async () => {
+  const pageSource = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(pageSource, /Send your first lesson/);
+  assert.match(pageSource, /Who is this lesson for\?/);
+  assert.match(pageSource, /Add the lesson video/);
+  assert.match(pageSource, /Would you like MAI Coach to help prepare the lesson\?/);
+  assert.match(pageSource, /Yes — Prepare a Draft for Me/);
+  assert.match(pageSource, /No — I’ll Add the Feedback Myself/);
+  assert.match(pageSource, /You remain in control of everything the Student sees\./);
+  assert.match(pageSource, /Customize MAI Assistance/);
+  assert.match(pageSource, /Use Guided Upload/);
+  assert.match(pageSource, /MAI Assistance: On/);
+  assert.match(pageSource, /Upload Lesson/);
+  assert.match(pageSource, /Review Lesson/);
+  assert.match(pageSource, /Upload Another Lesson/);
+  assert.match(pageSource, /Return to Coach Dashboard/);
+});
+
+test("student lesson follow-up is member-only and connected to the lesson activity stream", async () => {
+  const pageSource = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const videoApiSource = await readFile(new URL("../app/api/videos/route.ts", import.meta.url), "utf8");
+  assert.match(pageSource, /Send Follow-Up to Coach/);
+  assert.match(pageSource, /Send an update to \$\{coachName\}/);
+  assert.match(pageSource, /sendStudentLessonFollowUp/);
+  assert.match(videoApiSource, /studentFollowUp/);
+  assert.match(videoApiSource, /identity\.role !== "member"/);
+  assert.match(videoApiSource, /video\.publication_status !== "Published"/);
+  assert.match(videoApiSource, /student_follow_up_sent/);
+  assert.match(videoApiSource, /targetUserId: video\.coach_id/);
 });
 
 test("coach upload status labels are plain language and never raw technical codes", () => {
