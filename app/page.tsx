@@ -87,6 +87,10 @@ import {
   isPlayablePublishedCoachLesson,
   selectLatestPlayableCoachLesson,
 } from "@/lib/student-dashboard-video-policy.mjs";
+import {
+  getMemberExperienceMode,
+  getMemberNextBestAction,
+} from "@/lib/member-next-action-policy.mjs";
 
 type Tab = "dashboard" | "sessions" | "clubs" | "videos" | "coach" | "admin" | "practice" | "import";
 type AccountMode = "pending" | "user" | "guest";
@@ -99,6 +103,30 @@ type PerformanceTimeframe = {
   preset: PerformanceTimeframePreset;
   startDate: string;
   endDate: string;
+};
+
+type MemberExperienceMode = "coach_led" | "independent" | "hybrid";
+type NextActionSource = "coach" | "coach_approved_ai" | "mai" | "system";
+type NextActionType =
+  | "coach_practice"
+  | "coach_lesson_review"
+  | "coach_feedback_review"
+  | "mai_practice"
+  | "challenge"
+  | "session_review"
+  | "upload_session"
+  | "upload_video"
+  | "complete_profile";
+type NextBestAction = {
+  type: NextActionType;
+  title: string;
+  description: string;
+  primaryActionLabel: string;
+  primaryActionUrl: string;
+  source: NextActionSource;
+  priority: number;
+  estimatedMinutes: number | null;
+  supportingRecordId: string | null;
 };
 
 type PasswordModalMode = "reset" | "setup" | "temporary";
@@ -4962,6 +4990,12 @@ async function readMyCoaches() {
   return (payload.coaches ?? []) as CoachSummary[];
 }
 
+async function readPracticePreview() {
+  const response = await fetch("/api/practice", { cache: "no-store" });
+  const payload = await readApiJson<{ activities?: PracticeActivity[]; currentActivity?: PracticeActivity | null }>(response, "Practice data is unavailable.");
+  return (payload.currentActivity ?? payload.activities?.[0] ?? null) as PracticeActivity | null;
+}
+
 async function postStaffAction<T extends Record<string, unknown> = Record<string, unknown>>(payload: Record<string, unknown>): Promise<T> {
   const response = await fetch("/api/admin", {
     method: "POST",
@@ -6714,6 +6748,7 @@ export default function Home() {
   const [accountUser, setAccountUser] = useState<AccountUser | null>(null);
   const [dashboardCoaches, setDashboardCoaches] = useState<CoachSummary[]>([]);
   const [dashboardVideos, setDashboardVideos] = useState<VideoLibraryItem[]>([]);
+  const [dashboardPracticeActivity, setDashboardPracticeActivity] = useState<PracticeActivity | null>(null);
   const [devAuthEnabled, setDevAuthEnabled] = useState(false);
   const [showDevBuildInfo, setShowDevBuildInfo] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
@@ -6789,6 +6824,47 @@ export default function Home() {
   );
   const visibleNavItems = navItemsForAccount(accountMode, accountUser);
   const activeNavItem = visibleNavItems.find((item) => item.id === activeTab) ?? NAV_ITEMS.find((item) => item.id === activeTab);
+  const memberExperienceMode = useMemo(() => getMemberExperienceMode({
+    coaches: accountMode === "user" && accountUser?.role === "member" ? dashboardCoaches : [],
+    currentActivity: dashboardPracticeActivity,
+    insights: performanceInsights,
+    practiceProfile,
+    sessions: performanceSessions.length ? performanceSessions : sessions,
+    videos: dashboardVideos,
+  }) as MemberExperienceMode, [
+    accountMode,
+    accountUser?.role,
+    dashboardCoaches,
+    dashboardPracticeActivity,
+    dashboardVideos,
+    performanceInsights,
+    performanceSessions,
+    practiceProfile,
+    sessions,
+  ]);
+  const memberNextBestAction = useMemo(() => {
+    if (accountMode === "user" && accountUser?.role !== "member") return null;
+    return getMemberNextBestAction({
+      coaches: accountMode === "user" && accountUser?.role === "member" ? dashboardCoaches : [],
+      currentActivity: dashboardPracticeActivity,
+      experienceMode: memberExperienceMode,
+      insights: performanceInsights,
+      practiceProfile,
+      sessions: performanceSessions.length ? performanceSessions : sessions,
+      videos: dashboardVideos,
+    }) as NextBestAction | null;
+  }, [
+    accountMode,
+    accountUser?.role,
+    dashboardCoaches,
+    dashboardPracticeActivity,
+    dashboardVideos,
+    memberExperienceMode,
+    performanceInsights,
+    performanceSessions,
+    practiceProfile,
+    sessions,
+  ]);
 
   useEffect(() => {
     setShowDevBuildInfo(window.location.hostname.includes("mai-coach-dev"));
@@ -6842,6 +6918,37 @@ export default function Home() {
     if (resolved.club !== ALL_SESSION_CLUBS) setSelectedClub(resolved.club);
     setActiveTab("sessions");
     writeSessionUrl(session.id, resolved, "push");
+  }
+
+  function openNextBestAction(action: NextBestAction) {
+    if (action.type === "complete_profile") {
+      setShowOnboarding(true);
+      setActiveTab("dashboard");
+      return;
+    }
+    if (typeof window === "undefined") {
+      setActiveTab(tabFromPathname(action.primaryActionUrl) ?? "dashboard");
+      return;
+    }
+
+    const url = new URL(action.primaryActionUrl, window.location.origin);
+    const nextTab = tabFromPathname(url.pathname) ?? tabFromValue(url.searchParams.get("tab")) ?? "dashboard";
+
+    if (nextTab === "sessions") {
+      const sessionId = url.searchParams.get("session") ?? action.supportingRecordId ?? selectedSessionId;
+      if (sessionId) {
+        openSessionView(sessionId, {});
+        return;
+      }
+    }
+
+    if (nextTab === "videos") {
+      setRequestedVideoId(url.searchParams.get("video"));
+      setVideoLibraryResetKey((key) => key + 1);
+    }
+
+    setActiveTab(nextTab);
+    window.history.pushState(null, "", `${url.pathname}${url.search}${url.hash}`);
   }
 
   useEffect(() => {
@@ -7002,20 +7109,27 @@ export default function Home() {
     if (accountMode !== "user" || accountUser?.role !== "member") {
       setDashboardCoaches([]);
       setDashboardVideos([]);
+      setDashboardPracticeActivity(null);
       return () => {
         cancelled = true;
       };
     }
-    Promise.all([readMyCoaches(), readVideoLibrary()])
-      .then(([coaches, records]) => {
+    Promise.allSettled([readMyCoaches(), readVideoLibrary(), readPracticePreview()])
+      .then(([coachesResult, videosResult, practiceResult]) => {
         if (cancelled) return;
-        setDashboardCoaches(coaches);
-        setDashboardVideos(records.map((record) => createVideoLibraryItem(record)));
+        setDashboardCoaches(coachesResult.status === "fulfilled" ? coachesResult.value : []);
+        setDashboardVideos(
+          videosResult.status === "fulfilled"
+            ? videosResult.value.map((record) => createVideoLibraryItem(record))
+            : [],
+        );
+        setDashboardPracticeActivity(practiceResult.status === "fulfilled" ? practiceResult.value : null);
       })
       .catch(() => {
         if (cancelled) return;
         setDashboardCoaches([]);
         setDashboardVideos([]);
+        setDashboardPracticeActivity(null);
       });
     return () => {
       cancelled = true;
@@ -7948,7 +8062,10 @@ export default function Home() {
             }
             hasAnySessions={sessions.length > 0}
             insights={performanceInsights}
+            memberExperienceMode={memberExperienceMode}
+            nextBestAction={memberNextBestAction}
             onTimeframeChange={setPerformanceTimeframe}
+            onNextBestAction={openNextBestAction}
             onOpenSessionForClub={(sessionId, club) => openSessionView(sessionId, { club, shotId: null })}
             performanceIndex={filteredPerformanceIndex}
             practiceProfile={practiceProfile}
@@ -8045,6 +8162,9 @@ export default function Home() {
           <PracticeView
             accountUser={accountUser}
             insights={insights}
+            memberExperienceMode={memberExperienceMode}
+            nextBestAction={memberNextBestAction}
+            onNextBestAction={openNextBestAction}
             practiceProfile={practiceProfile}
             sessions={sessions}
             setActiveTab={setActiveTab}
@@ -8334,6 +8454,50 @@ function CoachedStudentDashboardPriority({
   );
 }
 
+function nextActionModeLabel(mode: MemberExperienceMode) {
+  if (mode === "coach_led") return "Coach-led";
+  if (mode === "hybrid") return "Hybrid";
+  return "Independent MAI";
+}
+
+function nextActionSourceLabel(source: NextActionSource) {
+  if (source === "coach") return "Coach priority";
+  if (source === "coach_approved_ai") return "Coach-approved MAI";
+  if (source === "mai") return "MAI recommendation";
+  return "System prompt";
+}
+
+function NextBestActionCard({
+  action,
+  compact = false,
+  experienceMode,
+  onOpen,
+}: {
+  action: NextBestAction;
+  compact?: boolean;
+  experienceMode: MemberExperienceMode;
+  onOpen: (action: NextBestAction) => void;
+}) {
+  return (
+    <section className={cls("panel next-best-action-card", compact && "compact", action.source)}>
+      <div>
+        <p className="eyebrow">Next Best Action</p>
+        <h3>{action.title}</h3>
+        <p className="next-best-action-description">{action.description}</p>
+        <div className="next-best-action-meta" aria-label="Recommendation details">
+          <span>{nextActionModeLabel(experienceMode)}</span>
+          <span>{nextActionSourceLabel(action.source)}</span>
+          {action.estimatedMinutes ? <span>{action.estimatedMinutes} min</span> : null}
+        </div>
+        <small>Coach-first when a Coach exists. AI-first when one does not.</small>
+      </div>
+      <button className="primary-action" onClick={() => onOpen(action)} type="button">
+        {action.primaryActionLabel}
+      </button>
+    </section>
+  );
+}
+
 function DashboardView({
   avgCarry,
   avgDispersion,
@@ -8342,7 +8506,10 @@ function DashboardView({
   coachedPriority,
   hasAnySessions,
   insights,
+  memberExperienceMode,
+  nextBestAction,
   onTimeframeChange,
+  onNextBestAction,
   onOpenSessionForClub,
   performanceIndex,
   practiceProfile,
@@ -8365,7 +8532,10 @@ function DashboardView({
   coachedPriority?: ReactNode;
   hasAnySessions: boolean;
   insights: Insight[];
+  memberExperienceMode: MemberExperienceMode;
+  nextBestAction: NextBestAction | null;
   onTimeframeChange: (timeframe: PerformanceTimeframe) => void;
+  onNextBestAction: (action: NextBestAction) => void;
   onOpenSessionForClub: (sessionId: string, club: string) => void;
   performanceIndex: number;
   practiceProfile?: UserPracticeProfile | null;
@@ -8409,6 +8579,13 @@ function DashboardView({
     return (
       <div className="view-stack">
         {coachedPriority}
+        {nextBestAction && (
+          <NextBestActionCard
+            action={nextBestAction}
+            experienceMode={memberExperienceMode}
+            onOpen={onNextBestAction}
+          />
+        )}
         <PerformanceReviewControls
           clubs={clubs}
           onTimeframeChange={onTimeframeChange}
@@ -8434,6 +8611,13 @@ function DashboardView({
   return (
     <div className="view-stack">
       {coachedPriority}
+      {nextBestAction && (
+        <NextBestActionCard
+          action={nextBestAction}
+          experienceMode={memberExperienceMode}
+          onOpen={onNextBestAction}
+        />
+      )}
       <PerformanceReviewControls
         clubs={clubs}
         onTimeframeChange={onTimeframeChange}
@@ -13334,12 +13518,18 @@ function CoachVideoWorkspace({
 function PracticeView({
   accountUser,
   insights,
+  memberExperienceMode,
+  nextBestAction,
+  onNextBestAction,
   practiceProfile,
   sessions,
   setActiveTab,
 }: {
   accountUser: AccountUser | null;
   insights: Insight[];
+  memberExperienceMode: MemberExperienceMode;
+  nextBestAction: NextBestAction | null;
+  onNextBestAction: (action: NextBestAction) => void;
   practiceProfile?: UserPracticeProfile | null;
   sessions: Session[];
   setActiveTab: (tab: Tab) => void;
@@ -13529,6 +13719,14 @@ function PracticeView({
           </div>
           <h2>What should we work on today?</h2>
           <p>{priorityCopy}</p>
+          {nextBestAction && (
+            <NextBestActionCard
+              action={nextBestAction}
+              compact
+              experienceMode={memberExperienceMode}
+              onOpen={onNextBestAction}
+            />
+          )}
           {coachConnection?.connected && (
             <div className="practice-coach-note">
               <span>Recommended from {coachConnection.coachName || "your coach"}</span>

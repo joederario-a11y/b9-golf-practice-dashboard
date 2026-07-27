@@ -5880,6 +5880,85 @@ button:disabled {
   color: var(--muted);
 }
 
+.next-best-action-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: center;
+  border-color: rgba(150, 203, 57, 0.34);
+  background:
+    radial-gradient(circle at 12% 15%, rgba(150, 203, 57, 0.16), transparent 36%),
+    linear-gradient(135deg, rgba(150, 203, 57, 0.1), rgba(255, 255, 255, 0.03)),
+    var(--surface);
+}
+
+.next-best-action-card.coach,
+.next-best-action-card.coach_approved_ai {
+  border-color: rgba(47, 235, 118, 0.42);
+}
+
+.next-best-action-card.mai {
+  border-color: rgba(80, 180, 255, 0.32);
+}
+
+.next-best-action-card.system {
+  border-color: rgba(246, 206, 47, 0.34);
+}
+
+.next-best-action-card.compact {
+  margin-top: 4px;
+  padding: 14px;
+}
+
+.next-best-action-card h3,
+.next-best-action-card p,
+.next-best-action-card small {
+  margin: 0;
+}
+
+.next-best-action-card h3 {
+  color: var(--ink);
+  font-size: clamp(24px, 2.4vw, 38px);
+  line-height: 1.05;
+}
+
+.next-best-action-card.compact h3 {
+  font-size: 22px;
+}
+
+.next-best-action-card .next-best-action-description {
+  max-width: 760px;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.next-best-action-card small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.next-best-action-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 8px;
+}
+
+.next-best-action-meta span {
+  border: 1px solid rgba(150, 203, 57, 0.28);
+  border-radius: 999px;
+  background: rgba(150, 203, 57, 0.1);
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  padding: 6px 9px;
+  text-transform: uppercase;
+}
+
 .dashboard-lesson-video-frame {
   overflow: hidden;
   border: 1px solid rgba(47, 235, 118, 0.22);
@@ -7669,6 +7748,7 @@ button:disabled {
   .coach-primary-dashboard-row,
   .coach-secondary-dashboard-row,
   .coached-student-detail-grid,
+  .next-best-action-card,
   .lesson-session-link-card {
     grid-template-columns: 1fr;
   }
@@ -7679,6 +7759,7 @@ button:disabled {
   }
 
   .coached-student-actions > button,
+  .next-best-action-card > .primary-action,
   .lesson-session-link-card .button-row > button {
     width: 100%;
   }
