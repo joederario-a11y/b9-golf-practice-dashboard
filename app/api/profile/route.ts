@@ -4,6 +4,7 @@ import {
   getRequiredDatabase,
   responseFromError,
 } from "@/lib/server/platform";
+import { sanitizePracticeProfileForIdentity } from "@/lib/practice-profile-ownership-policy.mjs";
 
 type PracticeProfilePayload = {
   profile?: unknown;
@@ -52,6 +53,7 @@ export async function POST(request: Request) {
       return Response.json({ error: "profile must be an object" }, { status: 400 });
     }
 
+    const profile = sanitizePracticeProfileForIdentity(payload.profile, identity);
     const database = getRequiredDatabase();
     await ensureUserDataOwnershipSchema(database);
     const existing = await database
@@ -65,7 +67,7 @@ export async function POST(request: Request) {
            SET user_email = ?, display_name = ?, profile_json = ?, updated_at = CURRENT_TIMESTAMP
            WHERE user_id = ?`,
         )
-        .bind(identity.email, identity.displayName, JSON.stringify(payload.profile), identity.id)
+        .bind(identity.email, identity.displayName, JSON.stringify(profile), identity.id)
         .run();
     } else {
       await database
@@ -85,7 +87,7 @@ export async function POST(request: Request) {
             profile_json = excluded.profile_json,
             updated_at = CURRENT_TIMESTAMP`,
         )
-        .bind(identity.email, identity.id, identity.displayName, JSON.stringify(payload.profile))
+        .bind(identity.email, identity.id, identity.displayName, JSON.stringify(profile))
         .run();
     }
 

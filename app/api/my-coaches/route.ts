@@ -49,6 +49,8 @@ export async function GET() {
         LEFT JOIN user_profile_images AS profile_image
           ON profile_image.user_id = users.id AND profile_image.is_current = 1
         WHERE coach_members.member_id = ?
+          AND users.role = 'coach'
+          AND COALESCE(users.account_status, 'active') = 'active'
         ORDER BY coach_members.created_at DESC`,
       )
       .bind(identity.id)

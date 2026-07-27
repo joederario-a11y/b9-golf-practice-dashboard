@@ -91,6 +91,7 @@ import {
   getMemberExperienceMode,
   getMemberNextBestAction,
 } from "@/lib/member-next-action-policy.mjs";
+import { shouldPersistLocalPracticeProfileForIdentity } from "@/lib/practice-profile-ownership-policy.mjs";
 import {
   SEVEN_IRON_PRECISION_TEMPLATE,
   parseChallengeCriteria,
@@ -4939,6 +4940,16 @@ function storePracticeProfile(profile: UserPracticeProfile) {
   }
 }
 
+function clearStoredPracticeProfile() {
+  if (typeof window === "undefined") return;
+
+  try {
+    window.localStorage.removeItem(PRACTICE_PROFILE_STORAGE_KEY);
+  } catch {
+    // No action needed.
+  }
+}
+
 async function readVideoLibrary(memberId?: string) {
   const query = memberId ? `?memberId=${encodeURIComponent(memberId)}` : "";
   const response = await fetch(`/api/videos${query}`, { cache: "no-store" });
@@ -7514,9 +7525,14 @@ export default function Home() {
     return { profile: null, updatedAt: null };
   }
 
-  async function syncUserPracticeProfileAfterSignIn() {
+  async function syncUserPracticeProfileAfterSignIn(signedInUser: AccountUser) {
     const localProfile = readStoredPracticeProfile();
     const serverProfile = await loadUserPracticeProfile();
+
+    if (localProfile && !shouldPersistLocalPracticeProfileForIdentity(localProfile, signedInUser)) {
+      clearStoredPracticeProfile();
+      return;
+    }
 
     if (!localProfile || !shouldSaveLocalPracticeProfile(localProfile, serverProfile.profile, serverProfile.updatedAt)) {
       return;
@@ -7721,7 +7737,7 @@ export default function Home() {
         if (!isCurrentRequest()) return false;
         setSyncStatus("You are signed in, but your session history could not be loaded. Retry.");
       }
-      await syncUserPracticeProfileAfterSignIn();
+      await syncUserPracticeProfileAfterSignIn(signedInUser);
       return true;
     } catch {
       if (!isCurrentRequest()) return false;
@@ -8603,6 +8619,14 @@ function nextActionSourceLabel(source: NextActionSource) {
   return "System prompt";
 }
 
+function nextActionContextLine(action: NextBestAction, experienceMode: MemberExperienceMode) {
+  if (action.source === "coach") return "Assigned by your Coach.";
+  if (action.source === "coach_approved_ai") return "Prepared with MAI Coach and approved by your Coach.";
+  if (action.source === "mai") return "Generated from your recent session data.";
+  if (experienceMode === "independent") return "Built from your account setup and saved activity.";
+  return "Use this setup step to unlock a clearer next practice priority.";
+}
+
 function NextBestActionCard({
   action,
   compact = false,
@@ -8625,7 +8649,7 @@ function NextBestActionCard({
           <span>{nextActionSourceLabel(action.source)}</span>
           {action.estimatedMinutes ? <span>{action.estimatedMinutes} min</span> : null}
         </div>
-        <small>Coach-first when a Coach exists. AI-first when one does not.</small>
+        <small>{nextActionContextLine(action, experienceMode)}</small>
       </div>
       <button className="primary-action" onClick={() => onOpen(action)} type="button">
         {action.primaryActionLabel}
@@ -14293,7 +14317,7 @@ function PracticeView({
     ?? "Generate a drill or challenge to start the loop.";
   const priorityCopy = currentActivity?.instructions.sourceSummary ??
     (priority
-    ? `Based on your recent sessions, coach feedback, and goals, your biggest opportunity is currently ${priority.metric.toLowerCase()} with your ${getClubDisplayName(priority.club)}.`
+    ? `Based on your recent sessions${memberExperienceMode === "independent" ? " and goals" : ", Coach feedback, and goals"}, your biggest opportunity is currently ${priority.metric.toLowerCase()} with your ${getClubDisplayName(priority.club)}.`
     : hasSessionData
       ? "MAI Coach will use your saved session data conservatively until a stronger trend emerges."
       : practiceProfile
@@ -14534,7 +14558,7 @@ function PracticeView({
               onOpen={onNextBestAction}
             />
           )}
-          {coachConnection?.connected && (
+          {memberExperienceMode !== "independent" && currentActivity?.coachId && coachConnection?.connected && (
             <div className="practice-coach-note">
               <span>Recommended from {coachConnection.coachName || "your coach"}</span>
               <strong>{coachConnection.summary}</strong>
@@ -14563,7 +14587,7 @@ function PracticeView({
           )}
           {selectedFocus !== defaultFocus && (
             <p className="practice-focus-warning">
-              MAI Coach recommends {defaultFocus} first. You can choose {selectedFocus}, but coach-approved priorities still get extra weight.
+              MAI Coach recommends {defaultFocus} first. You can choose {selectedFocus}, but {memberExperienceMode === "independent" ? "saved session evidence still guides the recommendation." : "Coach-approved priorities still get extra weight."}
             </p>
           )}
         </div>

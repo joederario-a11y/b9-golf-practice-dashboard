@@ -1,6 +1,11 @@
 import OpenAI from "openai";
 
+import {
+  coachMatchesActiveContext,
+  getActiveCoachContext,
+} from "@/lib/coach-relationship-policy.mjs";
 import { MAI_CADDY_CORE_INSTRUCTIONS } from "@/lib/mai-caddy-instructions";
+import { sanitizePracticeProfileForIdentity } from "@/lib/practice-profile-ownership-policy.mjs";
 import {
   buildDefaultPracticeActivity,
   canAccessPracticeActivity,
@@ -165,6 +170,24 @@ type StoredSession = {
   shots?: Array<Record<string, unknown>>;
 };
 
+type PracticeUserRow = {
+  id: string;
+  role: string;
+  first_name: string;
+  last_name: string;
+  email: string;
+};
+
+type ActiveCoachRelationshipRow = {
+  relationship_id: string;
+  coach_id: string;
+  coach_first_name: string;
+  coach_last_name: string;
+  coach_email: string;
+  coach_account_status: string | null;
+  created_at: string;
+};
+
 type CoachFeedbackRow = {
   coach_id: string | null;
   coach_first_name: string | null;
@@ -256,6 +279,66 @@ function parseSessions(value: string | null | undefined): StoredSession[] {
   }
 }
 
+function userDisplayName(user: PracticeUserRow | null | undefined) {
+  return [user?.first_name, user?.last_name].filter(Boolean).join(" ") || user?.email || "MAI Coach golfer";
+}
+
+async function loadActiveCoachContext(database: PlatformDatabase, userId: string) {
+  const result = await database
+    .prepare(
+      `SELECT
+        coach_members.id AS relationship_id,
+        coach_members.coach_id,
+        coach.first_name AS coach_first_name,
+        coach.last_name AS coach_last_name,
+        coach.email AS coach_email,
+        coach.account_status AS coach_account_status,
+        coach_members.created_at
+       FROM coach_members
+       JOIN users AS coach ON coach.id = coach_members.coach_id
+       WHERE coach_members.member_id = ?
+         AND coach.role = 'coach'
+         AND COALESCE(coach.account_status, 'active') = 'active'
+       ORDER BY coach_members.created_at DESC`,
+    )
+    .bind(userId)
+    .all<ActiveCoachRelationshipRow>();
+
+  return getActiveCoachContext(result.results.map((relationship) => ({
+    id: relationship.relationship_id,
+    relationshipId: relationship.relationship_id,
+    coachId: relationship.coach_id,
+    coachName: [relationship.coach_first_name, relationship.coach_last_name].filter(Boolean).join(" ") || relationship.coach_email,
+    accountStatus: relationship.coach_account_status ?? "active",
+    status: "active",
+  })));
+}
+
+function sanitizeActivityInstructionsForActiveCoach(
+  instructions: Record<string, unknown>,
+  activity: { coach_id?: string | null },
+  activeCoachContext: ReturnType<typeof getActiveCoachContext>,
+) {
+  const nextInstructions = { ...instructions };
+  const hasMatchingCoach = coachMatchesActiveContext(activity.coach_id, activeCoachContext);
+  if (!hasMatchingCoach) {
+    nextInstructions.coachConnection = {
+      connected: false,
+      coachName: null,
+      summary: "Generated from your recent session data.",
+    };
+    const sourceMode = text(nextInstructions.sourceMode, "");
+    if (sourceMode === "coach_and_session" || sourceMode === "coach_feedback") {
+      nextInstructions.sourceMode = "session_data";
+    }
+    const sourceSummary = text(nextInstructions.sourceSummary);
+    if (!sourceSummary || /coach|zac|joey|malone/i.test(sourceSummary)) {
+      nextInstructions.sourceSummary = "Generated from your recent session data.";
+    }
+  }
+  return nextInstructions;
+}
+
 function summarizeSession(session: StoredSession | undefined) {
   const shots = Array.isArray(session?.shots) ? session.shots : [];
   const clubCounts = shots.reduce<Record<string, number>>((accumulator, shot) => {
@@ -316,7 +399,12 @@ async function resolveTargetUser(identity: AuthIdentity, database: PlatformDatab
 }
 
 async function loadPracticeContext(database: PlatformDatabase, userId: string, focusArea: string) {
-  const [profileRow, sessionsRow, latestAnalysisRow, structuredFeedback, coachFeedback] = await Promise.all([
+  const [userRow, activeCoachContext, profileRow, sessionsRow, latestAnalysisRow, structuredFeedback, coachFeedback] = await Promise.all([
+    database
+      .prepare("SELECT id, role, first_name, last_name, email FROM users WHERE id = ?")
+      .bind(userId)
+      .first<PracticeUserRow>(),
+    loadActiveCoachContext(database, userId),
     database
       .prepare("SELECT profile_json, updated_at FROM golf_practice_profiles WHERE user_id = ?")
       .bind(userId)
@@ -345,6 +433,11 @@ async function loadPracticeContext(database: PlatformDatabase, userId: string, f
          LEFT JOIN users AS coach ON coach.id = coach_feedback.coach_id
          WHERE coach_feedback.golfer_id = ?
            AND coach_feedback.status = 'active'
+           AND EXISTS (
+             SELECT 1 FROM coach_members
+             WHERE coach_members.member_id = coach_feedback.golfer_id
+               AND coach_members.coach_id = coach_feedback.coach_id
+           )
          ORDER BY coach_feedback.created_at DESC
          LIMIT 1`,
       )
@@ -372,6 +465,11 @@ async function loadPracticeContext(database: PlatformDatabase, userId: string, f
          WHERE lesson_videos.member_id = ?
            AND lesson_videos.publication_status = 'Published'
            AND lesson_videos.upload_status = 'ready'
+           AND EXISTS (
+             SELECT 1 FROM coach_members
+             WHERE coach_members.member_id = lesson_videos.member_id
+               AND coach_members.coach_id = lesson_videos.coach_id
+           )
            AND (
              lesson_videos.practice_assignment <> ''
              OR lesson_videos.recommended_drill <> ''
@@ -384,7 +482,15 @@ async function loadPracticeContext(database: PlatformDatabase, userId: string, f
       .bind(userId)
       .first<CoachFeedbackRow>(),
   ]);
-  const profile = parseJson(profileRow?.profile_json ?? "", null);
+  const rawProfile = parseJson(profileRow?.profile_json ?? "", null);
+  const profile = sanitizePracticeProfileForIdentity(rawProfile, {
+    id: userId,
+    role: userRow?.role ?? "member",
+    firstName: userRow?.first_name ?? "",
+    lastName: userRow?.last_name ?? "",
+    displayName: userDisplayName(userRow),
+    email: userRow?.email ?? "",
+  });
   const sessions = parseSessions(sessionsRow?.sessions_json);
   const dataQuality = summarizeShotDataQuality(sessions);
   const latestSession = sessions
@@ -426,6 +532,7 @@ async function loadPracticeContext(database: PlatformDatabase, userId: string, f
     sessionCount: sessions.length,
     shotDataQuality: dataQuality,
     latestAnalysis,
+    activeCoachContext,
     coachFeedback: structuredFeedback
       ? {
           coachId: structuredFeedback.coach_id,
@@ -564,8 +671,36 @@ function activityInstructions(activity: ReturnType<typeof normalizePracticeActiv
   };
 }
 
-function serializePracticeActivity(row: PracticeActivityRow) {
-  const instructions = parseJson(row.instructions_json, {});
+function sanitizeGeneratedActivityForActiveCoach(
+  activity: ReturnType<typeof normalizePracticeActivityOutput>,
+  context: { activeCoachContext?: ReturnType<typeof getActiveCoachContext>; coachFeedback?: { coachId?: string | null } | null; sourceMode?: string },
+) {
+  const hasMatchingCoach = coachMatchesActiveContext(context.coachFeedback?.coachId, context.activeCoachContext ?? {});
+  if (hasMatchingCoach) return activity;
+  const sourceMode = text(activity.sourceMode || context.sourceMode);
+  return {
+    ...activity,
+    coachConnection: {
+      connected: false,
+      coachName: null,
+      summary: "Generated from your recent session data.",
+    },
+    sourceMode: sourceMode === "coach_and_session" || sourceMode === "coach_feedback"
+      ? "session_data"
+      : sourceMode,
+    sourceSummary: /coach|zac|joey|malone/i.test(text(activity.sourceSummary))
+      ? "Generated from your recent session data."
+      : activity.sourceSummary,
+  };
+}
+
+function serializePracticeActivity(row: PracticeActivityRow, activeCoachContext = getActiveCoachContext([])) {
+  const visibleCoachId = coachMatchesActiveContext(row.coach_id, activeCoachContext) ? row.coach_id : null;
+  const instructions = sanitizeActivityInstructionsForActiveCoach(
+    parseJson(row.instructions_json, {}) as Record<string, unknown>,
+    { coach_id: row.coach_id },
+    activeCoachContext,
+  );
   const resultEvidence = parseJson(row.result_evidence_json ?? "", []);
   const nextRecommendation = parseJson(row.result_next_json ?? "", {});
   const activeAttempt = serializePrefixedAttempt(row, "active_attempt");
@@ -573,7 +708,7 @@ function serializePracticeActivity(row: PracticeActivityRow) {
   const assignment = normalizePracticeAssignment({
     id: row.id,
     userId: row.user_id,
-    coachId: row.coach_id,
+    coachId: visibleCoachId,
     activityType: row.activity_type,
     focusArea: row.focus_area,
     title: row.title,
@@ -606,7 +741,7 @@ function serializePracticeActivity(row: PracticeActivityRow) {
     target: parseJson(row.target_json, {}),
     scoring: parseJson(row.scoring_json, {}),
     sourceContext: parseJson(row.source_context_json, {}),
-    coachId: row.coach_id ?? undefined,
+    coachId: visibleCoachId ?? undefined,
     coachAssignmentId: row.coach_assignment_id ?? undefined,
     coachFeedbackSourceId: row.coach_feedback_source_id ?? undefined,
     relatedSessionId: row.related_session_id ?? undefined,
@@ -725,6 +860,7 @@ function serializePrefixedAttempt(row: PracticeActivityRow, prefix: "active_atte
 }
 
 async function loadActivities(database: PlatformDatabase, userId: string): Promise<SerializedPracticeActivity[]> {
+  const activeCoachContext = await loadActiveCoachContext(database, userId);
   const result = await database
     .prepare(
       `SELECT
@@ -809,7 +945,7 @@ async function loadActivities(database: PlatformDatabase, userId: string): Promi
     )
     .bind(userId)
     .all<PracticeActivityRow>();
-  return result.results.map(serializePracticeActivity);
+  return result.results.map((row) => serializePracticeActivity(row, activeCoachContext));
 }
 
 async function getActivityRow(database: PlatformDatabase, activityId: string) {
@@ -854,6 +990,7 @@ export async function generatePracticeActivity(
   const activityType: ActivityType = values.activityType === "challenge" ? "challenge" : "drill";
   const focusArea = text(values.focusArea, 80) || "Better contact";
   const targetUserId = await resolveTargetUser(identity, database, text(values.memberId, 120));
+  const activeCoachContext = await loadActiveCoachContext(database, targetUserId);
   const replaceReason = text(values.replaceReason, 180);
   const runtime = getPlatformEnvironment();
 
@@ -873,7 +1010,7 @@ export async function generatePracticeActivity(
 
   if (existingActive && !replaceReason && !shouldRefreshFallbackActivity) {
     return Response.json({
-      activity: serializePracticeActivity(existingActive),
+      activity: serializePracticeActivity(existingActive, activeCoachContext),
       reused: true,
       message: "MAI Coach already has an active activity for that focus.",
     });
@@ -953,13 +1090,13 @@ export async function generatePracticeActivity(
     existingTrainingAid,
     requestedTrainingAid: generated.trainingAid,
   });
-  const generatedWithAid = {
+  const generatedWithAid = sanitizeGeneratedActivityForActiveCoach({
     ...generated,
     equipment: trainingAid?.aidId && trainingAid.aidId !== "none"
       ? Array.from(new Set([...(generated.equipment ?? []), ...(trainingAid.requiredEquipment ?? [])]))
       : generated.equipment,
     trainingAid,
-  };
+  }, context);
   const generatedModel = runtime.OPENAI_API_KEY && !openAIFailureCategory
     ? model
     : runtime.OPENAI_API_KEY
@@ -990,7 +1127,7 @@ export async function generatePracticeActivity(
       safeJson({ successTarget: generatedWithAid.successTarget }),
       safeJson(generatedWithAid.scoring),
       safeJson(promptContext),
-      context.coachFeedback?.coachId ?? null,
+      coachMatchesActiveContext(context.coachFeedback?.coachId, context.activeCoachContext) ? context.coachFeedback?.coachId ?? null : null,
       context.coachFeedback?.feedbackId ?? context.coachFeedback?.videoId ?? null,
       context.sessionSummary.id || null,
       generatedModel,
@@ -1009,7 +1146,7 @@ export async function generatePracticeActivity(
       focusArea,
       model: generatedModel,
       promptVersion: PRACTICE_PROMPT_VERSION,
-      coachId: context.coachFeedback?.coachId ?? null,
+      coachId: coachMatchesActiveContext(context.coachFeedback?.coachId, context.activeCoachContext) ? context.coachFeedback?.coachId ?? null : null,
       aiFallbackReason: openAIFailureCategory || null,
     },
     summary: `Generated ${generatedWithAid.title}.`,
@@ -1035,7 +1172,7 @@ export async function generatePracticeActivity(
     });
   }
   const saved = await getActivityRow(database, id);
-  return Response.json({ activity: saved ? serializePracticeActivity(saved) : null, reused: false });
+  return Response.json({ activity: saved ? serializePracticeActivity(saved, activeCoachContext) : null, reused: false });
 }
 
 async function loadAttemptById(database: PlatformDatabase, attemptId: string) {
@@ -1258,7 +1395,8 @@ export async function getPracticeActivityDetail(identity: AuthIdentity, activity
   await preparePracticeDatabase(database);
   const activity = await requireActivityAccess(identity, database, text(activityId, 120));
   const activities = await loadActivities(database, activity.user_id);
-  const serializedActivity = activities.find((item) => item.id === activity.id) ?? serializePracticeActivity(activity);
+  const activeCoachContext = await loadActiveCoachContext(database, activity.user_id);
+  const serializedActivity = activities.find((item) => item.id === activity.id) ?? serializePracticeActivity(activity, activeCoachContext);
   const attemptsResult = await database
     .prepare(
       `SELECT * FROM practice_attempts

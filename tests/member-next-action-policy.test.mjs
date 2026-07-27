@@ -9,6 +9,7 @@ import {
 
 const coach = { id: "coach-zac", name: "Zac Malone" };
 const playableLesson = {
+  coachId: "coach-zac",
   duration: 118,
   id: "video-1",
   isViewedByMember: false,
@@ -46,6 +47,7 @@ test("coach-led member follows coach-assigned practice before lesson and AI item
       id: "practice-1",
       activityType: "drill",
       durationMinutes: 15,
+      coachId: "coach-zac",
       instructions: {
         coachConnection: { connected: true, coachName: "Zac Malone", summary: "Work setup width first." },
         sourceMode: "coach_feedback",
@@ -89,6 +91,32 @@ test("independent member gets MAI practice before session opportunity and upload
   assert.equal(action.supportingRecordId, "practice-2");
 });
 
+test("independent member ignores stale coach attribution on a stored practice activity", () => {
+  const action = getMemberNextBestAction({
+    activeCoachRelationships: [],
+    activeMemberActivity: {
+      id: "practice-dave",
+      activityType: "drill",
+      durationMinutes: 6,
+      instructions: {
+        coachConnection: { connected: true, coachName: "Zac Malone", summary: "Coach Zac emphasizes structured practice." },
+        sourceMode: "coach_feedback",
+        sourceSummary: "Coach Zac says driver accuracy comes first.",
+      },
+      status: "generated",
+      title: "Energy Transfer Contact Map",
+    },
+    insights: [insight],
+    practiceProfile: { path: "Independent" },
+    sessions: [session],
+  });
+
+  assert.equal(getMemberExperienceMode({ activeCoachRelationships: [], sessions: [session], insights: [insight] }), "independent");
+  assert.equal(action.type, "mai_practice");
+  assert.equal(action.source, "mai");
+  assert.equal(action.title, "Energy Transfer Contact Map");
+});
+
 test("hybrid member keeps coach lesson ahead of independent MAI session opportunity", () => {
   const action = getMemberNextBestAction({
     activeCoachRelationships: [coach],
@@ -122,6 +150,7 @@ test("next-best-action policy returns exactly one primary recommendation", () =>
     activeMemberActivity: {
       id: "practice-3",
       activityType: "drill",
+      coachId: "coach-zac",
       instructions: {
         coachConnection: { connected: true },
         sourceMode: "coach_feedback",
@@ -157,7 +186,7 @@ test("dashboard and practice surfaces use the shared next-best-action policy", a
   assert.match(pageSource, /MemberDashboardMission/);
   assert.match(pageSource, /memberNextBestAction/);
   assert.match(pageSource, /activeCoachRelationships/);
-  assert.match(pageSource, /Coach-first when a Coach exists/);
+  assert.doesNotMatch(pageSource, /Coach-first when a Coach exists/);
   assert.doesNotMatch(pageSource, /coachedPriority/);
 });
 
