@@ -10772,7 +10772,7 @@ function AdminView({
       return;
     }
     const confirmed = window.confirm(
-      `Permanently delete ${user.name}?\n\nThis removes the user account, login sessions, password setup, invitations, and coach assignments. Users with videos or sessions are protected and must be deactivated instead.`,
+      `Permanently delete ${user.name}?\n\nThis removes the user account, login sessions, password setup, invitations, coach assignments, sessions, practice records, and member-owned videos. Coach-authored videos for other members are preserved and detached from this user.`,
     );
     if (!confirmed) return;
     try {

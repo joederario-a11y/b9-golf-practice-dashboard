@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 
 import {
@@ -257,4 +258,18 @@ test("registration state safely splits onboarding display name", () => {
     firstName: "",
     lastName: "",
   });
+});
+
+test("admin delete performs content cleanup instead of blocking content-owning users", () => {
+  const routeSource = fs.readFileSync(new URL("../app/api/admin/route.ts", import.meta.url), "utf8");
+
+  assert.doesNotMatch(routeSource, /Deactivate the account instead/);
+  assert.match(routeSource, /DELETE FROM lesson_videos WHERE member_id = \?/);
+  assert.match(routeSource, /UPDATE lesson_videos SET coach_id = NULL/);
+  assert.match(routeSource, /DELETE FROM video_lesson_recap_drafts/);
+  assert.match(routeSource, /DELETE FROM video_annotation_exports/);
+  assert.match(routeSource, /DELETE FROM video_visual_observation_reviews/);
+  assert.match(routeSource, /DELETE FROM practice_activities/);
+  assert.match(routeSource, /DELETE FROM mai_caddy_session_analyses/);
+  assert.match(routeSource, /DELETE FROM photo_import_jobs WHERE user_id = \?/);
 });

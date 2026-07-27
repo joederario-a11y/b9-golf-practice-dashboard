@@ -15,8 +15,12 @@ import { sanitizeSession, sanitizeSessionList } from "@/lib/session-data-policy.
 import { upsertLessonSessionLink } from "@/lib/server/lesson-session-links";
 import {
   ensurePlatformSchema,
+  ensureCoachFeedbackSchema,
+  ensureMaiCaddyAnalysisSchema,
   ensureUserDataOwnershipSchema,
+  ensureVideoVisualAnalysisSchema,
   getAssignedMemberIds,
+  getPlatformEnvironment,
   getRequiredDatabase,
   invalidateUserSessions,
   recordActivity,
@@ -139,6 +143,32 @@ function parseJsonObject(value: string) {
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
   } catch {
     return {};
+  }
+}
+
+function isMissingTableError(error: unknown) {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  return message.includes("no such table");
+}
+
+async function optionalRows<T>(database: D1Database, query: string, ...bindings: unknown[]) {
+  try {
+    const statement = database.prepare(query);
+    const result = bindings.length ? await statement.bind(...bindings).all<T>() : await statement.all<T>();
+    return result.results ?? [];
+  } catch (error) {
+    if (isMissingTableError(error)) return [];
+    throw error;
+  }
+}
+
+async function optionalRun(database: D1Database, query: string, ...bindings: unknown[]) {
+  try {
+    const statement = database.prepare(query);
+    await (bindings.length ? statement.bind(...bindings) : statement).run();
+  } catch (error) {
+    if (isMissingTableError(error)) return;
+    throw error;
   }
 }
 
@@ -1300,6 +1330,7 @@ async function deleteUser(database: D1Database, identity: AuthIdentity, payload:
 
   const target = await getUser(database, userId);
   if (!target) throw new Response("User not found.", { status: 404 });
+  const targetEmail = target.email.toLowerCase();
 
   const activeAdmins = await countRows(
     database,
@@ -1314,24 +1345,98 @@ async function deleteUser(database: D1Database, identity: AuthIdentity, payload:
   });
   if (finalAdminGuard) throw new Response(finalAdminGuard.message, { status: finalAdminGuard.status });
 
-  const videoCount = await countRows(
+  await ensureMaiCaddyAnalysisSchema(database);
+  await ensureCoachFeedbackSchema(database);
+  await ensureVideoVisualAnalysisSchema(database);
+
+  const addStorageKey = (keys: Set<string>, value: unknown) => {
+    if (typeof value !== "string") return;
+    for (const key of value.split("\n").map((item) => item.trim()).filter(Boolean)) {
+      keys.add(key);
+    }
+  };
+  const storageKeys = new Set<string>();
+  const ownedVideoAssets = await database
+    .prepare(
+      `SELECT storage_path, source_storage_path, thumbnail_storage_path
+       FROM lesson_videos
+       WHERE member_id = ?`,
+    )
+    .bind(userId)
+    .all<{ storage_path: string | null; source_storage_path: string | null; thumbnail_storage_path: string | null }>();
+  for (const asset of ownedVideoAssets.results ?? []) {
+    addStorageKey(storageKeys, asset.storage_path);
+    addStorageKey(storageKeys, asset.source_storage_path);
+    addStorageKey(storageKeys, asset.thumbnail_storage_path);
+  }
+
+  const generatedAssets = await database
+    .prepare(
+      `SELECT audio_storage_path
+       FROM video_ai_processing_jobs
+       WHERE audio_storage_path IS NOT NULL
+         AND (
+           member_id = ? OR coach_id = ?
+           OR video_id IN (SELECT id FROM lesson_videos WHERE member_id = ?)
+         )`,
+    )
+    .bind(userId, userId, userId)
+    .all<{ audio_storage_path: string | null }>();
+  for (const asset of generatedAssets.results ?? []) addStorageKey(storageKeys, asset.audio_storage_path);
+
+  const visualAssets = await database
+    .prepare(
+      `SELECT storage_path, thumbnail_storage_path
+       FROM video_visual_analysis_frames
+       WHERE member_id = ?
+          OR video_id IN (SELECT id FROM lesson_videos WHERE member_id = ?)
+          OR analysis_id IN (
+            SELECT id FROM video_visual_analyses
+            WHERE member_id = ? OR requested_by_user_id = ?
+          )`,
+    )
+    .bind(userId, userId, userId, userId)
+    .all<{ storage_path: string | null; thumbnail_storage_path: string | null }>();
+  for (const asset of visualAssets.results ?? []) {
+    addStorageKey(storageKeys, asset.storage_path);
+    addStorageKey(storageKeys, asset.thumbnail_storage_path);
+  }
+
+  const annotationAssets = await database
+    .prepare(
+      `SELECT storage_path, source_storage_path
+       FROM video_annotation_exports
+       WHERE member_id = ? OR coach_id = ? OR requested_by_user_id = ?
+          OR video_id IN (SELECT id FROM lesson_videos WHERE member_id = ?)`,
+    )
+    .bind(userId, userId, userId, userId)
+    .all<{ storage_path: string | null; source_storage_path: string | null }>();
+  for (const asset of annotationAssets.results ?? []) {
+    addStorageKey(storageKeys, asset.storage_path);
+    addStorageKey(storageKeys, asset.source_storage_path);
+  }
+
+  const profileAssets = await database
+    .prepare(
+      `SELECT storage_path FROM user_profile_images WHERE user_id = ?
+       UNION
+       SELECT storage_path FROM coach_profile_images WHERE coach_user_id = ?`,
+    )
+    .bind(userId, userId)
+    .all<{ storage_path: string | null }>();
+  for (const asset of profileAssets.results ?? []) addStorageKey(storageKeys, asset.storage_path);
+
+  const photoImportAssets = await optionalRows<{ source_paths_json: string | null }>(
     database,
-    "SELECT COUNT(*) AS count FROM lesson_videos WHERE member_id = ? OR coach_id = ?",
-    userId,
+    "SELECT source_paths_json FROM photo_import_jobs WHERE user_id = ?",
     userId,
   );
-  const sessionRow = await database
-    .prepare("SELECT sessions_json FROM golf_session_snapshots WHERE user_id = ? OR LOWER(user_email) = ?")
-    .bind(userId, target.email.toLowerCase())
-    .first<{ sessions_json: string }>();
-  const sessionCount = parseJsonArray(sessionRow?.sessions_json ?? null).length;
-
-  if (videoCount > 0 || sessionCount > 0) {
-    throw new Response(
-      `This user has ${videoCount} video${videoCount === 1 ? "" : "s"} and ${sessionCount} session${sessionCount === 1 ? "" : "s"}. Deactivate the account instead, or remove the user's content first.`,
-      { status: 409 },
-    );
+  for (const asset of photoImportAssets) {
+    for (const key of parseJsonArray(asset.source_paths_json ?? null)) addStorageKey(storageKeys, key);
   }
+
+  const bucket = getPlatformEnvironment().VIDEO_STORAGE;
+  if (bucket && storageKeys.size) await bucket.delete(Array.from(storageKeys));
 
   await recordActivity({
     action: "user_deleted",
@@ -1340,23 +1445,133 @@ async function deleteUser(database: D1Database, identity: AuthIdentity, payload:
     entityId: userId,
     entityType: "user",
     memberId: target.role === "member" ? userId : null,
-    metadata: { deletedRole: target.role, deletedEmail: target.email },
+    metadata: { deletedRole: target.role, deletedEmail: target.email, deletedStorageObjects: storageKeys.size },
     summary: `${identity.displayName} deleted ${displayName(target)} from user management.`,
     targetUserId: userId,
   });
 
+  await optionalRun(database, "DELETE FROM photo_import_jobs WHERE user_id = ?", userId);
+
   await database.batch([
+    database.prepare(
+      `DELETE FROM video_annotation_exports
+       WHERE member_id = ? OR coach_id = ? OR requested_by_user_id = ?
+          OR video_id IN (SELECT id FROM lesson_videos WHERE member_id = ?)`,
+    ).bind(userId, userId, userId, userId),
+    database.prepare(
+      `DELETE FROM video_annotations
+       WHERE created_by_user_id = ?
+          OR video_id IN (SELECT id FROM lesson_videos WHERE member_id = ?)
+          OR annotation_set_id IN (
+            SELECT id FROM video_annotation_sets
+            WHERE member_id = ? OR coach_id = ? OR created_by_user_id = ? OR published_by_user_id = ?
+               OR video_id IN (SELECT id FROM lesson_videos WHERE member_id = ?)
+          )`,
+    ).bind(userId, userId, userId, userId, userId, userId, userId),
+    database.prepare(
+      `DELETE FROM video_annotation_sets
+       WHERE member_id = ? OR coach_id = ? OR created_by_user_id = ? OR published_by_user_id = ?
+          OR video_id IN (SELECT id FROM lesson_videos WHERE member_id = ?)`,
+    ).bind(userId, userId, userId, userId, userId),
+    database.prepare(
+      `DELETE FROM video_visual_observation_reviews
+       WHERE member_id = ? OR reviewed_by = ?
+          OR video_id IN (SELECT id FROM lesson_videos WHERE member_id = ?)
+          OR analysis_id IN (
+            SELECT id FROM video_visual_analyses
+            WHERE member_id = ? OR requested_by_user_id = ?
+          )`,
+    ).bind(userId, userId, userId, userId, userId),
+    database.prepare(
+      `UPDATE video_visual_observation_reviews
+       SET coach_id = NULL, updated_at = CURRENT_TIMESTAMP
+       WHERE coach_id = ?`,
+    ).bind(userId),
+    database.prepare(
+      `DELETE FROM video_visual_analysis_frames
+       WHERE member_id = ?
+          OR video_id IN (SELECT id FROM lesson_videos WHERE member_id = ?)
+          OR analysis_id IN (
+            SELECT id FROM video_visual_analyses
+            WHERE member_id = ? OR requested_by_user_id = ?
+          )`,
+    ).bind(userId, userId, userId, userId),
+    database.prepare(
+      `DELETE FROM video_visual_analyses
+       WHERE member_id = ? OR requested_by_user_id = ?
+          OR video_id IN (SELECT id FROM lesson_videos WHERE member_id = ?)`,
+    ).bind(userId, userId, userId),
+    database.prepare(
+      `UPDATE video_visual_analyses
+       SET coach_id = NULL, updated_at = CURRENT_TIMESTAMP
+       WHERE coach_id = ?`,
+    ).bind(userId),
+    database.prepare(
+      `DELETE FROM video_lesson_recap_drafts
+       WHERE member_id = ? OR coach_id = ?
+          OR video_id IN (SELECT id FROM lesson_videos WHERE member_id = ?)
+          OR processing_job_id IN (
+            SELECT id FROM video_ai_processing_jobs
+            WHERE member_id = ? OR coach_id = ?
+               OR video_id IN (SELECT id FROM lesson_videos WHERE member_id = ?)
+          )`,
+    ).bind(userId, userId, userId, userId, userId, userId),
+    database.prepare(
+      `DELETE FROM video_transcripts
+       WHERE member_id = ? OR coach_id = ?
+          OR video_id IN (SELECT id FROM lesson_videos WHERE member_id = ?)
+          OR processing_job_id IN (
+            SELECT id FROM video_ai_processing_jobs
+            WHERE member_id = ? OR coach_id = ?
+               OR video_id IN (SELECT id FROM lesson_videos WHERE member_id = ?)
+          )`,
+    ).bind(userId, userId, userId, userId, userId, userId),
+    database.prepare(
+      `DELETE FROM video_ai_processing_jobs
+       WHERE member_id = ? OR coach_id = ?
+          OR video_id IN (SELECT id FROM lesson_videos WHERE member_id = ?)`,
+    ).bind(userId, userId, userId),
+    database.prepare(
+      `DELETE FROM coach_feedback
+       WHERE golfer_id = ? OR coach_id = ?
+          OR lesson_id IN (SELECT id FROM lesson_videos WHERE member_id = ?)`,
+    ).bind(userId, userId, userId),
+    database.prepare(
+      `DELETE FROM practice_activity_results
+       WHERE user_id = ?
+          OR practice_activity_id IN (
+            SELECT id FROM practice_activities
+            WHERE user_id = ? OR generated_by = ? OR coach_id = ?
+          )`,
+    ).bind(userId, userId, userId, userId),
+    database.prepare("DELETE FROM practice_activities WHERE user_id = ? OR generated_by = ? OR coach_id = ?").bind(userId, userId, userId),
+    database.prepare("DELETE FROM mai_caddy_session_analyses WHERE user_id = ?").bind(userId),
     database.prepare("DELETE FROM auth_sessions WHERE user_id = ?").bind(userId),
-    database.prepare("DELETE FROM auth_login_tokens WHERE user_id = ? OR LOWER(email) = ?").bind(userId, target.email.toLowerCase()),
+    database.prepare("DELETE FROM auth_login_tokens WHERE user_id = ? OR LOWER(email) = ?").bind(userId, targetEmail),
     database.prepare("DELETE FROM user_passwords WHERE user_id = ?").bind(userId),
     database.prepare("DELETE FROM coach_members WHERE coach_id = ? OR member_id = ?").bind(userId, userId),
     database.prepare("DELETE FROM member_invitations WHERE member_id = ? OR coach_id = ?").bind(userId, userId),
     database.prepare("DELETE FROM member_content_items WHERE member_id = ? OR created_by = ?").bind(userId, userId),
-    database.prepare("DELETE FROM video_email_notifications WHERE member_id = ? OR requested_by = ?").bind(userId, userId),
-    database.prepare("DELETE FROM video_views WHERE member_id = ?").bind(userId),
-    database.prepare("DELETE FROM lesson_session_links WHERE member_id = ? OR coach_id = ? OR attached_by_user_id = ?").bind(userId, userId, userId),
-    database.prepare("DELETE FROM golf_practice_profiles WHERE user_id = ? OR LOWER(user_email) = ?").bind(userId, target.email.toLowerCase()),
-    database.prepare("DELETE FROM golf_session_snapshots WHERE user_id = ? OR LOWER(user_email) = ?").bind(userId, target.email.toLowerCase()),
+    database.prepare(
+      `DELETE FROM video_email_notifications
+       WHERE member_id = ? OR requested_by = ?
+          OR video_id IN (SELECT id FROM lesson_videos WHERE member_id = ?)`,
+    ).bind(userId, userId, userId),
+    database.prepare(
+      `DELETE FROM video_views
+       WHERE member_id = ?
+          OR video_id IN (SELECT id FROM lesson_videos WHERE member_id = ?)`,
+    ).bind(userId, userId),
+    database.prepare(
+      `DELETE FROM lesson_session_links
+       WHERE member_id = ? OR attached_by_user_id = ?
+          OR video_id IN (SELECT id FROM lesson_videos WHERE member_id = ?)`,
+    ).bind(userId, userId, userId),
+    database.prepare("DELETE FROM lesson_videos WHERE member_id = ?").bind(userId),
+    database.prepare("UPDATE lesson_videos SET coach_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE coach_id = ?").bind(userId),
+    database.prepare("UPDATE lesson_session_links SET coach_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE coach_id = ?").bind(userId),
+    database.prepare("DELETE FROM golf_practice_profiles WHERE user_id = ? OR LOWER(user_email) = ?").bind(userId, targetEmail),
+    database.prepare("DELETE FROM golf_session_snapshots WHERE user_id = ? OR LOWER(user_email) = ?").bind(userId, targetEmail),
     database.prepare("DELETE FROM user_profile_images WHERE user_id = ?").bind(userId),
     database.prepare("DELETE FROM coach_profile_images WHERE coach_user_id = ?").bind(userId),
     database.prepare("DELETE FROM users WHERE id = ?").bind(userId),
