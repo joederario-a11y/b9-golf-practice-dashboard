@@ -1235,6 +1235,24 @@ async function upsertPracticeResultForAttempt(
   return resultId;
 }
 
+async function recordPracticeAttemptActivityOnce(
+  database: PlatformDatabase,
+  values: Parameters<typeof recordActivity>[0] & { entityId: string },
+) {
+  const existing = await database
+    .prepare(
+      `SELECT id FROM member_activity_log
+       WHERE entity_type = 'practice_attempt'
+         AND entity_id = ?
+         AND action = ?
+       LIMIT 1`,
+    )
+    .bind(values.entityId, values.action)
+    .first<{ id: string }>();
+  if (existing) return;
+  await recordActivity({ ...values, database });
+}
+
 export async function getPracticeActivityDetail(identity: AuthIdentity, activityId: string) {
   const database = getRequiredDatabase();
   await preparePracticeDatabase(database);
@@ -1304,10 +1322,9 @@ export async function updatePracticeActivity(
       .bind(activity.id)
       .run();
     if (created) {
-      await recordActivity({
+      await recordPracticeAttemptActivityOnce(database, {
         action: "practice_started",
         actor: identity,
-        database,
         entityId: attempt.id,
         entityType: "practice_attempt",
         memberId: activity.user_id,
@@ -1450,10 +1467,9 @@ export async function updatePracticeActivity(
       .prepare("UPDATE practice_activities SET status = ?, completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .bind(coachReviewStatus === "pending" ? "results_submitted" : "completed", activity.id)
       .run();
-    await recordActivity({
+    await recordPracticeAttemptActivityOnce(database, {
       action: "practice_completed",
       actor: identity,
-      database,
       entityId: attempt.id,
       entityType: "practice_attempt",
       memberId: activity.user_id,
@@ -1471,10 +1487,9 @@ export async function updatePracticeActivity(
       summary: `Completed ${activity.title}.`,
       targetUserId: activity.user_id,
     });
-    await recordActivity({
+    await recordPracticeAttemptActivityOnce(database, {
       action: practiceEventActionForOutcome(outcome),
       actor: identity,
-      database,
       entityId: attempt.id,
       entityType: "practice_attempt",
       memberId: activity.user_id,
@@ -1487,10 +1502,9 @@ export async function updatePracticeActivity(
       targetUserId: activity.user_id,
     });
     if (coachReviewStatus === "pending") {
-      await recordActivity({
+      await recordPracticeAttemptActivityOnce(database, {
         action: "coach_review_requested",
         actor: identity,
-        database,
         entityId: attempt.id,
         entityType: "practice_attempt",
         memberId: activity.user_id,

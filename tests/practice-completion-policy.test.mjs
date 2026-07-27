@@ -218,6 +218,7 @@ test("practice completion schema and API expose attempts, idempotency, and same-
   assert.match(platform, /practice_attempts_one_active_unique/);
   assert.match(platform, /practice_activity_results_one_per_attempt_unique/);
   assert.match(server, /Only this member's saved sessions can be attached/);
+  assert.match(server, /recordPracticeAttemptActivityOnce/);
   assert.match(server, /coach_review_requested/);
   assert.match(api, /activityId/);
   assert.match(page, /Complete Practice/);
