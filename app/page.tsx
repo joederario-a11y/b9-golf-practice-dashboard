@@ -95,6 +95,10 @@ import {
   SEVEN_IRON_PRECISION_TEMPLATE,
   parseChallengeCriteria,
 } from "@/lib/challenge-policy.mjs";
+import {
+  TRAINING_AID_DEFINITIONS,
+  visibleTrainingAidRecommendation,
+} from "@/lib/training-aid-policy.mjs";
 
 type Tab = "dashboard" | "sessions" | "clubs" | "videos" | "coach" | "admin" | "practice" | "import";
 type AccountMode = "pending" | "user" | "guest";
@@ -1014,6 +1018,20 @@ type SessionsPayload = {
 type PracticeActivityType = "drill" | "challenge";
 type PracticeActivityStatus = "generated" | "in_progress" | "completed" | "results_submitted" | "cancelled" | "superseded";
 type PracticeProgressStatus = "improved" | "maintained" | "needs_more_work" | "insufficient_data";
+type TrainingAidRecommendation = {
+  aidId?: string;
+  approvalState?: string;
+  confidence?: "high" | "moderate" | "low";
+  evidence?: Array<{ source?: string; tendency?: string; summary?: string }>;
+  name?: string;
+  noEquipmentAlternative?: string;
+  safetyNotes?: string[];
+  setupSteps?: string[];
+  shortName?: string;
+  source?: "coach" | "coach_approved_ai" | "ai" | "none";
+  studentVisible?: boolean;
+  whyItFits?: string;
+};
 
 type PracticeActivity = {
   id: string;
@@ -1045,6 +1063,7 @@ type PracticeActivity = {
     sourceMode?: "coach_and_session" | "coach_feedback" | "lesson_notes" | "session_data" | "profile_fallback";
     sourceSummary?: string;
     confidence?: number;
+    trainingAid?: TrainingAidRecommendation | null;
   };
   club?: string;
   durationMinutes?: number;
@@ -14035,6 +14054,100 @@ function CoachVideoWorkspace({
   );
 }
 
+function trainingAidSourceLabel(aid: TrainingAidRecommendation) {
+  if (aid.source === "coach") return "Coach training aid";
+  if (aid.source === "coach_approved_ai") return "Coach-approved AI aid";
+  if (aid.source === "ai") return "AI-generated practice recommendation";
+  return "Training aid";
+}
+
+function trainingAidReviewLabel(aid: TrainingAidRecommendation) {
+  if (aid.approvalState === "draft") return "Coach review draft - not visible to the member yet";
+  if (aid.approvalState === "approved" || aid.approvalState === "modified") return "Visible to member";
+  if (aid.approvalState === "rejected") return "Rejected by Coach";
+  if (aid.approvalState === "removed") return "Removed by Coach";
+  return aid.studentVisible ? "Visible to member" : "Not visible to member";
+}
+
+function TrainingAidPracticeSection({
+  aid,
+  canReview,
+  loading,
+  onReview,
+  selectedAidId,
+  setSelectedAidId,
+}: {
+  aid: TrainingAidRecommendation;
+  canReview: boolean;
+  loading: boolean;
+  onReview: (action: "approve_training_aid" | "modify_training_aid" | "remove_training_aid" | "reject_training_aid") => void;
+  selectedAidId: string;
+  setSelectedAidId: (aidId: string) => void;
+}) {
+  const setupSteps = aid.setupSteps ?? [];
+  const safetyNotes = aid.safetyNotes ?? [];
+  const evidence = aid.evidence ?? [];
+  return (
+    <section className="practice-training-aid-card">
+      <div className="practice-training-aid-head">
+        <div>
+          <span>{trainingAidSourceLabel(aid)}</span>
+          <h4>{aid.name}</h4>
+        </div>
+        <strong>{aid.confidence ?? "moderate"} confidence</strong>
+      </div>
+      {aid.whyItFits && <p>{aid.whyItFits}</p>}
+      {evidence.length > 0 && (
+        <div className="practice-training-aid-evidence">
+          <span>Evidence</span>
+          {evidence.slice(0, 3).map((item) => (
+            <small key={`${item.source}-${item.tendency}-${item.summary}`}>{item.summary}</small>
+          ))}
+        </div>
+      )}
+      {setupSteps.length > 0 && (
+        <div>
+          <h4>Training Aid Setup</h4>
+          <ol className="practice-instruction-list">
+            {setupSteps.map((step) => <li key={step}>{step}</li>)}
+          </ol>
+        </div>
+      )}
+      {aid.noEquipmentAlternative && (
+        <div className="practice-training-aid-alt">
+          <span>No-equipment alternative</span>
+          <p>{aid.noEquipmentAlternative}</p>
+        </div>
+      )}
+      {safetyNotes.length > 0 && (
+        <div className="practice-training-aid-safety">
+          <span>Safety</span>
+          {safetyNotes.map((note) => <small key={note}>{note}</small>)}
+        </div>
+      )}
+      {canReview && (
+        <div className="practice-training-aid-review">
+          <span>{trainingAidReviewLabel(aid)}</span>
+          <div className="practice-training-aid-actions">
+            <button className="secondary-action" disabled={loading} onClick={() => onReview("approve_training_aid")} type="button">Approve Aid</button>
+            <button className="secondary-action" disabled={loading} onClick={() => onReview("remove_training_aid")} type="button">Remove Aid</button>
+            <button className="secondary-action" disabled={loading} onClick={() => onReview("reject_training_aid")} type="button">Reject Draft</button>
+          </div>
+          <label>
+            <span>Replace aid</span>
+            <select value={selectedAidId} onChange={(event) => setSelectedAidId(event.target.value)}>
+              {TRAINING_AID_DEFINITIONS.map((option) => (
+                <option key={option.id} value={option.id}>{option.name}</option>
+              ))}
+            </select>
+          </label>
+          <button className="secondary-action" disabled={loading || !selectedAidId} onClick={() => onReview("modify_training_aid")} type="button">Save Replacement</button>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function PracticeView({
   accountUser,
   insights,
@@ -14092,7 +14205,16 @@ function PracticeView({
     notes: "",
     reflection: "",
   });
+  const [selectedTrainingAidId, setSelectedTrainingAidId] = useState(TRAINING_AID_DEFINITIONS[0]?.id ?? "");
   const coachConnection = currentActivity?.instructions.coachConnection;
+  const visibleTrainingAid = currentActivity
+    ? visibleTrainingAidRecommendation(currentActivity.instructions.trainingAid, { role: accountUser?.role ?? "member" }) as TrainingAidRecommendation | null
+    : null;
+  const canReviewTrainingAid = Boolean(
+    visibleTrainingAid &&
+    currentActivity &&
+    (accountUser?.role === "coach" || accountUser?.role === "admin"),
+  );
   const hasSessionData = sessions.some((session) => session.shots.length > 0);
   const latestSession = sessions.find((session) => session.shots.length > 0);
   const sevenIronChallengeSession = latestSessionForSevenIronPrecision(sessions);
@@ -14150,6 +14272,10 @@ function PracticeView({
       active = false;
     };
   }, [accountUser]);
+
+  useEffect(() => {
+    setSelectedTrainingAidId(currentActivity?.instructions.trainingAid?.aidId || TRAINING_AID_DEFINITIONS[0]?.id || "");
+  }, [currentActivity?.id, currentActivity?.instructions.trainingAid?.aidId]);
 
   useEffect(() => {
     if (!accountUser) {
@@ -14267,7 +14393,7 @@ function PracticeView({
     }
   }
 
-  async function updateActivity(action: "start" | "complete" | "submit_result" | "share_with_coach") {
+  async function updateActivity(action: "start" | "complete" | "submit_result" | "share_with_coach" | "approve_training_aid" | "modify_training_aid" | "remove_training_aid" | "reject_training_aid") {
     if (!currentActivity) return;
     setLoadingAction("update");
     try {
@@ -14283,6 +14409,7 @@ function PracticeView({
           notes: resultForm.notes,
           reflection: resultForm.reflection,
           submissionType: resultForm.score ? "score" : resultForm.reflection ? "reflection" : "manual",
+          aidId: selectedTrainingAidId,
         }),
       });
       const payload = await readApiJson<{
@@ -14303,6 +14430,10 @@ function PracticeView({
         setPracticeMessage("Result submitted. MAI Coach updated the next step.");
       }
       if (action === "share_with_coach") setPracticeMessage("Result marked to share with your assigned coach.");
+      if (action === "approve_training_aid") setPracticeMessage("Training aid approved and visible to the member.");
+      if (action === "modify_training_aid") setPracticeMessage("Training aid updated.");
+      if (action === "remove_training_aid") setPracticeMessage("Training aid removed from this assignment.");
+      if (action === "reject_training_aid") setPracticeMessage("Training aid draft rejected.");
     } catch (error) {
       setPracticeMessage(error instanceof Error ? error.message : "Practice activity could not be updated.");
     } finally {
@@ -14440,6 +14571,16 @@ function PracticeView({
                 <span>{currentActivity.instructions.sourceMode?.replaceAll("_", " ") ?? "source"}</span>
                 <strong>{currentActivity.instructions.sourceSummary}</strong>
               </div>
+            )}
+            {visibleTrainingAid && (
+              <TrainingAidPracticeSection
+                aid={visibleTrainingAid}
+                canReview={canReviewTrainingAid}
+                loading={loadingAction === "update"}
+                onReview={(action) => void updateActivity(action)}
+                selectedAidId={selectedTrainingAidId}
+                setSelectedAidId={setSelectedTrainingAidId}
+              />
             )}
             <dl className="practice-activity-meta">
               <div><dt>Focus</dt><dd>{currentActivity.focusArea}</dd></div>

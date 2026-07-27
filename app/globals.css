@@ -10977,6 +10977,33 @@ input::file-selector-button {
   padding: 18px;
 }
 
+.challenge-training-aid-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgba(150, 203, 57, 0.34);
+  border-radius: 8px;
+  background: rgba(150, 203, 57, 0.1);
+  padding: 14px;
+}
+
+.challenge-training-aid-card span {
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 950;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.challenge-training-aid-card strong {
+  color: var(--ink);
+  font-size: 20px;
+}
+
+.challenge-training-aid-card small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 .session-result-summary-grid div,
 .session-challenge-result-card {
   border: 1px solid var(--line);
@@ -11135,6 +11162,95 @@ input::file-selector-button {
   color: var(--ink);
   font-size: 0.95rem;
   line-height: 1.45;
+}
+
+.practice-training-aid-card {
+  display: grid;
+  gap: 14px;
+  border: 1px solid rgba(150, 203, 57, 0.34);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(150, 203, 57, 0.12), rgba(6, 19, 16, 0.78)),
+    var(--field);
+  padding: 16px;
+}
+
+.practice-training-aid-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: start;
+}
+
+.practice-training-aid-head div {
+  display: grid;
+  gap: 4px;
+}
+
+.practice-training-aid-head span,
+.practice-training-aid-evidence span,
+.practice-training-aid-alt span,
+.practice-training-aid-safety span,
+.practice-training-aid-review > span,
+.practice-training-aid-review label span {
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 950;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.practice-training-aid-head strong {
+  border: 1px solid rgba(150, 203, 57, 0.28);
+  border-radius: 999px;
+  background: rgba(150, 203, 57, 0.11);
+  color: var(--green);
+  padding: 6px 9px;
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.practice-training-aid-evidence,
+.practice-training-aid-alt,
+.practice-training-aid-safety,
+.practice-training-aid-review {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 12px;
+}
+
+.practice-training-aid-evidence small,
+.practice-training-aid-safety small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.practice-training-aid-alt p {
+  margin: 0;
+}
+
+.practice-training-aid-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.practice-training-aid-review label {
+  display: grid;
+  gap: 7px;
+}
+
+.practice-training-aid-review select {
+  min-height: 44px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+  color: var(--ink);
+  padding: 10px;
+  font-weight: 850;
 }
 
 .practice-activity-meta {
@@ -11326,6 +11442,7 @@ input::file-selector-button {
 @media (max-width: 760px) {
   .practice-activity-meta,
   .practice-activity-actions,
+  .practice-training-aid-actions,
   .practice-challenge-criteria,
   .member-mission-context,
   .practice-progress-strip {

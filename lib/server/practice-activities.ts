@@ -11,6 +11,11 @@ import {
   PRACTICE_PROMPT_VERSION,
 } from "@/lib/practice-activity-policy.mjs";
 import {
+  applyCoachTrainingAidAction,
+  buildTrainingAidRecommendation,
+  visibleTrainingAidRecommendation,
+} from "@/lib/training-aid-policy.mjs";
+import {
   sanitizeSessionList,
   summarizeShotDataQuality,
 } from "@/lib/session-data-policy.mjs";
@@ -404,6 +409,10 @@ async function callOpenAIForPracticeActivity(context: Record<string, unknown>, a
       `Generate exactly one personalized ${activityType} for this golfer.`,
       "Use only the supplied application context.",
       "Prioritize coach-approved feedback when present, but do not expose coach-private notes.",
+      "Recommend a training aid only when the supplied evidence clearly supports it. Otherwise return No training aid needed.",
+      "Do not invent measured evidence for impact location, wrist condition, early extension, balance, or path.",
+      "Use lead/trail body-side language unless handedness is explicitly supplied.",
+      "For coach-led members, AI-only training aid suggestions are drafts for Coach review and must not override Coach guidance.",
       "Do not invent session measurements, improvement, or individual professional golfer comparisons.",
       "Return strict JSON only.",
       "",
@@ -445,6 +454,7 @@ function activityInstructions(activity: ReturnType<typeof normalizePracticeActiv
     sourceMode: activity.sourceMode,
     sourceSummary: activity.sourceSummary,
     confidence: activity.confidence,
+    trainingAid: activity.trainingAid,
   };
 }
 
@@ -616,6 +626,10 @@ export async function generatePracticeActivity(
   }
 
   const context = await loadPracticeContext(database, targetUserId, focusArea);
+  const existingInstructions = parseJson(existingActive?.instructions_json ?? "", {});
+  const existingTrainingAid = existingInstructions && typeof existingInstructions === "object" && "trainingAid" in existingInstructions
+    ? (existingInstructions as { trainingAid?: unknown }).trainingAid
+    : null;
   const previousScore = await loadLatestResultScore(database, targetUserId, focusArea, activityType);
   const model = runtime.OPENAI_ANALYSIS_MODEL || runtime.OPENAI_MODEL || "gpt-4.1-mini";
   const profileSeed =
@@ -660,6 +674,19 @@ export async function generatePracticeActivity(
     });
     return null;
   }) ?? buildDefaultPracticeActivity({ activityType, focusArea, context: promptContext });
+  const trainingAid = buildTrainingAidRecommendation({
+    activity: generated,
+    context: promptContext,
+    existingTrainingAid,
+    requestedTrainingAid: generated.trainingAid,
+  });
+  const generatedWithAid = {
+    ...generated,
+    equipment: trainingAid?.aidId && trainingAid.aidId !== "none"
+      ? Array.from(new Set([...(generated.equipment ?? []), ...(trainingAid.requiredEquipment ?? [])]))
+      : generated.equipment,
+    trainingAid,
+  };
   const generatedModel = runtime.OPENAI_API_KEY && !openAIFailureCategory
     ? model
     : runtime.OPENAI_API_KEY
@@ -679,16 +706,16 @@ export async function generatePracticeActivity(
       id,
       targetUserId,
       identity.id,
-      generated.activityType,
-      generated.focusArea,
-      generated.title,
-      generated.reasonSelected,
-      safeJson(activityInstructions(generated)),
-      generated.club,
-      generated.durationMinutes,
-      generated.attemptCount,
-      safeJson({ successTarget: generated.successTarget }),
-      safeJson(generated.scoring),
+      generatedWithAid.activityType,
+      generatedWithAid.focusArea,
+      generatedWithAid.title,
+      generatedWithAid.reasonSelected,
+      safeJson(activityInstructions(generatedWithAid)),
+      generatedWithAid.club,
+      generatedWithAid.durationMinutes,
+      generatedWithAid.attemptCount,
+      safeJson({ successTarget: generatedWithAid.successTarget }),
+      safeJson(generatedWithAid.scoring),
       safeJson(promptContext),
       context.coachFeedback?.coachId ?? null,
       context.coachFeedback?.feedbackId ?? context.coachFeedback?.videoId ?? null,
@@ -712,9 +739,28 @@ export async function generatePracticeActivity(
       coachId: context.coachFeedback?.coachId ?? null,
       aiFallbackReason: openAIFailureCategory || null,
     },
-    summary: `Generated ${generated.title}.`,
+    summary: `Generated ${generatedWithAid.title}.`,
     targetUserId,
   });
+  if (trainingAid?.aidId && trainingAid.aidId !== "none") {
+    await recordActivity({
+      action: "training_aid_suggested",
+      actor: identity,
+      database,
+      entityId: id,
+      entityType: "practice_activity",
+      memberId: targetUserId,
+      metadata: {
+        aidId: trainingAid.aidId,
+        approvalState: trainingAid.approvalState,
+        confidence: trainingAid.confidence,
+        source: trainingAid.source,
+        studentVisible: Boolean(visibleTrainingAidRecommendation(trainingAid, { role: "member" })),
+      },
+      summary: `Suggested ${trainingAid.name}.`,
+      targetUserId,
+    });
+  }
   const saved = await getActivityRow(database, id);
   return Response.json({ activity: saved ? serializePracticeActivity(saved) : null, reused: false });
 }
@@ -732,6 +778,11 @@ export async function updatePracticeActivity(
     submissionType?: unknown;
     relatedSessionId?: unknown;
     shareWithCoach?: unknown;
+    aidId?: unknown;
+    noEquipmentAlternative?: unknown;
+    safetyNotes?: unknown;
+    setupSteps?: unknown;
+    whyItFits?: unknown;
   },
 ) {
   const database = getRequiredDatabase();
@@ -869,6 +920,59 @@ export async function updatePracticeActivity(
       memberId: activity.user_id,
       metadata: { activityType: activity.activity_type, focus: activity.focus_area, coachId: activity.coach_id },
       summary: `Shared results for ${activity.title} with coach.`,
+      targetUserId: activity.user_id,
+    });
+  } else if (["approve_training_aid", "modify_training_aid", "remove_training_aid", "reject_training_aid"].includes(action)) {
+    if (identity.role !== "coach" && identity.role !== "admin") {
+      throw new Response("Only a Coach or Admin can review training aid recommendations.", { status: 403 });
+    }
+    const instructions = parseJson(activity.instructions_json, {});
+    const reviewAction = action === "approve_training_aid"
+      ? "approve"
+      : action === "modify_training_aid"
+        ? "modify"
+        : action === "remove_training_aid"
+          ? "remove"
+          : "reject";
+    const updatedTrainingAid = applyCoachTrainingAidAction(
+      instructions && typeof instructions === "object" && "trainingAid" in instructions
+        ? (instructions as { trainingAid?: unknown }).trainingAid
+        : null,
+      reviewAction,
+      {
+        aidId: values.aidId,
+        noEquipmentAlternative: values.noEquipmentAlternative,
+        safetyNotes: Array.isArray(values.safetyNotes) ? values.safetyNotes : undefined,
+        setupSteps: Array.isArray(values.setupSteps) ? values.setupSteps : undefined,
+        whyItFits: values.whyItFits,
+      },
+    );
+    await database
+      .prepare("UPDATE practice_activities SET instructions_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .bind(safeJson({
+        ...(instructions && typeof instructions === "object" ? instructions : {}),
+        trainingAid: updatedTrainingAid,
+      }), activity.id)
+      .run();
+    await recordActivity({
+      action: reviewAction === "approve"
+        ? "training_aid_approved"
+        : reviewAction === "modify"
+          ? "training_aid_modified"
+          : reviewAction === "remove"
+            ? "training_aid_removed"
+            : "training_aid_rejected",
+      actor: identity,
+      database,
+      entityId: activity.id,
+      entityType: "practice_activity",
+      memberId: activity.user_id,
+      metadata: {
+        aidId: updatedTrainingAid.aidId,
+        activityType: activity.activity_type,
+        focus: activity.focus_area,
+      },
+      summary: `Reviewed training aid for ${activity.title}.`,
       targetUserId: activity.user_id,
     });
   } else {

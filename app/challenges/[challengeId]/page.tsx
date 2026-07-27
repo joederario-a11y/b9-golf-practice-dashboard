@@ -18,6 +18,18 @@ type ChallengeState = {
       currentSuccessCount?: number;
       measuredShotCount?: number;
       nextStep?: string;
+      nextStepTrainingAid?: {
+        aidId?: string;
+        approvalState?: string;
+        confidence?: string;
+        name?: string;
+        noEquipmentAlternative?: string;
+        safetyNotes?: string[];
+        setupSteps?: string[];
+        source?: string;
+        studentVisible?: boolean;
+        whyItFits?: string;
+      };
       requiredSuccessCount?: number;
       sessionId?: string | null;
       shotResults?: {
@@ -194,6 +206,19 @@ export default function ChallengeDetailPage() {
               <div><span>Average qualified offline</span><strong>{formatNumber(result?.averageQualifyingOffline, "yd")}</strong></div>
               <div><span>Next Step</span><strong>{result?.nextStep ?? "Repeat this challenge once more before narrowing the target window."}</strong></div>
             </div>
+            {result?.nextStepTrainingAid?.aidId && result.nextStepTrainingAid.aidId !== "none" && (
+              <div className="challenge-training-aid-card">
+                <span>Supported training aid</span>
+                <strong>{result.nextStepTrainingAid.name}</strong>
+                {result.nextStepTrainingAid.whyItFits && <p>{result.nextStepTrainingAid.whyItFits}</p>}
+                {(result.nextStepTrainingAid.setupSteps ?? []).length > 0 && (
+                  <ol className="practice-instruction-list">
+                    {result.nextStepTrainingAid.setupSteps?.map((step) => <li key={step}>{step}</li>)}
+                  </ol>
+                )}
+                {result.nextStepTrainingAid.noEquipmentAlternative && <small>No-equipment alternative: {result.nextStepTrainingAid.noEquipmentAlternative}</small>}
+              </div>
+            )}
             <div className="button-row">
               <button className="primary-action" onClick={() => { window.location.href = "/"; }} type="button">Done</button>
               <button className="secondary-action" disabled={!result?.sessionId && !attempt?.sessionId} onClick={viewSession} type="button">View Session</button>
