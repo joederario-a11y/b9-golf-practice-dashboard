@@ -92,6 +92,36 @@ test("same-club measured session can produce an improved outcome without using o
   assert.ok(outcome.evidence.some((item) => item.source === "measured" && item.label === "Carry variation"));
 });
 
+test("coach wording with an alternate club option still matches the measured club", () => {
+  const outcome = evaluatePracticeOutcome({
+    activity: {
+      ...baseActivity,
+      club: "7-iron (or preferred mid-iron)",
+    },
+    attempt: {
+      completedAmount: "yes",
+      completedShotCount: 8,
+      memberConfidenceRating: 4,
+    },
+    linkedSession: {
+      id: "session-coach-club-wording",
+      shots: [
+        shot("1", "7-Iron", 150, 12),
+        shot("2", "7-Iron", 162, -10),
+        shot("3", "7-Iron", 148, 9),
+        shot("4", "7-Iron", 160, -11),
+        shot("5", "7-Iron", 153, 5),
+        shot("6", "7-Iron", 154, -4),
+        shot("7", "7-Iron", 152, 3),
+        shot("8", "7-Iron", 155, -2),
+      ],
+    },
+  });
+
+  assert.equal(outcome.measurementSource, "measured_from_session_data");
+  assert.equal(outcome.classification, "improved");
+});
+
 test("estimated metrics are not treated as measured evidence", () => {
   const estimated = { metricSources: { carry: { kind: "estimated" }, offline: { kind: "estimated" } } };
   const outcome = evaluatePracticeOutcome({
