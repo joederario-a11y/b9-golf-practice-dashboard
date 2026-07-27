@@ -65,9 +65,8 @@ test("successful recap publish confirmation names the member and included lesson
     memberName: "Liam Gerdis",
   });
   assert.equal(confirmation.title, "Lesson sent to Liam");
-  assert.match(confirmation.body, /published to Liam Gerdis/);
-  assert.match(confirmation.body, /practice recommendations/);
-  assert.equal(confirmation.includedLabel, "Video and MAI Coach lesson recap");
+  assert.match(confirmation.body, /view the video, your feedback, and the assigned practice/);
+  assert.equal(confirmation.includedLabel, "Video, Coach feedback, approved MAI observations, and assigned practice");
   assert.equal(confirmation.lessonTitle, "Jul 23, 2026");
   assert.equal(confirmation.statusLabel, "Published to Liam Gerdis");
 });
@@ -80,7 +79,7 @@ test("publish without recap confirmation does not imply feedback was included", 
     memberName: "Aubryn Taylor",
   });
   assert.equal(confirmation.title, "Video sent to Aubryn");
-  assert.match(confirmation.body, /without a MAI Coach recap/);
+  assert.match(confirmation.body, /without Coach feedback/);
   assert.equal(confirmation.includedLabel, "Video only");
   assert.equal(confirmation.sessionIncludedLabel, "Session data included");
 });

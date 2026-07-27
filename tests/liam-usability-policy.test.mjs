@@ -43,6 +43,44 @@ test("lesson transcripts are collapsed and styled for the dark interface", () =>
   assert.match(cssSource, /\.transcript-quality-warning/);
 });
 
+test("coach lesson review uses sticky publish and full-width feedback workflow", () => {
+  const feedbackSectionRule = cssSource.match(/\.coach-feedback-section\s*\{[^}]+\}/)?.[0] ?? "";
+
+  assert.match(pageSource, /coach-lesson-sticky-header/);
+  assert.match(pageSource, /`Publish to \$\{memberFirstName\}`/);
+  assert.match(pageSource, /Publish lesson to \$\{memberFirstName\}\?/);
+  assert.match(pageSource, /coach-feedback-section/);
+  assert.match(pageSource, /Add Coach Feedback/);
+  assert.match(pageSource, /Write the key issue, improvement, next focus, or drill/);
+  assert.match(pageSource, /What I Noticed/);
+  assert.match(pageSource, /Next Session Goal/);
+  assert.match(pageSource, /onIncludeFinding=\{includeVisualFindingInFeedback\}/);
+  assert.match(cssSource, /\.coach-lesson-sticky-header\s*\{[\s\S]*position: sticky/);
+  assert.match(cssSource, /\.coach-feedback-grid\s*\{[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.doesNotMatch(feedbackSectionRule, /grid-template-columns/);
+});
+
+test("MAI visual suggestions expose include, dismiss, undo, and reduced-motion dismissal", () => {
+  assert.match(pageSource, /These suggestions are private until you include them in the lesson recap/);
+  assert.match(pageSource, /Include in Recap/);
+  assert.match(pageSource, /Suggestion dismissed/);
+  assert.match(pageSource, /restoreDismissedFinding/);
+  assert.match(pageSource, /reviewFindingWithRollback\(finding, "dismissed"\)/);
+  assert.match(pageSource, /reviewFindingWithRollback\(finding, "coach_only"\)/);
+  assert.doesNotMatch(pageSource, />Keep Coach-Only</);
+  assert.doesNotMatch(pageSource, />Publish Approved Visual Notes</);
+  assert.match(cssSource, /\.visual-finding-card\.dismissing/);
+  assert.match(cssSource, /@keyframes visualSuggestionSmoke/);
+  assert.match(cssSource, /@media \(prefers-reduced-motion: reduce\)/);
+});
+
+test("coach uploads row links open the exact video while library action stays separate", () => {
+  assert.match(pageSource, /className="coach-management-link primary"/);
+  assert.match(pageSource, /onOpenMemberVideos\(video\.ownerId, video\.memberName \?\? "Member", video\.id\)/);
+  assert.match(pageSource, /title="Open member library"/);
+  assert.match(cssSource, /\.coach-management-link:focus-visible/);
+});
+
 test("shot summary explains real shot coordinates and sample size", () => {
   assert.match(pageSource, /shot-map-explanation/);
   assert.match(pageSource, /Each dot is one shot/);

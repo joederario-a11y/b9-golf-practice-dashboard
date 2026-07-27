@@ -4989,6 +4989,45 @@ function getLessonPracticeNext(video: Pick<VideoLibraryRecord, "practiceAssignme
   return combineRecapText(video.practiceAssignment, video.recommendedDrill);
 }
 
+function lessonMemberName(video: Pick<VideoLibraryRecord, "memberName">) {
+  return video.memberName?.trim() || "Student";
+}
+
+function lessonMemberFirstName(video: Pick<VideoLibraryRecord, "memberName">) {
+  return lessonMemberName(video).split(/\s+/)[0] || "Student";
+}
+
+type CoachLessonFeedbackFields = {
+  mainFocus: string;
+  nextSessionGoal: string;
+  practiceNext: string;
+  progressObserved: string;
+  quickFeedback: string;
+  whatINoticed: string;
+};
+
+function coachLessonFeedbackFromVideo(video: VideoLibraryRecord): CoachLessonFeedbackFields {
+  return {
+    mainFocus: getLessonMainFocus(video),
+    nextSessionGoal: video.nextSessionGoal ?? "",
+    practiceNext: getLessonPracticeNext(video),
+    progressObserved: video.improvement ?? "",
+    quickFeedback: video.coachNotes ?? "",
+    whatINoticed: video.lessonSummary || video.memberFacingNotes || "",
+  };
+}
+
+function coachLessonFeedbackHasContent(fields: CoachLessonFeedbackFields) {
+  return Object.values(fields).some((value) => value.trim().length > 0);
+}
+
+function appendFeedbackText(current: string, next: string) {
+  const cleaned = next.trim();
+  if (!cleaned) return current;
+  if (current.toLowerCase().includes(cleaned.toLowerCase())) return current;
+  return current.trim() ? `${current.trim()}\n\n${cleaned}` : cleaned;
+}
+
 function simplifiedFieldsFromVideoRecapDraft(draft: VideoRecapDraft) {
   return {
     lessonSummary: draft.lessonSummary,
@@ -8324,9 +8363,11 @@ export default function Home() {
             coachName={accountUser?.displayName ?? userName ?? "Coach"}
             authenticated={accountMode === "user"}
             devAuthEnabled={devAuthEnabled}
-            onOpenMemberVideos={(memberId, memberName) => {
+            onOpenMemberVideos={(memberId, memberName, videoId) => {
               setVideoLibraryMemberId(memberId);
               setVideoLibraryMemberName(memberName);
+              setRequestedVideoId(videoId ?? null);
+              setVideoLibraryResetKey((key) => key + 1);
               setActiveTab("videos");
             }}
             onRequestCoachAccess={() => changeWorkspaceRole("coach")}
@@ -11045,7 +11086,7 @@ function AdminView({
   accountUser: AccountUser | null;
   authenticated: boolean;
   onOpenCoachTools: (memberId: string, memberName: string) => void;
-  onOpenMemberVideos: (memberId: string, memberName: string) => void;
+  onOpenMemberVideos: (memberId: string, memberName: string, videoId?: string | null) => void;
 }) {
   const [dashboard, setDashboard] = useState<StaffDashboardPayload | null>(null);
   const [loading, setLoading] = useState(true);
@@ -11776,7 +11817,7 @@ function CoachView({
   coachName: string;
   devAuthEnabled: boolean;
   insights: Insight[];
-  onOpenMemberVideos: (memberId: string, memberName: string) => void;
+  onOpenMemberVideos: (memberId: string, memberName: string, videoId?: string | null) => void;
   onRequestCoachAccess: () => void;
   selectedClub: string;
   selectedClubShots: Shot[];
@@ -12008,7 +12049,7 @@ function CoachVideoWorkspace({
   authenticated: boolean;
   coachName: string;
   devAuthEnabled: boolean;
-  onOpenMemberVideos: (memberId: string, memberName: string) => void;
+  onOpenMemberVideos: (memberId: string, memberName: string, videoId?: string | null) => void;
   sessions: Session[];
   viewerRole: Exclude<VideoViewerRole, "user">;
 }) {
@@ -14013,9 +14054,32 @@ function CoachVideoWorkspace({
             {managedVideos.map((video) => (
               <div className="coach-management-row" key={video.id}>
                 <div>
-                  <strong>{video.memberName ?? members.find((member) => member.id === video.ownerId)?.name ?? "Member"}</strong>
-                  <span>{video.title}</span>
-                  <small>{formatVideoUploadDate(video.uploadedAt)} · {video.coachName ?? video.uploadedBy}</small>
+                  <button
+                    aria-label={`Open ${video.title} for ${video.memberName ?? "member"}`}
+                    className="coach-management-link primary"
+                    onClick={() => onOpenMemberVideos(video.ownerId, video.memberName ?? "Member", video.id)}
+                    type="button"
+                  >
+                    {video.memberName ?? members.find((member) => member.id === video.ownerId)?.name ?? "Member"}
+                  </button>
+                  <button
+                    aria-label={`Open lesson ${video.title} from ${formatVideoUploadDate(video.uploadedAt)}`}
+                    className="coach-management-link"
+                    onClick={() => onOpenMemberVideos(video.ownerId, video.memberName ?? "Member", video.id)}
+                    type="button"
+                  >
+                    {video.title}
+                  </button>
+                  <small>
+                    <button
+                      className="coach-management-link subtle"
+                      onClick={() => onOpenMemberVideos(video.ownerId, video.memberName ?? "Member", video.id)}
+                      type="button"
+                    >
+                      {formatVideoUploadDate(video.uploadedAt)}
+                    </button>
+                    {" · "}{video.coachName ?? video.uploadedBy}
+                  </small>
                 </div>
                 <div>
                   <span className={cls("video-status", getVideoPublicationStatus(video).toLowerCase())}>{getVideoPublicationStatus(video)}</span>
@@ -14109,13 +14173,6 @@ function CoachVideoWorkspace({
           onPublished={(record) => {
             replaceItem(record);
             setRecapReviewVideo(createVideoLibraryItem(record));
-          }}
-          onUploadAnother={() => {
-            setUploadResult(null);
-            setVideoFile(null);
-            setUploadProgress(0);
-            setShowUploadPanel(true);
-            setWorkspaceMessage("Choose another lesson video when ready.");
           }}
           video={recapReviewVideo}
         />
@@ -16418,12 +16475,10 @@ function LessonPublishConfirmationModal({
   confirmation,
   onDone,
   onOpenLibrary,
-  onUploadAnother,
 }: {
   confirmation: LessonPublishConfirmation;
   onDone: () => void;
   onOpenLibrary: () => void;
-  onUploadAnother: () => void;
 }) {
   const doneButtonRef = useRef<HTMLButtonElement | null>(null);
   const modalRef = useRef<HTMLElement | null>(null);
@@ -16503,8 +16558,6 @@ function LessonPublishConfirmationModal({
         <div className="video-modal-actions">
           <span>✓ {confirmation.statusLabel}</span>
           <div className="button-row">
-            <button className="secondary-action" onClick={onOpenLibrary} type="button">View {confirmation.memberFirstName}'s Video Library</button>
-            <button className="secondary-action" onClick={onUploadAnother} type="button">Upload Another Lesson</button>
             <button className="secondary-action" onClick={onOpenLibrary} type="button">View Published Lesson</button>
             <button className="primary-action" onClick={onDone} ref={doneButtonRef} type="button">Done</button>
           </div>
@@ -16518,13 +16571,11 @@ function AiLessonRecapReviewModal({
   onClose,
   onOpenMemberVideos,
   onPublished,
-  onUploadAnother,
   video,
 }: {
   onClose: () => void;
   onOpenMemberVideos: (memberId: string, memberName: string) => void;
   onPublished: (record: VideoLibraryRecord) => void;
-  onUploadAnother: () => void;
   video: VideoLibraryItem;
 }) {
   const [state, setState] = useState<VideoRecapState | null>(null);
@@ -16809,11 +16860,6 @@ function AiLessonRecapReviewModal({
           onClose();
           onOpenMemberVideos(memberId, memberName);
         }}
-        onUploadAnother={() => {
-          setPublishConfirmation(null);
-          onClose();
-          onUploadAnother();
-        }}
       />
     );
   }
@@ -16990,43 +17036,44 @@ function confidenceLabel(value?: number | null) {
 
 function VisualFindingCard({
   canReview,
+  dismissing = false,
   finding,
+  onDismiss,
+  onInclude,
   onReview,
 }: {
   canReview: boolean;
+  dismissing?: boolean;
   finding: VideoVisualAnalysisFinding;
+  onDismiss?: (finding: VideoVisualAnalysisFinding) => void;
+  onInclude?: (finding: VideoVisualAnalysisFinding) => void;
   onReview: (finding: VideoVisualAnalysisFinding, reviewStatus: "include_in_recap" | "coach_only" | "dismissed") => void;
 }) {
+  const included = finding.reviewStatus === "include_in_recap";
+  const dismissed = finding.reviewStatus === "dismissed";
   return (
-    <article className={cls("visual-finding-card", finding.reviewStatus === "dismissed" && "dismissed")}>
+    <article className={cls("visual-finding-card", dismissed && "dismissed", dismissing && "dismissing")}>
       <div>
         <span>{finding.phase || "Visible swing"} · {confidenceLabel(finding.confidence)}</span>
         <strong>{finding.title}</strong>
         {finding.explanation && <p>{finding.explanation}</p>}
         <small>{visualFindingComparisonLabel(finding.sourceComparison)} · {finding.classification?.replaceAll("_", " ") || "observed"}</small>
       </div>
-      {canReview && finding.id && (
+      {canReview && finding.id && !included && !dismissed && (
         <div className="visual-review-actions">
           <button
-            className={cls("secondary-action", finding.reviewStatus === "include_in_recap" && "active")}
-            onClick={() => onReview(finding, "include_in_recap")}
-            type="button"
-          >
-            Include in Student Recap
-          </button>
-          <button
-            className={cls("secondary-action", finding.reviewStatus === "coach_only" && "active")}
-            onClick={() => onReview(finding, "coach_only")}
-            type="button"
-          >
-            Keep Coach-Only
-          </button>
-          <button
-            className={cls("text-button danger-text-button", finding.reviewStatus === "dismissed" && "active")}
-            onClick={() => onReview(finding, "dismissed")}
+            className="text-button danger-text-button"
+            onClick={() => (onDismiss ? onDismiss(finding) : onReview(finding, "dismissed"))}
             type="button"
           >
             Dismiss
+          </button>
+          <button
+            className="secondary-action"
+            onClick={() => (onInclude ? onInclude(finding) : onReview(finding, "include_in_recap"))}
+            type="button"
+          >
+            Include in Recap
           </button>
         </div>
       )}
@@ -17036,10 +17083,12 @@ function VisualFindingCard({
 
 function VideoVisualAnalysisPanel({
   compact = false,
+  onIncludeFinding,
   video,
   viewerRole,
 }: {
   compact?: boolean;
+  onIncludeFinding?: (finding: VideoVisualAnalysisFinding) => void;
   video: VideoLibraryItem;
   viewerRole: VideoViewerRole;
 }) {
@@ -17047,10 +17096,17 @@ function VideoVisualAnalysisPanel({
   const [message, setMessage] = useState("Loading MAI visual swing analysis...");
   const [saving, setSaving] = useState(false);
   const [storedFrameAvailable, setStoredFrameAvailable] = useState(Boolean(video.thumbnailObjectUrl));
+  const [reviewOverrides, setReviewOverrides] = useState<Record<string, VideoVisualAnalysisFinding["reviewStatus"]>>({});
+  const [dismissingIds, setDismissingIds] = useState<Record<string, boolean>>({});
+  const [undoDismissed, setUndoDismissed] = useState<VideoVisualAnalysisFinding | null>(null);
+  const undoDismissTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setStoredFrameAvailable(Boolean(video.thumbnailObjectUrl));
+    setReviewOverrides({});
+    setDismissingIds({});
+    setUndoDismissed(null);
     readVideoVisualAnalysis(video.id)
       .then((payload) => {
         if (cancelled) return;
@@ -17065,13 +17121,23 @@ function VideoVisualAnalysisPanel({
     };
   }, [video.id]);
 
+  useEffect(() => () => {
+    if (undoDismissTimerRef.current) window.clearTimeout(undoDismissTimerRef.current);
+  }, []);
+
   const analysis = state?.analysis;
   const structured = analysis?.structuredResult;
   const allFindings = [
     ...(structured?.strengths ?? []),
     ...(structured?.observations ?? []),
     ...(structured?.priority ? [structured.priority] : []),
-  ];
+  ].map((finding) => {
+    const override = finding.id ? reviewOverrides[finding.id] : undefined;
+    return override ? { ...finding, reviewStatus: override } : finding;
+  });
+  const pendingFindings = allFindings.filter((finding) => finding.reviewStatus !== "include_in_recap" && finding.reviewStatus !== "dismissed");
+  const includedFindings = allFindings.filter((finding) => finding.reviewStatus === "include_in_recap");
+  const dismissedFindings = allFindings.filter((finding) => finding.reviewStatus === "dismissed");
   const canReview = Boolean(state?.canReview);
   const canRequest = Boolean(state?.canRequest);
   const coachLed = state?.coachLed ?? viewerRole !== "user";
@@ -17115,12 +17181,78 @@ function VideoVisualAnalysisPanel({
     });
   }
 
+  async function reviewFindingWithRollback(finding: VideoVisualAnalysisFinding, reviewStatus: "include_in_recap" | "coach_only" | "dismissed") {
+    if (!analysis?.id || !finding.id) return false;
+    const previousStatus = finding.reviewStatus;
+    setReviewOverrides((current) => ({ ...current, [finding.id as string]: reviewStatus }));
+    setSaving(true);
+    try {
+      const payload = await updateVideoVisualAnalysis({
+        action: "reviewObservation",
+        analysisId: analysis.id,
+        observationId: finding.id,
+        reviewStatus,
+        videoId: video.id,
+      });
+      setState(payload);
+      return true;
+    } catch (error) {
+      setReviewOverrides((current) => ({ ...current, [finding.id as string]: previousStatus }));
+      setMessage(error instanceof Error ? error.message : "The suggestion review could not be saved.");
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function includeFinding(finding: VideoVisualAnalysisFinding) {
+    if (!finding.id) return;
+    onIncludeFinding?.(finding);
+    setMessage("Added to Coach Feedback.");
+    void reviewFindingWithRollback(finding, "include_in_recap").then((ok) => {
+      if (!ok) setMessage("The suggestion could not be included. Try again.");
+    });
+  }
+
+  function dismissFinding(finding: VideoVisualAnalysisFinding) {
+    if (!finding.id) return;
+    const findingId = finding.id;
+    setDismissingIds((current) => ({ ...current, [findingId]: true }));
+    window.setTimeout(() => {
+      setDismissingIds((current) => {
+        const next = { ...current };
+        delete next[findingId];
+        return next;
+      });
+      setUndoDismissed(finding);
+      if (undoDismissTimerRef.current) window.clearTimeout(undoDismissTimerRef.current);
+      undoDismissTimerRef.current = window.setTimeout(() => setUndoDismissed(null), 5000);
+      void reviewFindingWithRollback(finding, "dismissed").then((ok) => {
+        if (ok) {
+          setMessage("Suggestion dismissed.");
+        } else {
+          setUndoDismissed(null);
+          setMessage("The suggestion could not be dismissed, so it was restored.");
+        }
+      });
+    }, 320);
+  }
+
+  function restoreDismissedFinding() {
+    if (!undoDismissed?.id) return;
+    if (undoDismissTimerRef.current) window.clearTimeout(undoDismissTimerRef.current);
+    const finding = undoDismissed;
+    setUndoDismissed(null);
+    setMessage("Suggestion restored.");
+    void reviewFindingWithRollback(finding, "coach_only");
+  }
+
   if (showMemberCoachedEmpty && compact) return null;
 
-  const title = viewerRole === "user" && !coachLed ? "MAI Swing Analysis" : "MAI Visual Swing Analysis";
+  const title = viewerRole === "user" && !coachLed ? "MAI Swing Analysis" : "MAI Suggestions";
   const kicker = viewerRole === "user" && !coachLed
     ? "AI-generated visual analysis"
-    : "Supplemental";
+    : "Supplemental observations for Coach review";
 
   return (
     <section className={cls("panel", "visual-analysis-panel", compact && "compact")}>
@@ -17146,6 +17278,9 @@ function VideoVisualAnalysisPanel({
           <span><strong>MAI Visual Swing Analysis</strong><small>Supplemental</small></span>
         </div>
       )}
+      {coachLed && viewerRole !== "user" && (
+        <p className="visual-suggestion-privacy-note">These suggestions are private until you include them in the lesson recap.</p>
+      )}
       {viewerRole === "user" && coachLed && (
         <details className="approved-transcript visual-member-disclosure">
           <summary>Additional MAI swing observations</summary>
@@ -17170,20 +17305,67 @@ function VideoVisualAnalysisPanel({
           <span>{analysis.handedness || "Handedness unknown"}</span>
         </div>
       )}
-      {allFindings.length > 0 ? (
+      {pendingFindings.length > 0 ? (
         <div className="visual-finding-list">
-          {allFindings.map((finding, index) => (
+          {pendingFindings.map((finding, index) => (
             <VisualFindingCard
               canReview={canReview}
+              dismissing={Boolean(finding.id && dismissingIds[finding.id])}
               finding={finding}
               key={finding.id ?? `${finding.title}-${index}`}
+              onDismiss={dismissFinding}
+              onInclude={includeFinding}
               onReview={reviewFinding}
             />
           ))}
         </div>
-      ) : analysis?.status === "ready_for_member" || analysis?.status === "ready_for_coach_review" ? (
+      ) : allFindings.length === 0 && (analysis?.status === "ready_for_member" || analysis?.status === "ready_for_coach_review") ? (
         <p className="video-note-empty">No visual findings were confident enough to share.</p>
       ) : null}
+      {undoDismissed && (
+        <div className="visual-dismiss-undo" role="status">
+          <span>Suggestion dismissed</span>
+          <button className="text-button" onClick={restoreDismissedFinding} type="button">Undo</button>
+        </div>
+      )}
+      {(includedFindings.length > 0 || dismissedFindings.length > 0) && (
+        <div className="visual-suggestion-history">
+          {includedFindings.length > 0 && (
+            <details>
+              <summary>Included Suggestions ({includedFindings.length})</summary>
+              <div className="visual-finding-list compact-history">
+                {includedFindings.map((finding, index) => (
+                  <VisualFindingCard canReview={false} finding={finding} key={finding.id ?? `included-${index}`} onReview={reviewFinding} />
+                ))}
+              </div>
+            </details>
+          )}
+          {dismissedFindings.length > 0 && (
+            <details>
+              <summary>Dismissed Suggestions ({dismissedFindings.length})</summary>
+              <div className="visual-finding-list compact-history">
+                {dismissedFindings.map((finding, index) => (
+                  <div className="visual-history-item" key={finding.id ?? `dismissed-${index}`}>
+                    <VisualFindingCard canReview={false} finding={finding} onReview={reviewFinding} />
+                    {canReview && finding.id && (
+                      <button
+                        className="secondary-action compact-action"
+                        onClick={() => {
+                          setMessage("Suggestion restored.");
+                          void reviewFindingWithRollback(finding, "coach_only");
+                        }}
+                        type="button"
+                      >
+                        Restore
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </div>
+      )}
       {structured?.suggestedDrill && (
         <article className="visual-drill-card">
           <span>{viewerRole === "user" && !coachLed ? "Practice next" : "Coach-review drill suggestion"}</span>
@@ -17194,11 +17376,6 @@ function VideoVisualAnalysisPanel({
       )}
       <div className="video-modal-actions visual-analysis-actions">
         <span>{message}</span>
-        {canReview && analysis?.status === "ready_for_coach_review" && (
-          <button className="primary-action" disabled={saving} onClick={() => void submit("publishApproved")} type="button">
-            Publish Approved Visual Notes
-          </button>
-        )}
       </div>
     </section>
   );
@@ -17210,6 +17387,7 @@ function VideoDetailView({
   onAddSessionData,
   onOpenRelated,
   onRemoveSessionLink,
+  onPublish,
   onSetPrimarySessionLink,
   onUpdate,
   relatedVideos,
@@ -17223,6 +17401,7 @@ function VideoDetailView({
   onAddSessionData: () => void;
   onOpenRelated: (video: VideoLibraryItem) => void;
   onRemoveSessionLink: (linkId: string) => void;
+  onPublish: (patch: Partial<VideoLibraryRecord>) => Promise<VideoLibraryRecord | void>;
   onSetPrimarySessionLink: (linkId: string) => void;
   onUpdate: (patch: Partial<VideoLibraryRecord>) => void | Promise<void>;
   relatedVideos: VideoLibraryItem[];
@@ -17232,10 +17411,16 @@ function VideoDetailView({
   viewerRole: VideoViewerRole;
 }) {
   const [userNotes, setUserNotes] = useState(video.userNotes);
-  const [coachNotes, setCoachNotes] = useState(video.coachNotes);
   const [coachNotesPrivate, setCoachNotesPrivate] = useState(video.coachNotesPrivate);
+  const [coachFeedbackFields, setCoachFeedbackFields] = useState<CoachLessonFeedbackFields>(() => coachLessonFeedbackFromVideo(video));
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const [publishPrompt, setPublishPrompt] = useState<"withFeedback" | "withoutFeedback" | null>(null);
+  const [publishConfirmation, setPublishConfirmation] = useState<LessonPublishConfirmation | null>(null);
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [publishing, setPublishing] = useState(false);
   const [recapUpdateMessage, setRecapUpdateMessage] = useState("");
+  const [lessonWorkspaceMessage, setLessonWorkspaceMessage] = useState("");
   const [annotationState, setAnnotationState] = useState<VideoAnnotationState | null>(null);
   const [annotationMessage, setAnnotationMessage] = useState("");
   const [showAnnotationWorkspace, setShowAnnotationWorkspace] = useState(false);
@@ -17268,6 +17453,22 @@ function VideoDetailView({
   const publishedAnnotations = annotationState?.published?.annotations ?? [];
   const hasPublishedAnnotations = publishedAnnotations.length > 0;
   const canManageMarkups = canEditCoachNotes && !playbackMessage;
+  const memberName = lessonMemberName(video);
+  const memberFirstName = lessonMemberFirstName(video);
+  const coachName = video.coachName ?? video.uploadedBy;
+  const lessonDateLabel = video.lessonDate ? formatVideoUploadDate(video.lessonDate) : formatVideoUploadDate(video.uploadedAt);
+  const feedbackExists = coachLessonFeedbackHasContent(coachFeedbackFields);
+  const publishDisabled = publishing || video.uploadStatus !== "ready";
+
+  useEffect(() => {
+    setUserNotes(video.userNotes);
+    setCoachNotesPrivate(video.coachNotesPrivate);
+    setCoachFeedbackFields(coachLessonFeedbackFromVideo(video));
+    setConfirmDelete(false);
+    setMoreMenuOpen(false);
+    setPublishPrompt(null);
+    setLessonWorkspaceMessage("");
+  }, [video.id]);
 
   useEffect(() => {
     let active = true;
@@ -17299,35 +17500,202 @@ function VideoDetailView({
     }
   }
 
+  function updateFeedbackField(key: keyof CoachLessonFeedbackFields, value: string) {
+    setCoachFeedbackFields((current) => ({ ...current, [key]: value }));
+  }
+
+  function coachFeedbackPatch(extra: Partial<VideoLibraryRecord> = {}): Partial<VideoLibraryRecord> {
+    const quickFeedback = coachFeedbackFields.quickFeedback.trim();
+    return {
+      coachNotes: quickFeedback,
+      coachNotesPrivate,
+      improvement: coachFeedbackFields.progressObserved.trim(),
+      keyIssue: "",
+      lessonSummary: coachFeedbackFields.whatINoticed.trim(),
+      memberFacingNotes: "",
+      nextSessionGoal: coachFeedbackFields.nextSessionGoal.trim(),
+      practiceAssignment: coachFeedbackFields.practiceNext.trim(),
+      recommendedDrill: "",
+      status: "Coach Feedback",
+      workedOn: coachFeedbackFields.mainFocus.trim(),
+      ...extra,
+    };
+  }
+
+  async function saveCoachFeedbackDraft() {
+    if (!canEditCoachNotes || savingDraft) return;
+    setSavingDraft(true);
+    try {
+      await onUpdate(coachFeedbackPatch());
+      setLessonWorkspaceMessage("Coach feedback draft saved.");
+    } catch (error) {
+      setLessonWorkspaceMessage(error instanceof Error ? error.message : "Coach feedback could not be saved.");
+    } finally {
+      setSavingDraft(false);
+    }
+  }
+
+  function includeVisualFindingInFeedback(finding: VideoVisualAnalysisFinding) {
+    const textToAdd = [finding.title, finding.explanation].filter(Boolean).join(": ");
+    const classification = `${finding.classification ?? ""} ${finding.phase ?? ""} ${finding.title}`.toLowerCase();
+    const target: keyof CoachLessonFeedbackFields = classification.includes("drill") || classification.includes("practice")
+      ? "practiceNext"
+      : classification.includes("strength") || classification.includes("progress")
+        ? "progressObserved"
+        : "whatINoticed";
+    setCoachFeedbackFields((current) => ({
+      ...current,
+      [target]: appendFeedbackText(current[target], textToAdd),
+    }));
+    setLessonWorkspaceMessage("Added to Coach Feedback.");
+  }
+
+  function requestPublish() {
+    if (!canEditCoachNotes || publishDisabled) return;
+    if (getVideoPublicationStatus(video) === "Published" && video.emailStatus === "Sent") {
+      setLessonWorkspaceMessage(`${memberFirstName} already has this published lesson.`);
+      return;
+    }
+    setPublishPrompt(feedbackExists ? "withFeedback" : "withoutFeedback");
+  }
+
+  async function publishLesson() {
+    if (!publishPrompt || publishing) return;
+    setPublishing(true);
+    try {
+      const patch = coachFeedbackPatch({
+        publicationStatus: "Published",
+        status: "Reviewed",
+        updatedAt: new Date().toISOString(),
+      });
+      const publishedRecord = await onPublish(patch);
+      const publishedVideo = publishedRecord ?? { ...stripVideoObjectUrl(video), ...patch };
+      const confirmation = buildLessonPublishConfirmation({
+        includedRecap: feedbackExists,
+        includedSessionData: Boolean((publishedVideo as VideoLibraryRecord).sessionId ?? video.sessionId),
+        lessonTitle: (publishedVideo as VideoLibraryRecord).title || video.title,
+        memberName: (publishedVideo as VideoLibraryRecord).memberName || video.memberName || "Member",
+      }) as Omit<LessonPublishConfirmation, "emailFailureReason" | "emailStatus" | "includedRecap" | "includedSessionData" | "publishedAt" | "videoId">;
+      setPublishConfirmation({
+        ...confirmation,
+        emailFailureReason: (publishedVideo as VideoLibraryRecord).emailFailureReason ?? null,
+        emailStatus: (publishedVideo as VideoLibraryRecord).emailStatus,
+        includedRecap: feedbackExists,
+        includedSessionData: Boolean((publishedVideo as VideoLibraryRecord).sessionId ?? video.sessionId),
+        publishedAt: (publishedVideo as VideoLibraryRecord).updatedAt ?? new Date().toISOString(),
+        videoId: video.id,
+      });
+      setPublishPrompt(null);
+      setLessonWorkspaceMessage(`Lesson sent to ${memberFirstName}.`);
+    } catch (error) {
+      setLessonWorkspaceMessage(error instanceof Error ? error.message : "This lesson could not be published.");
+    } finally {
+      setPublishing(false);
+    }
+  }
+
+  if (publishConfirmation) {
+    return (
+      <LessonPublishConfirmationModal
+        confirmation={publishConfirmation}
+        onDone={() => setPublishConfirmation(null)}
+        onOpenLibrary={() => {
+          setPublishConfirmation(null);
+          onBack();
+        }}
+      />
+    );
+  }
+
   return (
     <section className="view-stack">
-      <div className="video-detail-toolbar">
-        <button className="secondary-action" onClick={onBack}>← Back to videos</button>
-        <div className="button-row">
-          {canManageMarkups && (
-            <button className="secondary-action" onClick={() => setShowAnnotationWorkspace(true)} type="button">
-              {hasPublishedAnnotations || annotationState?.draft ? "Edit Coach Markups" : "Annotate Video"}
-            </button>
-          )}
-          {video.status !== "Reviewed" && (
-            <button className="secondary-action" onClick={() => void onUpdate({ status: "Reviewed" })}>
-              ✓ Mark reviewed
-            </button>
-          )}
-          {canDelete && !confirmDelete && (
-            <button className="text-button danger-text-button" onClick={() => setConfirmDelete(true)}>Delete</button>
-          )}
-          {confirmDelete && (
-            <>
-              <button className="secondary-action" onClick={() => setConfirmDelete(false)}>Cancel</button>
-              <button className="primary-action danger-action" onClick={onDelete}>Delete video</button>
-            </>
-          )}
+      <div className="coach-lesson-sticky-header">
+        <button className="secondary-action" onClick={onBack}>← Back to Videos</button>
+        <div className="coach-lesson-sticky-title">
+          <strong>{memberName}</strong>
+          <span>{lessonDateLabel} · {video.title}</span>
         </div>
+        {canEditCoachNotes ? (
+          <div className="button-row coach-lesson-primary-actions">
+            {canManageMarkups && (
+              <button className="secondary-action" onClick={() => setShowAnnotationWorkspace(true)} type="button">
+                Annotate Video
+              </button>
+            )}
+            <button className="secondary-action" disabled={savingDraft} onClick={() => void saveCoachFeedbackDraft()} type="button">
+              {savingDraft ? "Saving..." : "Save Draft"}
+            </button>
+            <button className="primary-action" disabled={publishDisabled} onClick={requestPublish} type="button">
+              {publishing ? "Publishing..." : `Publish to ${memberFirstName}`}
+            </button>
+            <div className="lesson-more-menu">
+              <button aria-expanded={moreMenuOpen} aria-label="More lesson actions" className="icon-button" onClick={() => setMoreMenuOpen((current) => !current)} type="button">•••</button>
+              {moreMenuOpen && (
+                <div className="lesson-more-menu-popover" role="menu">
+                  {video.status !== "Reviewed" && (
+                    <button onClick={() => {
+                      setMoreMenuOpen(false);
+                      void onUpdate({ status: "Reviewed" });
+                    }} role="menuitem" type="button">Mark Reviewed</button>
+                  )}
+                  <button onClick={() => {
+                    const nextTitle = window.prompt("Rename video", video.title)?.trim();
+                    if (nextTitle) void onUpdate({ title: nextTitle });
+                    setMoreMenuOpen(false);
+                  }} role="menuitem" type="button">Rename Video</button>
+                  {canDelete && !confirmDelete && (
+                    <button className="danger-text-button" onClick={() => setConfirmDelete(true)} role="menuitem" type="button">Delete Video</button>
+                  )}
+                  {confirmDelete && (
+                    <div className="lesson-more-confirm">
+                      <span>Delete this video, transcript, recap, and stored media?</span>
+                      <button onClick={() => setConfirmDelete(false)} type="button">Cancel</button>
+                      <button className="danger-text-button" onClick={onDelete} type="button">Delete Video</button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <span className={cls("video-status", deliveryStatus.toLowerCase().replaceAll(" ", "-"))}>{deliveryStatus}</span>
+        )}
       </div>
 
-      <div className="video-detail-layout">
-        <section className="panel video-player-panel">
+      {publishPrompt && (
+        <div className="video-modal-overlay">
+          <section aria-modal="true" className="video-upload-modal lesson-publish-confirmation-modal" role="dialog">
+            <div className="video-modal-header">
+              <div>
+                <p className="eyebrow">Publish lesson</p>
+                <h2>{publishPrompt === "withFeedback" ? `Publish lesson to ${memberFirstName}?` : "Publish video without feedback?"}</h2>
+              </div>
+              <button aria-label="Close publish confirmation" className="icon-button" onClick={() => setPublishPrompt(null)} type="button">×</button>
+            </div>
+            <div className="lesson-publish-confirmation-body">
+              <p>
+                {publishPrompt === "withFeedback"
+                  ? "This will send the video, Coach feedback, approved MAI observations, and assigned practice."
+                  : "You have not added Coach feedback yet."}
+              </p>
+            </div>
+            <div className="video-modal-actions">
+              <span>{publishing ? `Publishing to ${memberFirstName}...` : "Ready when you are."}</span>
+              <div className="button-row">
+                <button className="secondary-action" disabled={publishing} onClick={() => setPublishPrompt(null)} type="button">
+                  {publishPrompt === "withFeedback" ? "Cancel" : "Go Back"}
+                </button>
+                <button className="primary-action" disabled={publishing} onClick={() => void publishLesson()} type="button">
+                  {publishPrompt === "withFeedback" ? "Publish Lesson" : "Publish Video Only"}
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+
+      <section className="coach-lesson-workspace">
+        <section className="panel video-player-panel coach-lesson-video-panel">
           {playbackMessage ? (
             <VideoPlaybackUnavailable message={playbackMessage} />
           ) : (
@@ -17342,12 +17710,17 @@ function VideoDetailView({
               <p className="eyebrow">{video.type}</p>
               <h2>{video.title}</h2>
               <span>
-                {video.lessonDate ? `Lesson ${formatVideoUploadDate(video.lessonDate)} · ` : ""}
-                Uploaded by {video.coachName ?? video.uploadedBy} · {formatVideoDuration(video.duration)}
+                {lessonDateLabel} · Student: {memberName} · Coach: {coachName} · Duration: {formatVideoDuration(video.duration)}
               </span>
             </div>
             <span className={cls("video-status", deliveryStatus.toLowerCase().replaceAll(" ", "-"))}>{deliveryStatus}</span>
           </div>
+          <dl className="lesson-video-metadata">
+            <div><dt>Publication</dt><dd>{getVideoPublicationStatus(video)}</dd></div>
+            <div><dt>Processing</dt><dd>{video.uploadStatus ?? "ready"}</dd></div>
+            <div><dt>Session data</dt><dd>{linkedSessionStatusLabel(video)}</dd></div>
+            <div><dt>Email</dt><dd>{video.emailStatus ?? "Not sent"}</dd></div>
+          </dl>
           {video.description && <p className="video-description">{video.description}</p>}
           <div className="video-tag-row">
             {video.swingType && <span>{video.swingType}</span>}
@@ -17362,7 +17735,7 @@ function VideoDetailView({
                 <p>{hasPublishedAnnotations
                   ? "Timestamped visual coaching notes are layered over the clean original video."
                   : canManageMarkups
-                    ? "Add visual coaching notes without changing the original video."
+                    ? "Add visual coaching notes from the sticky Annotate Video button."
                     : "No visual markups have been shared yet."}</p>
                 {annotationMessage && <small>{annotationMessage}</small>}
               </div>
@@ -17370,11 +17743,6 @@ function VideoDetailView({
                 {hasPublishedAnnotations && (
                   <button className="secondary-action compact-action" onClick={() => setShowCoachMarkups((current) => !current)} type="button">
                     {showCoachMarkups ? "Hide Coach Markups" : "Show Coach Markups"}
-                  </button>
-                )}
-                {canManageMarkups && (
-                  <button className="secondary-action compact-action" onClick={() => setShowAnnotationWorkspace(true)} type="button">
-                    {hasPublishedAnnotations ? "Edit Coach Markups" : "Annotate Video"}
                   </button>
                 )}
                 {canManageMarkups && hasPublishedAnnotations && (
@@ -17385,30 +17753,41 @@ function VideoDetailView({
           )}
         </section>
 
-        <aside className="video-notes-column">
-          <section className="panel video-note-panel">
-            <PanelHeader kicker={canEditCoachNotes ? "Coach notes" : "Coach-approved lesson recap"} title={canEditCoachNotes ? "Feedback" : "Lesson recap"} meta={canEditCoachNotes ? "Coach workspace" : "Shared with you"} />
-            {canEditCoachNotes ? (
-              <>
-                <textarea value={coachNotes} onChange={(event) => setCoachNotes(event.target.value)} placeholder="Key issue, improvement, next focus, and recommended drill..." />
-                <label className="video-private-toggle">
-                  <input checked={coachNotesPrivate} onChange={(event) => setCoachNotesPrivate(event.target.checked)} type="checkbox" />
-                  <span>Private admin-only note</span>
-                </label>
-                {video.coachPrivateNotes && (
-                  <div className="coach-private-note">
-                    <span>Private coach note</span>
-                    <p>{video.coachPrivateNotes}</p>
-                  </div>
-                )}
-                <button
-                  className="primary-action"
-                  onClick={() => void onUpdate({ coachNotes, coachNotesPrivate, status: "Coach Feedback" })}
-                >
-                  Save coach notes
+        <section className="panel coach-feedback-section">
+          {canEditCoachNotes ? (
+            <>
+              <PanelHeader kicker="Coach Feedback" title={`Add the guidance you want ${memberFirstName} to receive.`} meta="Coach text is the primary lesson." />
+              <label className="coach-feedback-quick-entry">
+                <span>Add Coach Feedback</span>
+                <textarea value={coachFeedbackFields.quickFeedback} onChange={(event) => updateFeedbackField("quickFeedback", event.target.value)} placeholder="Write the key issue, improvement, next focus, or drill..." />
+              </label>
+              <div className="coach-feedback-grid">
+                <label><span>Main Focus</span><textarea value={coachFeedbackFields.mainFocus} onChange={(event) => updateFeedbackField("mainFocus", event.target.value)} /></label>
+                <label><span>What I Noticed</span><textarea value={coachFeedbackFields.whatINoticed} onChange={(event) => updateFeedbackField("whatINoticed", event.target.value)} /></label>
+                <label><span>Progress Observed</span><textarea value={coachFeedbackFields.progressObserved} onChange={(event) => updateFeedbackField("progressObserved", event.target.value)} /></label>
+                <label><span>Practice Next</span><textarea value={coachFeedbackFields.practiceNext} onChange={(event) => updateFeedbackField("practiceNext", event.target.value)} /></label>
+                <label className="coach-feedback-wide"><span>Next Session Goal</span><textarea value={coachFeedbackFields.nextSessionGoal} onChange={(event) => updateFeedbackField("nextSessionGoal", event.target.value)} /></label>
+              </div>
+              <label className="video-private-toggle">
+                <input checked={coachNotesPrivate} onChange={(event) => setCoachNotesPrivate(event.target.checked)} type="checkbox" />
+                <span>Keep quick feedback private until published</span>
+              </label>
+              {video.coachPrivateNotes && (
+                <div className="coach-private-note">
+                  <span>Private coach note</span>
+                  <p>{video.coachPrivateNotes}</p>
+                </div>
+              )}
+              <div className="coach-feedback-actions">
+                <span>{lessonWorkspaceMessage}</span>
+                <button className="primary-action" disabled={savingDraft} onClick={() => void saveCoachFeedbackDraft()} type="button">
+                  {savingDraft ? "Saving..." : "Save Draft"}
                 </button>
-              </>
-            ) : hasApprovedRecap ? (
+              </div>
+            </>
+          ) : hasApprovedRecap ? (
+            <>
+              <PanelHeader kicker="Coach-approved lesson recap" title="Lesson recap" meta="Shared with you" />
               <div className="structured-video-notes">
                 {approvedLessonSummary && <div><span>Lesson summary</span><p>{approvedLessonSummary}</p></div>}
                 {approvedMainFocus && <div><span>Main focus</span><p>{approvedMainFocus}</p></div>}
@@ -17416,33 +17795,37 @@ function VideoDetailView({
                 {approvedPracticeNext && <div><span>Practice next</span><p>{approvedPracticeNext}</p></div>}
                 {video.nextSessionGoal && <div><span>Next session goal</span><p>{video.nextSessionGoal}</p></div>}
               </div>
-            ) : (
-              <p className="video-note-empty">No coach feedback has been shared yet.</p>
-            )}
+            </>
+          ) : (
+            <EmptyState title="No coach feedback has been shared yet" body="Your coach can add notes and publish them with this lesson." />
+          )}
+        </section>
+
+        <VideoVisualAnalysisPanel compact onIncludeFinding={includeVisualFindingInFeedback} video={video} viewerRole={viewerRole} />
+
+        {approvedPracticeNext || canEditCoachNotes ? (
+          <section className="practice-focus-callout coach-practice-next-section">
+            <span>Practice Next</span>
+            <strong>{canEditCoachNotes ? coachFeedbackFields.practiceNext || "Add or choose a drill for this lesson." : approvedPracticeNext}</strong>
+            {(canEditCoachNotes ? coachFeedbackFields.nextSessionGoal : video.nextSessionGoal) && <small>{canEditCoachNotes ? coachFeedbackFields.nextSessionGoal : video.nextSessionGoal}</small>}
+            {canEditCoachNotes && <button className="secondary-action compact-action" onClick={() => void saveCoachFeedbackDraft()} type="button">Save Practice</button>}
           </section>
+        ) : null}
 
-          {approvedPracticeNext && (
-            <section className="practice-focus-callout">
-              <span>Practice Focus Before Your Next Session</span>
-              <strong>{approvedPracticeNext}</strong>
-              {video.nextSessionGoal && <small>{video.nextSessionGoal}</small>}
-            </section>
-          )}
+        {viewerRole === "user" && <ApprovedTranscriptDisclosure videoId={video.id} />}
 
-          {viewerRole === "user" && <ApprovedTranscriptDisclosure videoId={video.id} />}
-          <VideoVisualAnalysisPanel compact video={video} viewerRole={viewerRole} />
+        {canEditUserNotes && (
+          <section className="panel video-note-panel">
+            <PanelHeader kicker="Private notes" title="My notes" meta="Only visible to you" />
+            <textarea value={userNotes} onChange={(event) => setUserNotes(event.target.value)} placeholder="What felt different? What do you want to revisit?" />
+            <button className="primary-action" onClick={() => void onUpdate({ userNotes })}>Save my notes</button>
+          </section>
+        )}
+      </section>
 
-          {canEditUserNotes && (
-            <section className="panel video-note-panel">
-              <PanelHeader kicker="Private notes" title="My notes" meta="Only visible to you" />
-              <textarea value={userNotes} onChange={(event) => setUserNotes(event.target.value)} placeholder="What felt different? What do you want to revisit?" />
-              <button className="primary-action" onClick={() => void onUpdate({ userNotes })}>Save my notes</button>
-            </section>
-          )}
-        </aside>
-      </div>
-
-      <section className="panel lesson-session-data-panel">
+      <details className="panel lesson-session-data-panel lesson-secondary-disclosure">
+        <summary>Session Data</summary>
+        <div className="lesson-secondary-body">
         <PanelHeader
           kicker="Session Data"
           title={lessonSessionLinkCountLabel(linkedSessionCount(video))}
@@ -17512,24 +17895,28 @@ function VideoDetailView({
             </div>
           </div>
         )}
-      </section>
+        </div>
+      </details>
 
-      <section className="panel">
-        <PanelHeader kicker="Next work" title="Related drills and recommendations" meta={relatedInsights.length ? "Based on linked session" : "No linked recommendations"} />
-        {relatedInsights.length ? (
-          <div className="video-recommendation-grid">
-            {relatedInsights.map((insight) => (
-              <article key={insight.id}>
-                <span>{getClubDisplayName(insight.club)}</span>
-                <strong>{insight.title}</strong>
-                <p>{insight.action}</p>
-              </article>
-            ))}
-          </div>
-        ) : (
-          <EmptyState title="No recommendations yet" body="Attach a practice session to connect this video with drills and performance priorities." />
-        )}
-      </section>
+      <details className="panel lesson-secondary-disclosure">
+        <summary>Processing Details</summary>
+        <div className="lesson-secondary-body">
+          <PanelHeader kicker="Next work" title="Related drills and recommendations" meta={relatedInsights.length ? "Based on linked session" : "No linked recommendations"} />
+          {relatedInsights.length ? (
+            <div className="video-recommendation-grid">
+              {relatedInsights.map((insight) => (
+                <article key={insight.id}>
+                  <span>{getClubDisplayName(insight.club)}</span>
+                  <strong>{insight.title}</strong>
+                  <p>{insight.action}</p>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <EmptyState title="No recommendations yet" body="Attach a practice session to connect this video with drills and performance priorities." />
+          )}
+        </div>
+      </details>
 
       {relatedVideos.length > 0 && (
         <section className="panel">
@@ -17806,6 +18193,28 @@ function VideosView({
     }
   }
 
+  async function publishVideoFromDetail(videoId: string, patch: Partial<VideoLibraryRecord>) {
+    const current = videos.find((video) => video.id === videoId);
+    if (!current) return undefined;
+    const updated = { ...current, ...patch };
+    setVideos((items) => items.map((item) => item.id === videoId ? updated : item));
+    try {
+      const notifyMember = getVideoPublicationStatus(current) !== "Published" || current.emailStatus !== "Sent";
+      const record = await finalizeVideoRecord(videoId, {
+        ...videoPatchPayload(stripVideoObjectUrl(updated)),
+        notifyMember,
+      });
+      const item = createVideoLibraryItem(record);
+      setVideos((items) => items.map((video) => video.id === videoId ? item : video));
+      setLibraryMessage(`${record.title} was published to ${record.memberName ?? "the member"}.`);
+      return record;
+    } catch (error) {
+      setVideos((items) => items.map((item) => item.id === videoId ? current : item));
+      setLibraryMessage(error instanceof Error ? error.message : "The lesson could not be published.");
+      throw error;
+    }
+  }
+
   function applyLessonSessionLinks(videoId: string, links: LessonSessionLink[], session?: Session) {
     if (session) {
       setLibrarySessions((current) => sanitizeSessionList([
@@ -18003,6 +18412,7 @@ function VideosView({
           onDelete={() => void removeVideo(selectedVideo)}
           onOpenRelated={openVideo}
           onRemoveSessionLink={(linkId) => void removeLessonSession(selectedVideo.id, linkId)}
+          onPublish={(patch) => publishVideoFromDetail(selectedVideo.id, patch)}
           onSetPrimarySessionLink={(linkId) => void setPrimaryLessonSession(selectedVideo.id, linkId)}
           onUpdate={(patch) => updateVideo(selectedVideo.id, patch)}
           relatedVideos={visibleVideos
