@@ -21,6 +21,7 @@ import {
   visibleTrainingAidRecommendation,
 } from "@/lib/training-aid-policy.mjs";
 import {
+  buildPracticeCompletionIntelligence,
   buildPracticeProgress,
   coachReviewStatusForOutcome,
   evaluatePracticeOutcome,
@@ -367,6 +368,62 @@ async function storedSessionsForUser(database: PlatformDatabase, userId: string)
   return parseSessions(row?.sessions_json);
 }
 
+async function loadRecentPracticeIntelligence(database: PlatformDatabase, userId: string) {
+  const result = await database
+    .prepare(
+      `SELECT
+        practice_activities.id AS activity_id,
+        practice_activities.title,
+        practice_activities.focus_area,
+        practice_activities.activity_type,
+        practice_activities.coach_id,
+        practice_activity_results.practice_attempt_id,
+        practice_activity_results.progress_status,
+        practice_activity_results.metrics_json,
+        practice_activity_results.next_recommendation_json,
+        practice_activity_results.media_reference_json,
+        practice_activity_results.updated_at
+       FROM practice_activity_results
+       JOIN practice_activities ON practice_activities.id = practice_activity_results.practice_activity_id
+       WHERE practice_activity_results.user_id = ?
+       ORDER BY practice_activity_results.updated_at DESC, practice_activity_results.created_at DESC
+       LIMIT 5`,
+    )
+    .bind(userId)
+    .all<{
+      activity_id: string;
+      title: string;
+      focus_area: string;
+      activity_type: string;
+      coach_id: string | null;
+      practice_attempt_id: string | null;
+      progress_status: string;
+      metrics_json: string;
+      next_recommendation_json: string;
+      media_reference_json: string;
+      updated_at: string;
+    }>();
+
+  return result.results.map((row) => {
+    const metrics = parseJson(row.metrics_json, {}) as { outcome?: Record<string, unknown> };
+    const next = parseJson(row.next_recommendation_json, {}) as Record<string, unknown>;
+    const media = parseJson(row.media_reference_json, {}) as Record<string, unknown>;
+    return {
+      activityId: row.activity_id,
+      attemptId: row.practice_attempt_id,
+      title: row.title,
+      focusArea: row.focus_area,
+      activityType: row.activity_type,
+      source: row.coach_id ? "coach" : "mai",
+      progressStatus: row.progress_status,
+      outcome: metrics.outcome ?? {},
+      nextRecommendation: next,
+      evidenceReferences: media,
+      updatedAt: row.updated_at,
+    };
+  });
+}
+
 async function loadOwnedSession(database: PlatformDatabase, userId: string, sessionId: string) {
   const requestedSessionId = text(sessionId, 180);
   if (!requestedSessionId) return null;
@@ -399,7 +456,7 @@ async function resolveTargetUser(identity: AuthIdentity, database: PlatformDatab
 }
 
 async function loadPracticeContext(database: PlatformDatabase, userId: string, focusArea: string) {
-  const [userRow, activeCoachContext, profileRow, sessionsRow, latestAnalysisRow, structuredFeedback, coachFeedback] = await Promise.all([
+  const [userRow, activeCoachContext, profileRow, sessionsRow, latestAnalysisRow, structuredFeedback, coachFeedback, recentPracticeEvidence] = await Promise.all([
     database
       .prepare("SELECT id, role, first_name, last_name, email FROM users WHERE id = ?")
       .bind(userId)
@@ -481,6 +538,7 @@ async function loadPracticeContext(database: PlatformDatabase, userId: string, f
       )
       .bind(userId)
       .first<CoachFeedbackRow>(),
+    loadRecentPracticeIntelligence(database, userId),
   ]);
   const rawProfile = parseJson(profileRow?.profile_json ?? "", null);
   const profile = sanitizePracticeProfileForIdentity(rawProfile, {
@@ -531,6 +589,10 @@ async function loadPracticeContext(database: PlatformDatabase, userId: string, f
     sessionSummary: summarizeSession(latestSession),
     sessionCount: sessions.length,
     shotDataQuality: dataQuality,
+    currentCoachingContext: profile && typeof profile === "object" && "currentCoachingContext" in profile
+      ? (profile as { currentCoachingContext?: unknown }).currentCoachingContext
+      : null,
+    recentPracticeEvidence,
     latestAnalysis,
     activeCoachContext,
     coachFeedback: structuredFeedback
@@ -1395,6 +1457,231 @@ async function recordPracticeAttemptActivityOnce(
   await recordActivity({ ...values, database });
 }
 
+async function upsertPlayerCoachingContext(
+  database: PlatformDatabase,
+  userId: string,
+  intelligence: ReturnType<typeof buildPracticeCompletionIntelligence>,
+) {
+  const user = await database
+    .prepare("SELECT id, email, first_name, last_name FROM users WHERE id = ?")
+    .bind(userId)
+    .first<{ id: string; email: string; first_name: string; last_name: string }>();
+  if (!user) return;
+  const existing = await database
+    .prepare("SELECT profile_json FROM golf_practice_profiles WHERE user_id = ?")
+    .bind(userId)
+    .first<{ profile_json: string }>();
+  const profile = parseJson(existing?.profile_json ?? "", {}) as Record<string, unknown>;
+  const history = Array.isArray(profile.recentPracticeOutcomes) ? profile.recentPracticeOutcomes : [];
+  const nextHistory = [
+    intelligence,
+    ...history.filter((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+      return (item as { attemptId?: unknown }).attemptId !== intelligence.attemptId;
+    }),
+  ].slice(0, 8);
+  const nextProfile = {
+    ...(profile && typeof profile === "object" && !Array.isArray(profile) ? profile : {}),
+    currentCoachingContext: intelligence,
+    recentPracticeOutcomes: nextHistory,
+  };
+  const displayName = [user.first_name, user.last_name].filter(Boolean).join(" ") || user.email;
+  if (existing) {
+    await database
+      .prepare(
+        `UPDATE golf_practice_profiles
+         SET user_email = ?, display_name = ?, profile_json = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = ?`,
+      )
+      .bind(user.email, displayName, safeJson(nextProfile), userId)
+      .run();
+    return;
+  }
+  await database
+    .prepare(
+      `INSERT INTO golf_practice_profiles (
+        user_email, user_id, display_name, profile_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT(user_email) DO UPDATE SET
+        user_id = excluded.user_id,
+        display_name = excluded.display_name,
+        profile_json = excluded.profile_json,
+        updated_at = CURRENT_TIMESTAMP`,
+    )
+    .bind(user.email, userId, displayName, safeJson(nextProfile))
+    .run();
+}
+
+function nextPlanTitle(activity: PracticeActivityRow, outcome: ReturnType<typeof evaluatePracticeOutcome>) {
+  const base = text(activity.title, "Practice Plan");
+  if (outcome.recommendedNextAction === "progress") return `Progression: ${base}`;
+  if (outcome.recommendedNextAction === "modify") return `Adjusted: ${base}`;
+  if (outcome.recommendedNextAction === "replace") return `${activity.focus_area} Checkpoint`;
+  return `Repeat: ${base}`;
+}
+
+function nextPlanInstructions(
+  activity: PracticeActivityRow,
+  outcome: ReturnType<typeof evaluatePracticeOutcome>,
+  intelligence: ReturnType<typeof buildPracticeCompletionIntelligence>,
+) {
+  const previous = parseJson(activity.instructions_json, {}) as Record<string, unknown>;
+  return {
+    ...previous,
+    sourceMode: "practice_completion",
+    sourceSummary: outcome.recommendedReason,
+    priorAssignment: {
+      id: activity.id,
+      title: activity.title,
+      result: outcome.classification,
+      confidence: outcome.confidence,
+      evidencePrimary: intelligence.evidenceProvenance.primary,
+    },
+    coachConnection: {
+      connected: false,
+      coachName: null,
+      summary: "MAI Coach generated this from the previous practice completion.",
+    },
+  };
+}
+
+async function createNextIndependentPracticePlanFromCompletion(
+  identity: AuthIdentity,
+  database: PlatformDatabase,
+  values: {
+    activity: PracticeActivityRow;
+    attempt: PracticeAttemptRow;
+    outcome: ReturnType<typeof evaluatePracticeOutcome>;
+    intelligence: ReturnType<typeof buildPracticeCompletionIntelligence>;
+    resultId: string;
+  },
+) {
+  const activeCoachContext = await loadActiveCoachContext(database, values.activity.user_id);
+  if (activeCoachContext.hasActiveCoach) {
+    return { created: false, reason: "active_coach_relationship", activityId: null };
+  }
+  if (values.outcome.recommendedNextAction === "complete") {
+    return { created: false, reason: "priority_complete", activityId: null };
+  }
+  const prior = await database
+    .prepare(
+      `SELECT id FROM practice_activities
+       WHERE user_id = ?
+         AND source_context_json LIKE ?
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    )
+    .bind(values.activity.user_id, `%${values.attempt.id}%`)
+    .first<{ id: string }>();
+  if (prior) return { created: false, reason: "existing_attempt_next_plan", activityId: prior.id };
+
+  const existingActive = await database
+    .prepare(
+      `SELECT id FROM practice_activities
+       WHERE user_id = ?
+         AND activity_type = ?
+         AND focus_area = ?
+         AND status IN ('generated', 'in_progress')
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    )
+    .bind(values.activity.user_id, values.activity.activity_type, values.activity.focus_area)
+    .first<{ id: string }>();
+  if (existingActive) return { created: false, reason: "existing_active_same_focus", activityId: existingActive.id };
+
+  const nextActivityId = crypto.randomUUID();
+  const sourceContext = {
+    promptVersion: "practice-completion-intelligence-v1",
+    source: "practice_completion",
+    createdFromActivityId: values.activity.id,
+    createdFromAttemptId: values.attempt.id,
+    createdFromResultId: values.resultId,
+    outcome: values.outcome,
+    playerIntelligence: values.intelligence,
+    disabledFeatures: {
+      tourTwin: true,
+      professionalPlayerMatching: true,
+    },
+  };
+  await database
+    .prepare(
+      `INSERT INTO practice_activities (
+        id, user_id, generated_by, activity_type, focus_area, title, reason_selected,
+        instructions_json, club, duration_minutes, attempt_count, target_json,
+        scoring_json, source_context_json, coach_id, coach_feedback_source_id,
+        related_session_id, status, model, prompt_version, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, 'generated', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+    )
+    .bind(
+      nextActivityId,
+      values.activity.user_id,
+      values.activity.user_id,
+      values.activity.activity_type,
+      values.activity.focus_area,
+      nextPlanTitle(values.activity, values.outcome),
+      values.outcome.recommendedReason,
+      safeJson(nextPlanInstructions(values.activity, values.outcome, values.intelligence)),
+      values.activity.club,
+      values.activity.duration_minutes,
+      values.activity.attempt_count,
+      values.activity.target_json,
+      values.activity.scoring_json,
+      safeJson(sourceContext),
+      values.activity.related_session_id,
+      "policy:practice-completion-intelligence-v1",
+      "practice-completion-intelligence-v1",
+    )
+    .run();
+
+  await recordPracticeAttemptActivityOnce(database, {
+    action: "mai_next_practice_created",
+    actor: identity,
+    entityId: values.attempt.id,
+    entityType: "practice_attempt",
+    memberId: values.activity.user_id,
+    metadata: {
+      activityId: values.activity.id,
+      nextActivityId,
+      resultId: values.resultId,
+      recommendedNextAction: values.outcome.recommendedNextAction,
+      confidence: values.outcome.confidence,
+    },
+    summary: `Created the next MAI practice plan after ${values.activity.title}.`,
+    targetUserId: values.activity.user_id,
+  });
+  return { created: true, reason: "created", activityId: nextActivityId };
+}
+
+async function attachIntelligenceToPracticeResult(
+  database: PlatformDatabase,
+  resultId: string,
+  values: {
+    intelligence: ReturnType<typeof buildPracticeCompletionIntelligence>;
+    nextPlan: { created: boolean; reason: string; activityId: string | null };
+  },
+) {
+  const row = await database
+    .prepare("SELECT next_recommendation_json FROM practice_activity_results WHERE id = ?")
+    .bind(resultId)
+    .first<{ next_recommendation_json: string }>();
+  const current = parseJson(row?.next_recommendation_json ?? "", {}) as Record<string, unknown>;
+  await database
+    .prepare(
+      `UPDATE practice_activity_results
+       SET next_recommendation_json = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+    )
+    .bind(
+      safeJson({
+        ...(current && typeof current === "object" && !Array.isArray(current) ? current : {}),
+        playerIntelligence: values.intelligence,
+        nextPlan: values.nextPlan,
+      }),
+      resultId,
+    )
+    .run();
+}
+
 export async function getPracticeActivityDetail(identity: AuthIdentity, activityId: string) {
   const database = getRequiredDatabase();
   await preparePracticeDatabase(database);
@@ -1631,11 +1918,58 @@ export async function updatePracticeActivity(
       sharedWithCoach: coachReviewStatus === "pending" ? 1 : 0,
       mediaReferences: evidenceReferences,
     });
-    const completionAction = completed === "partial" ? "practice_partially_completed" : "practice_completed";
+    const playerIntelligence = buildPracticeCompletionIntelligence({
+      activity: {
+        id: activity.id,
+        userId: activity.user_id,
+        coachId: activity.coach_id,
+        activityType: activity.activity_type,
+        focusArea: activity.focus_area,
+        title: activity.title,
+        instructions: parseJson(activity.instructions_json, {}),
+        club: activity.club,
+        durationMinutes: activity.duration_minutes,
+        attemptCount: activity.attempt_count,
+        status: activity.status,
+      },
+      attempt: refreshedAttempt,
+      outcome,
+      evidenceReferences,
+      resultId,
+    });
+    await upsertPlayerCoachingContext(database, activity.user_id, playerIntelligence);
+    await recordPracticeAttemptActivityOnce(database, {
+      action: "player_intelligence_updated",
+      actor: identity,
+      entityId: attempt.id,
+      entityType: "practice_attempt",
+      memberId: activity.user_id,
+      metadata: {
+        activityId: activity.id,
+        resultId,
+        currentPracticePriority: playerIntelligence.currentPracticePriority,
+        evidencePrimary: playerIntelligence.evidenceProvenance.primary,
+        confidence: playerIntelligence.confidence,
+      },
+      summary: `Updated MAI Coach context from ${activity.title}.`,
+      targetUserId: activity.user_id,
+    });
     await database
       .prepare("UPDATE practice_activities SET status = ?, completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .bind(coachReviewStatus === "pending" ? "results_submitted" : "completed", activity.id)
       .run();
+    const nextPlan = await createNextIndependentPracticePlanFromCompletion(identity, database, {
+      activity,
+      attempt: refreshedAttempt,
+      outcome,
+      intelligence: playerIntelligence,
+      resultId,
+    });
+    await attachIntelligenceToPracticeResult(database, resultId, {
+      intelligence: playerIntelligence,
+      nextPlan,
+    });
+    const completionAction = completed === "partial" ? "practice_partially_completed" : "practice_completed";
     await recordPracticeAttemptActivityOnce(database, {
       action: completionAction,
       actor: identity,

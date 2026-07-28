@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  buildPracticeCompletionIntelligence,
   buildPracticeProgress,
   coachReviewStatusForOutcome,
   evaluatePracticeOutcome,
@@ -208,6 +209,55 @@ test("coach-led outcomes remain pending until Coach review", () => {
   assert.equal(nextActionVisibility(baseActivity, outcome).label, "AI-generated practice recommendation");
 });
 
+test("practice completion intelligence preserves evidence priority and avoids fabricated trends", () => {
+  const measuredOutcome = evaluatePracticeOutcome({
+    activity: baseActivity,
+    attempt: { completedAmount: "yes", completedShotCount: 8, memberConfidenceRating: 4 },
+    linkedSession: {
+      id: "session-intelligence",
+      shots: [
+        shot("1", "7-Iron", 150, 12),
+        shot("2", "7-Iron", 162, -10),
+        shot("3", "7-Iron", 148, 9),
+        shot("4", "7-Iron", 160, -11),
+        shot("5", "7-Iron", 153, 5),
+        shot("6", "7-Iron", 154, -4),
+        shot("7", "7-Iron", 152, 3),
+        shot("8", "7-Iron", 155, -2),
+      ],
+    },
+  });
+  const measured = buildPracticeCompletionIntelligence({
+    activity: baseActivity,
+    attempt: { id: "attempt-1", memberDifficultyLabel: "expected", trainingAidUsed: true, trainingAidHelpfulness: 4 },
+    outcome: measuredOutcome,
+    evidenceReferences: { sources: ["photo", "session"], linkedSessionId: "session-intelligence" },
+    resultId: "result-1",
+  });
+
+  assert.equal(measured.evidenceProvenance.primary, "measured");
+  assert.equal(measured.trendPolicy, "single_completion_checkpoint_not_long_term_trend");
+  assert.equal(measured.assignmentCompleted.id, "practice-1");
+  assert.equal(measured.recommendedNextAction, "progress");
+
+  const weakOutcome = evaluatePracticeOutcome({
+    activity: baseActivity,
+    attempt: { completedAmount: "yes", completedSetCount: 2, memberNotes: "Felt better." },
+  });
+  const weak = buildPracticeCompletionIntelligence({
+    activity: baseActivity,
+    attempt: { id: "attempt-weak", memberDifficultyLabel: "great" },
+    outcome: weakOutcome,
+    evidenceReferences: { sources: ["manual"] },
+    resultId: "result-weak",
+  });
+
+  assert.equal(weak.evidenceProvenance.primary, "user_confirmed");
+  assert.equal(weak.trend, "insufficient_data");
+  assert.equal(weak.remainingOpportunity, "Add session data next time to measure the result.");
+  assert.equal(weak.measuredOutcome.length, 0);
+});
+
 test("practice completion schema and API expose attempts, idempotency, and same-member session guards", () => {
   const platform = readFileSync(new URL("../lib/server/platform.ts", import.meta.url), "utf8");
   const server = readFileSync(new URL("../lib/server/practice-activities.ts", import.meta.url), "utf8");
@@ -221,6 +271,11 @@ test("practice completion schema and API expose attempts, idempotency, and same-
   assert.match(server, /recordPracticeAttemptActivityOnce/);
   assert.match(server, /practice_reflection_submitted/);
   assert.match(server, /practice_evidence_added/);
+  assert.match(server, /upsertPlayerCoachingContext/);
+  assert.match(server, /createNextIndependentPracticePlanFromCompletion/);
+  assert.match(server, /createdFromAttemptId/);
+  assert.match(server, /player_intelligence_updated/);
+  assert.match(server, /mai_next_practice_created/);
   assert.match(server, /coach_review_requested/);
   assert.match(api, /activityId/);
   assert.match(page, /Today's Practice Plan/);
