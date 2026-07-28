@@ -5024,6 +5024,7 @@ type CoachLessonFeedbackFields = {
   customObservation: string;
   customTrainingAid: string;
   drillId: string;
+  lessonSummary: string;
   mainFocus: string;
   nextSessionGoal: string;
   physicalConsideration: string;
@@ -5103,6 +5104,7 @@ function serializeStructuredLessonDraft(fields: CoachLessonFeedbackFields) {
     customGoal: fields.customGoal,
     customTrainingAid: fields.customTrainingAid,
     drillId: fields.drillId,
+    lessonSummary: fields.lessonSummary,
     mainFocus: fields.mainFocus,
     nextSessionGoal: fields.nextSessionGoal,
     physicalConsideration: fields.physicalConsideration,
@@ -5161,9 +5163,9 @@ function observationsText(fields: CoachLessonFeedbackFields) {
 
 function coachLessonFeedbackFromVideo(video: VideoLibraryRecord): CoachLessonFeedbackFields {
   const structured = parseStructuredLessonDraft(video.coachPrivateNotes);
+  const legacyObservations = lineList(video.lessonSummary || video.memberFacingNotes);
   const mainFocus = structured?.mainFocus || getLessonMainFocus(video) || "Face control";
   const selectedDrillId = structured?.drillId || findDrillIdFromText(video.practiceAssignment || video.recommendedDrill);
-  const legacyObservations = lineList(video.lessonSummary || video.memberFacingNotes);
   const progressParts = (video.improvement ?? "").split(":");
   const progressStatus = structured?.progressStatus ||
     (COACH_LESSON_PROGRESS_OPTIONS.includes(progressParts[0]?.trim()) ? progressParts[0].trim() : "Not enough evidence");
@@ -5180,6 +5182,7 @@ function coachLessonFeedbackFromVideo(video: VideoLibraryRecord): CoachLessonFee
     customObservation: "",
     customTrainingAid: structured?.customTrainingAid || "",
     drillId: selectedDrillId,
+    lessonSummary: structured?.lessonSummary || video.lessonSummary || legacyObservations.join("\n"),
     mainFocus,
     nextSessionGoal: structured?.nextSessionGoal || video.nextSessionGoal || "Hit the target 12 of 15 times",
     physicalConsideration: structured?.physicalConsideration || "",
@@ -5202,6 +5205,7 @@ function coachLessonFeedbackFromVideo(video: VideoLibraryRecord): CoachLessonFee
 function coachLessonFeedbackHasContent(fields: CoachLessonFeedbackFields) {
   return Boolean(
     fields.mainFocus.trim() ||
+    fields.lessonSummary.trim() ||
     fields.whatINoticed.length ||
     fields.progressStatus !== "Not enough evidence" ||
     fields.progressNote.trim() ||
@@ -5225,6 +5229,63 @@ function simplifiedFieldsFromVideoRecapDraft(draft: VideoRecapDraft) {
     nextSessionGoal: draft.nextSessionGoal,
     practiceNext: combineRecapText(draft.practiceAssignment, draft.recommendedDrill),
     progressObserved: draft.improvement,
+  };
+}
+
+function coachAudioStatusCopy(state: VideoRecapState | null, video: VideoLibraryItem) {
+  const status = lessonProcessingStatus({
+    draft: state?.draft,
+    job: state?.job,
+    transcript: state?.transcript,
+    video,
+  });
+  const hasSummary = Boolean(state?.draft?.lessonSummary?.trim() || state?.draft?.workedOn?.trim() || state?.draft?.practiceAssignment?.trim());
+  const hasTranscript = Boolean(state?.transcript?.text?.trim());
+  if (status.code === "ready_for_review" && hasSummary) {
+    return {
+      action: "",
+      code: "summary_ready",
+      copy: "Review the extracted coaching points below before publishing.",
+      title: "Lesson summary ready",
+    };
+  }
+  if (status.code === "ready_for_review" && hasTranscript) {
+    return {
+      action: "Generate Summary",
+      code: "audio_detected",
+      copy: "Audio is ready for lesson-summary processing.",
+      title: "Coach audio detected",
+    };
+  }
+  if (status.code === "queued" || status.code === "extracting_audio" || status.code === "transcribing" || status.code === "generating_recap") {
+    return {
+      action: "",
+      code: "processing",
+      copy: "MAI Coach is listening for lesson feedback and coaching instructions.",
+      title: "Processing Coach audio...",
+    };
+  }
+  if (status.safeFailureCode === "no_usable_audio" || state?.job?.status === "no_usable_audio") {
+    return {
+      action: "",
+      code: "no_audio",
+      copy: "Add Coach feedback manually or replace the video if the lesson should contain audio.",
+      title: "No usable Coach audio detected",
+    };
+  }
+  if (status.code === "needs_attention") {
+    return {
+      action: "Retry Audio Analysis",
+      code: "failed",
+      copy: "Your video is safe. Retry audio analysis without uploading it again.",
+      title: "Audio analysis failed",
+    };
+  }
+  return {
+    action: "Analyze Coach Audio",
+    code: "not_requested",
+    copy: "MAI Coach has not reviewed the lesson audio yet.",
+    title: "Audio analysis was not requested",
   };
 }
 
@@ -16906,6 +16967,144 @@ function LessonProcessingTracker({ state, video }: { state: VideoRecapState | nu
   );
 }
 
+function LessonAudioAnalysisPanel({
+  onApplyDraft,
+  video,
+}: {
+  onApplyDraft: (draft: VideoRecapDraft) => void;
+  video: VideoLibraryItem;
+}) {
+  const [state, setState] = useState<VideoRecapState | null>(null);
+  const [message, setMessage] = useState("Checking Coach audio analysis...");
+  const [busyAction, setBusyAction] = useState("");
+  const activeJobStatuses = new Set(["queued", "extracting_audio", "transcribing", "generating_recap"]);
+  const processingActive = Boolean(state?.job && activeJobStatuses.has(state.job.status));
+  const audioStatus = coachAudioStatusCopy(state, video);
+  const proof = transcriptProof(state?.transcript);
+  const hasDraft = Boolean(state?.draft);
+  const canRetry = audioStatus.action === "Retry Audio Analysis" || audioStatus.action === "Analyze Coach Audio";
+
+  async function loadState(nextMessage?: string) {
+    try {
+      const payload = await readVideoRecap(video.id);
+      setState(payload);
+      setMessage(nextMessage || "");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Audio analysis status could not be loaded.");
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    readVideoRecap(video.id)
+      .then((payload) => {
+        if (cancelled) return;
+        setState(payload);
+        setMessage("");
+      })
+      .catch((error) => {
+        if (!cancelled) setMessage(error instanceof Error ? error.message : "Audio analysis status could not be loaded.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [video.id]);
+
+  useEffect(() => {
+    if (!processingActive) return;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      readVideoRecap(video.id)
+        .then((payload) => {
+          if (!cancelled) setState(payload);
+        })
+        .catch(() => undefined);
+    }, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [processingActive, video.id]);
+
+  async function runAudioAction(action: "regenerateRecapFromTranscript" | "retry" | "retranscribeVideo") {
+    if (busyAction) return;
+    setBusyAction(action);
+    try {
+      const payload = await updateVideoRecap({
+        action,
+        notifyMember: false,
+        videoId: video.id,
+      });
+      setState(payload);
+      setMessage(action === "regenerateRecapFromTranscript" ? "Lesson-summary processing started." : "Audio analysis was queued.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Audio analysis could not be started.");
+    } finally {
+      setBusyAction("");
+    }
+  }
+
+  return (
+    <section aria-live="polite" className={cls("lesson-audio-status-panel", audioStatus.code)}>
+      <div>
+        <span>Audio analysis</span>
+        <strong>{audioStatus.title}</strong>
+        <p>{audioStatus.copy}</p>
+        {proof && <small>{proof}</small>}
+        {message && <small>{message}</small>}
+      </div>
+      <div className="button-row">
+        {canRetry && (
+          <button
+            className="secondary-action compact-action"
+            disabled={Boolean(busyAction) || video.uploadStatus !== "ready"}
+            onClick={() => void runAudioAction("retry")}
+            type="button"
+          >
+            {busyAction ? "Queuing..." : audioStatus.action}
+          </button>
+        )}
+        {audioStatus.action === "Generate Summary" && (
+          <button
+            className="secondary-action compact-action"
+            disabled={Boolean(busyAction)}
+            onClick={() => void runAudioAction("regenerateRecapFromTranscript")}
+            type="button"
+          >
+            {busyAction ? "Generating..." : "Generate Summary"}
+          </button>
+        )}
+        <button className="text-button" disabled={Boolean(busyAction)} onClick={() => void loadState("Audio analysis status refreshed.")} type="button">Refresh</button>
+      </div>
+      {state?.draft && audioStatus.code === "summary_ready" && (
+        <div className="lesson-audio-draft-card">
+          <div>
+            <span>Coach lesson summary</span>
+            <strong>From Coach lesson audio</strong>
+            <p>{state.draft.lessonSummary || state.draft.workedOn || "A private draft is ready for Coach review."}</p>
+          </div>
+          <div className="button-row">
+            <button className="secondary-action compact-action" onClick={() => onApplyDraft(state.draft!)} type="button">Review New Summary</button>
+            <button className="secondary-action compact-action" onClick={() => setMessage("New audio summary kept private. Your current Coach feedback remains unchanged.")} type="button">Keep Current Coach Feedback</button>
+          </div>
+          <dl>
+            {state.draft.workedOn && <div><dt>Main Focus</dt><dd>{state.draft.workedOn}</dd></div>}
+            {state.draft.improvement && <div><dt>Progress</dt><dd>{state.draft.improvement}</dd></div>}
+            {state.draft.practiceAssignment && <div><dt>Practice Next</dt><dd>{state.draft.practiceAssignment}</dd></div>}
+            {state.draft.nextSessionGoal && <div><dt>Next Session Goal</dt><dd>{state.draft.nextSessionGoal}</dd></div>}
+          </dl>
+        </div>
+      )}
+      {(state?.transcript?.text || hasDraft) && (
+        <details className="approved-transcript ai-transcript-disclosure">
+          <summary>View Transcript</summary>
+          <p>{state?.transcript?.text || "Transcript text is available only to authorized Coach review."}</p>
+        </details>
+      )}
+    </section>
+  );
+}
+
 function LessonPublishConfirmationModal({
   confirmation,
   onDone,
@@ -18056,6 +18255,22 @@ function VideoDetailView({
     setCoachFeedbackFields((current) => ({ ...current, customCue: "", cues: [...current.cues, cue].slice(0, 3) }));
   }
 
+  function applyAudioDraftToFeedback(draft: VideoRecapDraft) {
+    const simplified = simplifiedFieldsFromVideoRecapDraft(draft);
+    setCoachFeedbackFields((current) => ({
+      ...current,
+      lessonSummary: simplified.lessonSummary || current.lessonSummary,
+      mainFocus: simplified.mainFocus || current.mainFocus,
+      nextSessionGoal: simplified.nextSessionGoal || current.nextSessionGoal,
+      practiceNext: simplified.practiceNext || current.practiceNext,
+      progressNote: simplified.progressObserved || current.progressNote,
+      progressStatus: simplified.progressObserved ? current.progressStatus : current.progressStatus,
+      whyItMatters: current.whyEdited ? current.whyItMatters : simplified.mainFocus || current.whyItMatters,
+      whatINoticedNote: simplified.lessonSummary || current.whatINoticedNote,
+    }));
+    setLessonWorkspaceMessage("Audio summary applied to editable Coach Feedback. Save Draft when ready.");
+  }
+
   function coachFeedbackPatch(extra: Partial<VideoLibraryRecord> = {}): Partial<VideoLibraryRecord> {
     const structuredPrivateNotes = serializeStructuredLessonDraft(coachFeedbackFields);
     return {
@@ -18064,7 +18279,7 @@ function VideoDetailView({
       coachPrivateNotes: structuredPrivateNotes,
       improvement: progressText(coachFeedbackFields),
       keyIssue: "",
-      lessonSummary: observationsText(coachFeedbackFields),
+      lessonSummary: coachFeedbackFields.lessonSummary.trim() || observationsText(coachFeedbackFields),
       memberFacingNotes: coachFeedbackFields.whyItMatters.trim(),
       nextSessionGoal: (coachFeedbackFields.customGoal || coachFeedbackFields.nextSessionGoal).trim(),
       practiceAssignment: lessonPracticeText(coachFeedbackFields),
@@ -18209,27 +18424,16 @@ function VideoDetailView({
       <div className="coach-lesson-sticky-header">
         <button className="secondary-action" onClick={onBack}>← Back to Videos</button>
         <div className="coach-lesson-sticky-title">
-          <strong>Lesson Guidance</strong>
-          <span>{memberName} · {lessonDateLabel} · {video.title}</span>
+          <strong>{memberName}</strong>
+          <span>{lessonDateLabel}</span>
         </div>
         {canEditCoachNotes ? (
           <div className="button-row coach-lesson-primary-actions">
-            <button className="secondary-action" onClick={onUploadVideo} type="button">
-              {playbackMessage ? "Upload Video" : "Add Another Video"}
-            </button>
-            {canManageMarkups && (
-              <button className="secondary-action" onClick={() => setShowAnnotationWorkspace(true)} type="button">
-                Annotate Video
-              </button>
-            )}
-            <button className="secondary-action" onClick={openPracticeBuilderFromLesson} type="button">
-              Create Practice Plan
-            </button>
             <button className="secondary-action" disabled={savingDraft} onClick={() => void saveCoachFeedbackDraft()} type="button">
               {savingDraft ? "Saving..." : "Save Draft"}
             </button>
             <button className="secondary-action" onClick={() => setShowPreview((current) => !current)} type="button">
-              Preview
+              Preview Student View
             </button>
             <button className="primary-action" disabled={publishDisabled} onClick={requestPublish} type="button">
               {publishing ? "Publishing..." : `Publish to ${memberFirstName}`}
@@ -18310,6 +18514,24 @@ function VideoDetailView({
 
       <section className="coach-lesson-workspace">
         <section className="panel video-player-panel coach-lesson-video-panel">
+          <PanelHeader
+            kicker="Video"
+            title="Lesson Video"
+            meta="Review the recorded lesson and Coach audio status."
+            action={canEditCoachNotes ? (
+              <div className="button-row">
+                <button className="secondary-action compact-action" onClick={onUploadVideo} type="button">
+                  {playbackMessage ? "Upload Video" : "Replace Video"}
+                </button>
+                <button className="secondary-action compact-action" onClick={onUploadVideo} type="button">Add Another Video</button>
+                {canManageMarkups && (
+                  <button className="secondary-action compact-action" onClick={() => setShowAnnotationWorkspace(true)} type="button">
+                    Annotate Video
+                  </button>
+                )}
+              </div>
+            ) : undefined}
+          />
           {playbackMessage ? (
             <VideoPlaybackUnavailable message={playbackMessage} />
           ) : (
@@ -18319,6 +18541,7 @@ function VideoDetailView({
               src={video.objectUrl}
             />
           )}
+          {canEditCoachNotes && <LessonAudioAnalysisPanel onApplyDraft={applyAudioDraftToFeedback} video={video} />}
           <div className="video-detail-title">
             <div>
               <p className="eyebrow">{video.type}</p>
@@ -18371,11 +18594,23 @@ function VideoDetailView({
           {canEditCoachNotes ? (
             <>
               <PanelHeader
-                kicker="Practice Intelligence"
-                title={`Private review workspace`}
-                meta="Review the lesson, evidence, Student feedback, and MAI observations before deciding what becomes Student-facing guidance."
+                kicker="Coach Feedback"
+                title="Coach Feedback"
+                meta={`Confirm or edit the guidance you want ${memberFirstName} to receive.`}
               />
               <div className="coach-structured-flow">
+                <section className="coach-structured-card coach-structured-card-wide">
+                  <p className="eyebrow">Coach Lesson Summary</p>
+                  <label>
+                    <span>Editable Coach lesson summary</span>
+                    <textarea
+                      value={coachFeedbackFields.lessonSummary}
+                      onChange={(event) => updateFeedbackField("lessonSummary", event.target.value)}
+                      placeholder="Summarize what you told the Student and what changed during the lesson."
+                    />
+                  </label>
+                </section>
+
                 <section className="coach-structured-card">
                   <p className="eyebrow">Main Focus</p>
                   <div className="coach-structured-two">
@@ -18428,70 +18663,6 @@ function VideoDetailView({
                 </section>
 
                 <section className="coach-structured-card">
-                  <p className="eyebrow">Practice Next</p>
-                  <div className="coach-structured-two">
-                    <label><span>Search drills</span><input value={drillSearch} onChange={(event) => setDrillSearch(event.target.value)} placeholder="Gate, towel, ladder..." type="search" /></label>
-                    <label><span>Drill</span><select value={coachFeedbackFields.drillId} onChange={(event) => setLessonDrill(event.target.value)}>
-                      {filteredLessonDrills.map((drill) => <option key={drill.id} value={drill.id}>{drill.title} · {drill.focus}</option>)}
-                      <option value={COACH_LESSON_NO_DRILL}>None</option>
-                      <option value={COACH_LESSON_CUSTOM_DRILL}>+ Add Custom Drill</option>
-                    </select></label>
-                  </div>
-                  {selectedLessonDrill && <div className="coach-builder-inline-preview"><strong>{selectedLessonDrill.title}</strong><span>{selectedLessonDrill.description}</span><small>{selectedLessonDrill.volume} · {selectedLessonDrill.trainingAid}</small></div>}
-                  {coachFeedbackFields.drillId === COACH_LESSON_CUSTOM_DRILL && (
-                    <div className="coach-builder-custom-panel">
-                      <p className="eyebrow">Add Custom Drill</p>
-                      <label><span>Drill name</span><input value={coachFeedbackFields.customDrill} onChange={(event) => updateFeedbackField("customDrill", event.target.value)} /></label>
-                      <label><span>Short instructions</span><textarea value={coachFeedbackFields.customDrillDescription} onChange={(event) => updateFeedbackField("customDrillDescription", event.target.value)} /></label>
-                      <div className="coach-structured-two">
-                        <label><span>Suggested volume</span><input value={coachFeedbackFields.customDrillVolume} onChange={(event) => updateFeedbackField("customDrillVolume", event.target.value)} placeholder="15 shots" /></label>
-                        <label><span>Success goal</span><input value={coachFeedbackFields.customDrillSuccess} onChange={(event) => updateFeedbackField("customDrillSuccess", event.target.value)} placeholder="Hit target 12 of 15 times" /></label>
-                      </div>
-                      <div className="button-row">
-                        <button className="secondary-action compact-action" onClick={() => setLessonWorkspaceMessage("Custom drill saved for this lesson. Coach library persistence is deferred for now.")} type="button">Use for This Lesson</button>
-                        <button className="secondary-action compact-action" disabled title="Coach-scoped drill library persistence is not available in the current schema." type="button">Save to My Library</button>
-                        <button className="text-button" onClick={() => setLessonDrill(COACH_LESSON_NO_DRILL)} type="button">Cancel</button>
-                      </div>
-                    </div>
-                  )}
-                  <div className="coach-structured-three">
-                    <ClubSelector compact label="Club" onChange={(value) => updateFeedbackField("club", value || "No specific club")} options={COACH_PRACTICE_CLUB_OPTIONS} value={coachFeedbackFields.club} />
-                    <label><span>Training Aid</span><select value={coachFeedbackFields.trainingAid} onChange={(event) => updateFeedbackField("trainingAid", event.target.value)}>
-                      {filteredLessonAids.map((option) => <option key={option}>{option}</option>)}
-                    </select></label>
-                    <label><span>Practice Volume</span><select value={coachFeedbackFields.volumePreset} onChange={(event) => updateFeedbackField("volumePreset", event.target.value)}>
-                      {COACH_VOLUME_PRESETS.map((option) => <option key={option}>{option}</option>)}
-                    </select></label>
-                  </div>
-                  {coachFeedbackFields.trainingAid === "Other" && <label><span>Add Custom Aid</span><input value={coachFeedbackFields.customTrainingAid} onChange={(event) => updateFeedbackField("customTrainingAid", event.target.value)} /></label>}
-                  {coachFeedbackFields.volumePreset === "Custom" && <label><span>Custom Volume</span><input value={coachFeedbackFields.customDrillVolume} onChange={(event) => updateFeedbackField("customDrillVolume", event.target.value)} placeholder="12 rehearsals, then 8 balls" /></label>}
-                  <div className="coach-selected-chip-row" aria-label="Selected coaching cues">
-                    {coachFeedbackFields.cues.map((cue) => (
-                      <button key={cue} onClick={() => toggleLessonCue(cue)} type="button">{cue} <span aria-hidden="true">×</span></button>
-                    ))}
-                    {coachFeedbackFields.cues.length < 3 && <span>{3 - coachFeedbackFields.cues.length} Student-facing cue{3 - coachFeedbackFields.cues.length === 1 ? "" : "s"} available</span>}
-                  </div>
-                  <label><span>Search Cues</span><input value={cueSearch} onChange={(event) => setCueSearch(event.target.value)} placeholder="Face, finish, posture..." type="search" /></label>
-                  <div className="coach-builder-chip-grid">
-                    {filteredLessonCues.map((cue) => (
-                      <button aria-pressed={coachFeedbackFields.cues.includes(cue)} className={coachFeedbackFields.cues.includes(cue) ? "selected" : ""} disabled={!coachFeedbackFields.cues.includes(cue) && coachFeedbackFields.cues.length >= 3} key={cue} onClick={() => toggleLessonCue(cue)} type="button">{cue}</button>
-                    ))}
-                  </div>
-                  <div className="coach-structured-two">
-                    <label><span>Add Custom Cue</span><input value={coachFeedbackFields.customCue} onChange={(event) => updateFeedbackField("customCue", event.target.value)} /></label>
-                    <button className="secondary-action compact-action" disabled={!coachFeedbackFields.customCue.trim() || coachFeedbackFields.cues.length >= 3} onClick={addCustomLessonCue} type="button">+ Add Cue</button>
-                  </div>
-                </section>
-
-                <section className="coach-structured-card">
-                  <p className="eyebrow">Next Session Goal</p>
-                  <label><span>Success goal</span><select value={coachFeedbackFields.nextSessionGoal} onChange={(event) => updateFeedbackField("nextSessionGoal", event.target.value)}>
-                    {COACH_SUCCESS_CRITERIA_OPTIONS.map((option) => <option key={option}>{option}</option>)}
-                  </select></label>
-                  {coachFeedbackFields.nextSessionGoal === "Custom success criterion" && <label><span>Add Custom Goal</span><input value={coachFeedbackFields.customGoal} onChange={(event) => updateFeedbackField("customGoal", event.target.value)} /></label>}
-                </section>
-
-                <section className="coach-structured-card">
                   <p className="eyebrow">Student Message</p>
                   <label>
                     <span>Optional Student Message</span>
@@ -18508,35 +18679,6 @@ function VideoDetailView({
                   </div>
                 </details>
 
-                {showPreview && (
-                  <section className="coach-student-preview" aria-live="polite">
-                    <p className="eyebrow">Student Preview</p>
-                    <h3>{coachFeedbackFields.mainFocus === "Other" ? coachFeedbackFields.customFocus || "Custom focus" : coachFeedbackFields.mainFocus}</h3>
-                    <dl>
-                      <div><dt>Coach</dt><dd>{coachName}</dd></div>
-                      <div><dt>Lesson video</dt><dd>{video.title}</dd></div>
-                      <div><dt>What we noticed</dt><dd>{observationsText(coachFeedbackFields) || "Coach review"}</dd></div>
-                      <div><dt>Progress</dt><dd>{progressText(coachFeedbackFields)}</dd></div>
-                      <div><dt>Practice next</dt><dd>{drillTitleForLesson(coachFeedbackFields) || "Coach choice"}</dd></div>
-                      <div><dt>Training aid</dt><dd>{coachFeedbackFields.trainingAid}</dd></div>
-                      <div><dt>Volume</dt><dd>{coachFeedbackFields.volumePreset === "Custom" ? coachFeedbackFields.customDrillVolume || "Custom volume" : coachFeedbackFields.volumePreset}</dd></div>
-                      <div><dt>Coaching cues</dt><dd>{coachFeedbackFields.cues.join(" · ") || "None selected"}</dd></div>
-                      <div><dt>Next session goal</dt><dd>{coachFeedbackFields.customGoal || coachFeedbackFields.nextSessionGoal}</dd></div>
-                    </dl>
-                    {coachFeedbackFields.studentMessage && <p>{coachFeedbackFields.studentMessage}</p>}
-                    <small>Private Coach Context and raw diagnostic details are hidden.</small>
-                  </section>
-                )}
-              </div>
-              <div className="coach-feedback-actions">
-                <span>{lessonWorkspaceMessage}</span>
-                <div className="button-row">
-                  <button className="secondary-action" onClick={openPracticeBuilderFromLesson} type="button">Create Practice Plan</button>
-                  <button className="secondary-action" onClick={() => setShowPreview((current) => !current)} type="button">Preview</button>
-                  <button className="primary-action" disabled={savingDraft} onClick={() => void saveCoachFeedbackDraft()} type="button">
-                    {savingDraft ? "Saving..." : "Save Draft"}
-                  </button>
-                </div>
               </div>
             </>
           ) : hasApprovedRecap ? (
@@ -18556,21 +18698,227 @@ function VideoDetailView({
           )}
         </section>
 
-        <VideoVisualAnalysisPanel compact onIncludeFinding={includeVisualFindingInFeedback} video={video} viewerRole={viewerRole} />
-
         {approvedPracticeNext || canEditCoachNotes ? (
-          <section className="practice-focus-callout coach-practice-next-section">
-            <span>Practice Next</span>
-            <strong>{practiceDrillTitle}</strong>
-            <div className="practice-next-detail-grid">
-              <div><span>Why it matters</span><p>{practiceWhyItMatters}</p></div>
-              <div><span>Training aid</span><p>{practiceTrainingAid}</p></div>
-              <div><span>Sets / shots / time</span><p>{practiceSets}</p></div>
-              <div><span>Success goal</span><p>{practiceSuccessGoal}</p></div>
-            </div>
-            {canEditCoachNotes && <button className="secondary-action compact-action" onClick={openPracticeBuilderFromLesson} type="button">Create Practice Plan</button>}
+          <section className="panel coach-practice-assignment-section">
+            <PanelHeader
+              kicker="What to Practice"
+              title="What to Practice"
+              meta="Assign the next focused Student practice without leaving the lesson."
+              action={canEditCoachNotes ? <button className="secondary-action compact-action" onClick={openPracticeBuilderFromLesson} type="button">Open Full Practice Plan Builder</button> : undefined}
+            />
+            {canEditCoachNotes ? (
+              <div className="coach-structured-flow">
+                <section className="coach-structured-card">
+                  <p className="eyebrow">Focus</p>
+                  <label><span>Practice focus</span><select value={coachFeedbackFields.mainFocus} onChange={(event) => setLessonFocus(event.target.value)}>
+                    {COACH_PRACTICE_FOCUS_OPTIONS.map((option) => <option key={option}>{option}</option>)}
+                  </select></label>
+                  {coachFeedbackFields.mainFocus === "Other" && <label><span>Add Custom Focus</span><input value={coachFeedbackFields.customFocus} onChange={(event) => updateFeedbackField("customFocus", event.target.value)} /></label>}
+                  <label><span>Why it matters</span><textarea value={coachFeedbackFields.whyItMatters} onChange={(event) => setCoachFeedbackFields((current) => ({ ...current, whyEdited: true, whyItMatters: event.target.value }))} /></label>
+                </section>
+                <section className="coach-structured-card">
+                  <p className="eyebrow">Drill</p>
+                  <div className="coach-structured-two">
+                    <label><span>Search drills</span><input value={drillSearch} onChange={(event) => setDrillSearch(event.target.value)} placeholder="Gate, towel, ladder..." type="search" /></label>
+                    <label><span>Drill</span><select value={coachFeedbackFields.drillId} onChange={(event) => setLessonDrill(event.target.value)}>
+                      {filteredLessonDrills.map((drill) => <option key={drill.id} value={drill.id}>{drill.title} · {drill.focus}</option>)}
+                      <option value={COACH_LESSON_NO_DRILL}>None</option>
+                      <option value={COACH_LESSON_CUSTOM_DRILL}>+ Add Coach Drill</option>
+                    </select></label>
+                  </div>
+                  {selectedLessonDrill && <div className="coach-builder-inline-preview"><strong>{selectedLessonDrill.title}</strong><span>{selectedLessonDrill.description}</span><small>{selectedLessonDrill.volume} · {selectedLessonDrill.trainingAid}</small></div>}
+                  {coachFeedbackFields.drillId === COACH_LESSON_CUSTOM_DRILL && (
+                    <div className="coach-builder-custom-panel">
+                      <p className="eyebrow">Add Coach Drill</p>
+                      <label><span>Name</span><input value={coachFeedbackFields.customDrill} onChange={(event) => updateFeedbackField("customDrill", event.target.value)} /></label>
+                      <label><span>Short instructions</span><textarea value={coachFeedbackFields.customDrillDescription} onChange={(event) => updateFeedbackField("customDrillDescription", event.target.value)} /></label>
+                      <div className="coach-structured-two">
+                        <label><span>Suggested volume</span><input value={coachFeedbackFields.customDrillVolume} onChange={(event) => updateFeedbackField("customDrillVolume", event.target.value)} placeholder="15 shots" /></label>
+                        <label><span>Success goal</span><input value={coachFeedbackFields.customDrillSuccess} onChange={(event) => updateFeedbackField("customDrillSuccess", event.target.value)} placeholder="Hit target 12 of 15 times" /></label>
+                      </div>
+                      <div className="button-row">
+                        <button className="secondary-action compact-action" onClick={() => setLessonWorkspaceMessage("Custom drill saved for this lesson. Coach library persistence is deferred for now.")} type="button">Use for This Lesson</button>
+                        <button className="secondary-action compact-action" disabled title="Coach-scoped drill library persistence is not available in the current schema." type="button">Save to My Library</button>
+                        <button className="text-button" onClick={() => setLessonDrill(COACH_LESSON_NO_DRILL)} type="button">Cancel</button>
+                      </div>
+                    </div>
+                  )}
+                </section>
+                <section className="coach-structured-card coach-structured-card-wide">
+                  <p className="eyebrow">Practice Details</p>
+                  <div className="coach-structured-three">
+                    <ClubSelector compact label="Club" onChange={(value) => updateFeedbackField("club", value || "No specific club")} options={COACH_PRACTICE_CLUB_OPTIONS} value={coachFeedbackFields.club} />
+                    <label><span>Training Aid</span><select value={coachFeedbackFields.trainingAid} onChange={(event) => updateFeedbackField("trainingAid", event.target.value)}>
+                      {filteredLessonAids.map((option) => <option key={option}>{option}</option>)}
+                    </select></label>
+                    <label><span>Practice Volume</span><select value={coachFeedbackFields.volumePreset} onChange={(event) => updateFeedbackField("volumePreset", event.target.value)}>
+                      {COACH_VOLUME_PRESETS.map((option) => <option key={option}>{option}</option>)}
+                    </select></label>
+                  </div>
+                  {coachFeedbackFields.trainingAid === "Other" && <label><span>Add Coach Aid</span><input value={coachFeedbackFields.customTrainingAid} onChange={(event) => updateFeedbackField("customTrainingAid", event.target.value)} /></label>}
+                  {coachFeedbackFields.volumePreset === "Custom" && <label><span>Custom Volume</span><input value={coachFeedbackFields.customDrillVolume} onChange={(event) => updateFeedbackField("customDrillVolume", event.target.value)} placeholder="12 rehearsals, then 8 balls" /></label>}
+                  <label><span>Success Goal</span><select value={coachFeedbackFields.nextSessionGoal} onChange={(event) => updateFeedbackField("nextSessionGoal", event.target.value)}>
+                    {COACH_SUCCESS_CRITERIA_OPTIONS.map((option) => <option key={option}>{option}</option>)}
+                  </select></label>
+                  {coachFeedbackFields.nextSessionGoal === "Custom success criterion" && <label><span>Custom Success Goal</span><input value={coachFeedbackFields.customGoal} onChange={(event) => updateFeedbackField("customGoal", event.target.value)} /></label>}
+                </section>
+                <section className="coach-structured-card coach-structured-card-wide">
+                  <p className="eyebrow">Coaching Cues</p>
+                  <div className="coach-selected-chip-row" aria-label="Selected coaching cues">
+                    {coachFeedbackFields.cues.map((cue) => (
+                      <button key={cue} onClick={() => toggleLessonCue(cue)} type="button">{cue} <span aria-hidden="true">×</span></button>
+                    ))}
+                    {coachFeedbackFields.cues.length < 3 && <span>{3 - coachFeedbackFields.cues.length} Student-facing cue{3 - coachFeedbackFields.cues.length === 1 ? "" : "s"} available</span>}
+                  </div>
+                  <label><span>Search Cues</span><input value={cueSearch} onChange={(event) => setCueSearch(event.target.value)} placeholder="Face, finish, posture..." type="search" /></label>
+                  <div className="coach-builder-chip-grid">
+                    {filteredLessonCues.map((cue) => (
+                      <button aria-pressed={coachFeedbackFields.cues.includes(cue)} className={coachFeedbackFields.cues.includes(cue) ? "selected" : ""} disabled={!coachFeedbackFields.cues.includes(cue) && coachFeedbackFields.cues.length >= 3} key={cue} onClick={() => toggleLessonCue(cue)} type="button">{cue}</button>
+                    ))}
+                  </div>
+                  <div className="coach-structured-two">
+                    <label><span>Add Custom Cue</span><input value={coachFeedbackFields.customCue} onChange={(event) => updateFeedbackField("customCue", event.target.value)} /></label>
+                    <button className="secondary-action compact-action" disabled={!coachFeedbackFields.customCue.trim() || coachFeedbackFields.cues.length >= 3} onClick={addCustomLessonCue} type="button">+ Add Cue</button>
+                  </div>
+                </section>
+              </div>
+            ) : (
+              <div className="practice-focus-callout coach-practice-next-section">
+                <span>Practice Next</span>
+                <strong>{practiceDrillTitle}</strong>
+                <div className="practice-next-detail-grid">
+                  <div><span>Why it matters</span><p>{practiceWhyItMatters}</p></div>
+                  <div><span>Training aid</span><p>{practiceTrainingAid}</p></div>
+                  <div><span>Sets / shots / time</span><p>{practiceSets}</p></div>
+                  <div><span>Success goal</span><p>{practiceSuccessGoal}</p></div>
+                </div>
+              </div>
+            )}
           </section>
         ) : null}
+
+        {canEditCoachNotes && (
+          <section className="panel coach-practice-intelligence-section">
+            <PanelHeader
+              kicker="Practice Intelligence"
+              title="Practice Intelligence"
+              meta="Private Coach support. Nothing here reaches the Student unless you choose to include it."
+            />
+            <details className="lesson-secondary-disclosure">
+              <summary>Student Reflection</summary>
+              <div className="lesson-secondary-body">
+                <div className="coach-intelligence-card">
+                  <span>Student reported</span>
+                  <p>{video.userNotes || "No Student reflection has been added for this lesson yet."}</p>
+                </div>
+              </div>
+            </details>
+            <details className="lesson-secondary-disclosure">
+              <summary>Measured Practice Evidence</summary>
+              <div className="lesson-secondary-body">
+                <PanelHeader
+                  kicker="Measured"
+                  title={lessonSessionLinkCountLabel(linkedSessionCount(video))}
+                  meta={primaryLink ? `${primaryLink.session.clubLabel} · ${primaryLink.session.shotCount} shots` : "No session evidence attached"}
+                  action={<button className="secondary-action compact-action" onClick={onAddSessionData} type="button">Add Practice Results</button>}
+                />
+                <VideoSessionMetrics session={primaryLinkedSession} video={video} />
+                {sessionLinks.length ? (
+                  <div className="lesson-session-link-list">
+                    {sessionLinks.map((link) => (
+                      <article className={cls("lesson-session-link-card", link.isPrimary && "primary")} key={link.id}>
+                        <div>
+                          <span>{link.isPrimary ? "Primary lesson session" : link.reviewStatus}</span>
+                          <strong>{link.session.date ? formatFullDate(link.session.date) : "Date unavailable"}</strong>
+                          <p>{link.session.clubLabel} · {link.session.shotCount} shots · {link.session.source}</p>
+                          <small>Attached by {link.attachedByName} · {link.attachedByRole}</small>
+                        </div>
+                        <div className="button-row">
+                          {!link.isPrimary && <button className="secondary-action compact-action" onClick={() => onSetPrimarySessionLink(link.id)} type="button">Mark Primary</button>}
+                          <button
+                            className="text-button danger-text-button"
+                            onClick={() => {
+                              if (window.confirm("Remove this session link from the lesson? The underlying session data will stay saved.")) {
+                                onRemoveSessionLink(link.id);
+                              }
+                            }}
+                            type="button"
+                          >
+                            Remove Link
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <EmptyState title="No measured evidence attached" body="Add launch-monitor results only when they help support this lesson." />
+                )}
+              </div>
+            </details>
+            <details className="lesson-secondary-disclosure">
+              <summary>MAI Visual Observations</summary>
+              <div className="lesson-secondary-body">
+                <VideoVisualAnalysisPanel compact onIncludeFinding={includeVisualFindingInFeedback} video={video} viewerRole={viewerRole} />
+              </div>
+            </details>
+            <details className="lesson-secondary-disclosure">
+              <summary>Private MAI Suggestions</summary>
+              <div className="lesson-secondary-body">
+                <PanelHeader kicker="Private" title="Related drills and recommendations" meta={relatedInsights.length ? "Based on linked session" : "No linked recommendations"} />
+                {relatedInsights.length ? (
+                  <div className="video-recommendation-grid">
+                    {relatedInsights.map((insight) => (
+                      <article key={insight.id}>
+                        <span>{getClubDisplayName(insight.club)}</span>
+                        <strong>{insight.title}</strong>
+                        <p>{insight.action}</p>
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <EmptyState title="No private suggestions yet" body="Coach feedback can be published without reviewing MAI suggestions." />
+                )}
+              </div>
+            </details>
+          </section>
+        )}
+
+        {canEditCoachNotes && (
+          <section className="panel coach-preview-publish-section">
+            <PanelHeader
+              kicker="Preview and Publish"
+              title="Preview and Publish"
+              meta={`Check exactly what ${memberFirstName} will see before sending.`}
+            />
+            {showPreview ? (
+              <section className="coach-student-preview" aria-live="polite">
+                <p className="eyebrow">Preview Student View</p>
+                <h3>{coachFeedbackFields.mainFocus === "Other" ? coachFeedbackFields.customFocus || "Custom focus" : coachFeedbackFields.mainFocus}</h3>
+                <dl>
+                  <div><dt>Video</dt><dd>{video.title}</dd></div>
+                  <div><dt>Coach</dt><dd>{coachName}</dd></div>
+                  <div><dt>Coach summary</dt><dd>{coachFeedbackFields.lessonSummary || "Coach summary not added"}</dd></div>
+                  <div><dt>What we noticed</dt><dd>{observationsText(coachFeedbackFields) || "Coach review"}</dd></div>
+                  <div><dt>Progress</dt><dd>{progressText(coachFeedbackFields) || "Not specified"}</dd></div>
+                  <div><dt>Practice assignment</dt><dd>{drillTitleForLesson(coachFeedbackFields) || "No practice assigned"}</dd></div>
+                  <div><dt>Training aid</dt><dd>{coachFeedbackFields.trainingAid}</dd></div>
+                  <div><dt>Volume</dt><dd>{coachFeedbackFields.volumePreset === "Custom" ? coachFeedbackFields.customDrillVolume || "Custom volume" : coachFeedbackFields.volumePreset}</dd></div>
+                  <div><dt>Coaching cues</dt><dd>{coachFeedbackFields.cues.join(" · ") || "None selected"}</dd></div>
+                  <div><dt>Success goal</dt><dd>{coachFeedbackFields.customGoal || coachFeedbackFields.nextSessionGoal || "Not specified"}</dd></div>
+                </dl>
+                {coachFeedbackFields.studentMessage && <p>{coachFeedbackFields.studentMessage}</p>}
+                <small>Private Coach Context, raw transcript, diagnostic confidence, unapproved MAI suggestions, and physical considerations are hidden.</small>
+              </section>
+            ) : (
+              <div className="lesson-publish-readiness-card">
+                <span>Ready to send</span>
+                <strong>{feedbackExists ? "Coach guidance is ready for review." : "Video can be published without Coach feedback."}</strong>
+                <p>{feedbackExists ? `${memberFirstName} will receive the approved video, Coach feedback, and practice assignment.` : "No Practice Plan or Coach feedback will be implied unless you add it first."}</p>
+              </div>
+            )}
+            {lessonWorkspaceMessage && <p className="coach-tool-status" role="status">{lessonWorkspaceMessage}</p>}
+          </section>
+        )}
 
         {viewerRole === "user" && getVideoPublicationStatus(video) === "Published" && (
           <section className="panel student-follow-up-panel">
@@ -18618,7 +18966,7 @@ function VideoDetailView({
         )}
       </section>
 
-      <details className="panel lesson-session-data-panel lesson-secondary-disclosure">
+      {!canEditCoachNotes && <details className="panel lesson-session-data-panel lesson-secondary-disclosure">
         <summary>Session Data</summary>
         <div className="lesson-secondary-body">
         <PanelHeader
@@ -18691,9 +19039,9 @@ function VideoDetailView({
           </div>
         )}
         </div>
-      </details>
+      </details>}
 
-      <details className="panel lesson-secondary-disclosure">
+      {!canEditCoachNotes && <details className="panel lesson-secondary-disclosure">
         <summary>Processing Details</summary>
         <div className="lesson-secondary-body">
           <PanelHeader kicker="Next work" title="Related drills and recommendations" meta={relatedInsights.length ? "Based on linked session" : "No linked recommendations"} />
@@ -18711,9 +19059,9 @@ function VideoDetailView({
             <EmptyState title="No recommendations yet" body="Attach a practice session to connect this video with drills and performance priorities." />
           )}
         </div>
-      </details>
+      </details>}
 
-      {relatedVideos.length > 0 && (
+      {relatedVideos.length > 0 && !canEditCoachNotes && (
         <section className="panel">
           <PanelHeader kicker="Lesson timeline" title="Previous coach videos" meta={`${relatedVideos.length} related`} />
           <div className="related-video-list">

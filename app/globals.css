@@ -5621,6 +5621,21 @@ button:disabled {
   background: linear-gradient(145deg, rgba(151, 210, 46, 0.07), rgba(16, 29, 38, 0.96));
 }
 
+.coach-practice-assignment-section,
+.coach-practice-intelligence-section,
+.coach-preview-publish-section {
+  display: grid;
+  gap: 14px;
+  max-width: 1280px;
+  justify-self: center;
+  width: 100%;
+}
+
+.coach-practice-intelligence-section {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.035), rgba(16, 29, 38, 0.92));
+}
+
 .coach-structured-flow,
 .coach-structured-card {
   display: grid;
@@ -5643,6 +5658,10 @@ button:disabled {
 .coach-structured-card:nth-child(2),
 .coach-structured-card:nth-child(4),
 .coach-structured-card:nth-child(8) {
+  grid-column: 1 / -1;
+}
+
+.coach-structured-card-wide {
   grid-column: 1 / -1;
 }
 
@@ -5790,6 +5809,90 @@ button:disabled {
   margin: 5px 0 0;
   color: var(--text);
   font-weight: 850;
+}
+
+.lesson-audio-status-panel,
+.lesson-audio-draft-card,
+.lesson-publish-readiness-card,
+.coach-intelligence-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid rgba(151, 210, 46, 0.32);
+  border-radius: 8px;
+  background: rgba(3, 9, 12, 0.52);
+  padding: 14px;
+}
+
+.lesson-audio-status-panel {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.lesson-audio-status-panel.processing,
+.lesson-audio-status-panel.audio_detected {
+  border-color: rgba(255, 211, 38, 0.36);
+  background: linear-gradient(135deg, rgba(255, 211, 38, 0.09), rgba(3, 9, 12, 0.58));
+}
+
+.lesson-audio-status-panel.failed,
+.lesson-audio-status-panel.no_audio {
+  border-color: rgba(255, 78, 80, 0.34);
+  background: linear-gradient(135deg, rgba(255, 78, 80, 0.09), rgba(3, 9, 12, 0.58));
+}
+
+.lesson-audio-status-panel span,
+.lesson-audio-draft-card span,
+.lesson-publish-readiness-card span,
+.coach-intelligence-card span {
+  color: var(--green);
+  font-size: 10px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.lesson-audio-status-panel strong,
+.lesson-audio-draft-card strong,
+.lesson-publish-readiness-card strong {
+  color: var(--ink);
+  font-size: 18px;
+}
+
+.lesson-audio-status-panel p,
+.lesson-audio-status-panel small,
+.lesson-audio-draft-card p,
+.lesson-publish-readiness-card p,
+.coach-intelligence-card p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.lesson-audio-draft-card dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.lesson-audio-draft-card dl div {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 10px;
+}
+
+.lesson-audio-draft-card dt {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.lesson-audio-draft-card dd {
+  margin: 5px 0 0;
+  color: var(--text);
+  font-weight: 800;
+  overflow-wrap: anywhere;
 }
 
 .coach-feedback-quick-entry,
@@ -5975,6 +6078,8 @@ button:disabled {
   .coach-structured-two,
   .coach-structured-three,
   .coach-progress-choice-group,
+  .lesson-audio-status-panel,
+  .lesson-audio-draft-card dl,
   .coach-student-preview dl {
     grid-template-columns: 1fr;
   }
