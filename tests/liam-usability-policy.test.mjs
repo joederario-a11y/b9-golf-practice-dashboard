@@ -47,16 +47,30 @@ test("coach lesson review uses sticky publish and full-width feedback workflow",
   const feedbackSectionRule = cssSource.match(/\.coach-feedback-section\s*\{[^}]+\}/)?.[0] ?? "";
 
   assert.match(pageSource, /coach-lesson-sticky-header/);
+  assert.match(pageSource, /Lesson Guidance/);
+  assert.match(pageSource, /Practice Intelligence/);
+  assert.match(pageSource, /Private review workspace/);
   assert.match(pageSource, /`Publish to \$\{memberFirstName\}`/);
   assert.match(pageSource, /Publish lesson to \$\{memberFirstName\}\?/);
   assert.match(pageSource, /coach-feedback-section/);
-  assert.match(pageSource, /Add Coach Feedback/);
-  assert.match(pageSource, /Write the key issue, improvement, next focus, or drill/);
+  assert.match(pageSource, /Student Message/);
+  assert.match(pageSource, /Add any encouragement or clarification you want the Student to hear directly/);
+  assert.doesNotMatch(pageSource, /Write the key issue, improvement, next focus, or drill/);
   assert.match(pageSource, /What I Noticed/);
   assert.match(pageSource, /Next Session Goal/);
+  assert.match(pageSource, /COACH_LESSON_OBSERVATION_GROUPS/);
+  assert.match(pageSource, /COACH_LESSON_PROGRESS_OPTIONS/);
+  assert.match(pageSource, /COACH_LESSON_STRUCTURED_PREFIX/);
+  assert.match(pageSource, /setLessonFocus/);
+  assert.match(pageSource, /setLessonDrill/);
+  assert.match(pageSource, /Add Custom Drill/);
+  assert.match(pageSource, /Save to My Library/);
+  assert.match(pageSource, /Coach library persistence is deferred/);
+  assert.match(pageSource, /Private Coach Context/);
+  assert.match(pageSource, /Student Preview/);
   assert.match(pageSource, /onIncludeFinding=\{includeVisualFindingInFeedback\}/);
   assert.match(cssSource, /\.coach-lesson-sticky-header\s*\{[\s\S]*position: sticky/);
-  assert.match(cssSource, /\.coach-feedback-grid\s*\{[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.match(cssSource, /\.coach-structured-flow\s*\{[\s\S]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
   assert.doesNotMatch(feedbackSectionRule, /grid-template-columns/);
 });
 

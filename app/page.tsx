@@ -96,6 +96,17 @@ import {
 } from "@/lib/member-next-action-policy.mjs";
 import { shouldPersistLocalPracticeProfileForIdentity } from "@/lib/practice-profile-ownership-policy.mjs";
 import {
+  COACH_DRILL_DEFAULTS,
+  COACH_FOCUS_WHY_DEFAULTS,
+  COACH_PRACTICE_CLUB_OPTIONS,
+  COACH_PRACTICE_DRILL_OPTIONS,
+  COACH_PRACTICE_FOCUS_OPTIONS,
+  COACH_SUCCESS_CRITERIA_OPTIONS,
+  COACH_TRAINING_AID_OPTIONS,
+  COACH_VOLUME_PRESETS,
+  COACHING_CUE_OPTIONS,
+} from "@/lib/coach-practice-builder-policy.mjs";
+import {
   SEVEN_IRON_PRECISION_TEMPLATE,
   parseChallengeCriteria,
 } from "@/lib/challenge-policy.mjs";
@@ -5001,27 +5012,203 @@ function lessonMemberFirstName(video: Pick<VideoLibraryRecord, "memberName">) {
 }
 
 type CoachLessonFeedbackFields = {
+  club: string;
+  cues: string[];
+  customCue: string;
+  customDrill: string;
+  customDrillDescription: string;
+  customDrillSuccess: string;
+  customDrillVolume: string;
+  customFocus: string;
+  customGoal: string;
+  customObservation: string;
+  customTrainingAid: string;
+  drillId: string;
   mainFocus: string;
   nextSessionGoal: string;
+  physicalConsideration: string;
+  privateCoachNote: string;
   practiceNext: string;
+  progressNote: string;
   progressObserved: string;
-  quickFeedback: string;
-  whatINoticed: string;
+  progressStatus: string;
+  studentMessage: string;
+  supportingFocus: string;
+  trainingAid: string;
+  volumePreset: string;
+  whatINoticed: string[];
+  whatINoticedNote: string;
+  whyEdited: boolean;
+  whyItMatters: string;
 };
 
+type StructuredLessonDraft = Partial<CoachLessonFeedbackFields> & {
+  schema?: string;
+};
+
+const COACH_LESSON_STRUCTURED_PREFIX = "MAI_COACH_LESSON_GUIDANCE_JSON:";
+const COACH_LESSON_CUSTOM_DRILL = "__lesson_custom_drill__";
+const COACH_LESSON_NO_DRILL = "__lesson_no_drill__";
+const COACH_LESSON_PROGRESS_OPTIONS = [
+  "Strong improvement",
+  "Some improvement",
+  "No meaningful change",
+  "Regressed",
+  "Not enough evidence",
+];
+
+const COACH_LESSON_OBSERVATION_GROUPS = [
+  {
+    label: "Ball flight",
+    options: ["Slice", "Hook", "Push", "Pull", "Push-slice", "Pull-hook", "Start-line variability", "Wide dispersion", "Inconsistent carry"],
+  },
+  {
+    label: "Contact",
+    options: ["Fat", "Thin", "Heel", "Toe", "High contact", "Low contact", "Inconsistent contact", "Centered contact improving"],
+  },
+  {
+    label: "Setup",
+    options: ["Alignment", "Ball position", "Posture", "Distance from ball", "Grip", "Setup consistency"],
+  },
+  {
+    label: "Movement",
+    options: ["Loss of balance", "Unstable finish", "Early extension", "Disconnected arms", "Flying trail elbow", "Rotation stalled", "Pressure remained back", "Other"],
+  },
+  {
+    label: "Consistency",
+    options: ["Repeatable pattern", "Inconsistent strike", "Inconsistent start line", "Inconsistent distance", "Improved control", "Limited sample", "Not enough evidence"],
+  },
+];
+
+function parseStructuredLessonDraft(value?: string | null): StructuredLessonDraft | null {
+  if (!value?.startsWith(COACH_LESSON_STRUCTURED_PREFIX)) return null;
+  try {
+    const parsed = JSON.parse(value.slice(COACH_LESSON_STRUCTURED_PREFIX.length));
+    return parsed && typeof parsed === "object" ? parsed as StructuredLessonDraft : null;
+  } catch {
+    return null;
+  }
+}
+
+function serializeStructuredLessonDraft(fields: CoachLessonFeedbackFields) {
+  return `${COACH_LESSON_STRUCTURED_PREFIX}${JSON.stringify({
+    schema: "coach-lesson-guidance-v1",
+    club: fields.club,
+    cues: fields.cues.slice(0, 3),
+    customDrill: fields.customDrill,
+    customDrillDescription: fields.customDrillDescription,
+    customDrillSuccess: fields.customDrillSuccess,
+    customDrillVolume: fields.customDrillVolume,
+    customFocus: fields.customFocus,
+    customGoal: fields.customGoal,
+    customTrainingAid: fields.customTrainingAid,
+    drillId: fields.drillId,
+    mainFocus: fields.mainFocus,
+    nextSessionGoal: fields.nextSessionGoal,
+    physicalConsideration: fields.physicalConsideration,
+    privateCoachNote: fields.privateCoachNote,
+    progressNote: fields.progressNote,
+    progressStatus: fields.progressStatus,
+    studentMessage: fields.studentMessage,
+    supportingFocus: fields.supportingFocus,
+    trainingAid: fields.trainingAid,
+    volumePreset: fields.volumePreset,
+    whatINoticed: fields.whatINoticed,
+    whatINoticedNote: fields.whatINoticedNote,
+    whyEdited: fields.whyEdited,
+    whyItMatters: fields.whyItMatters,
+  })}`;
+}
+
+function lineList(value?: string | null) {
+  return (value ?? "")
+    .split(/\n|,|;/)
+    .map((item) => item.replace(/^[-•\s]+/, "").trim())
+    .filter(Boolean);
+}
+
+function findDrillIdFromText(value?: string | null) {
+  const normalized = (value ?? "").toLowerCase();
+  return COACH_PRACTICE_DRILL_OPTIONS.find((drill) => normalized.includes(drill.title.toLowerCase()))?.id ?? COACH_LESSON_NO_DRILL;
+}
+
+function drillTitleForLesson(fields: CoachLessonFeedbackFields) {
+  if (fields.drillId === COACH_LESSON_NO_DRILL) return "";
+  if (fields.drillId === COACH_LESSON_CUSTOM_DRILL) return fields.customDrill.trim();
+  return COACH_PRACTICE_DRILL_OPTIONS.find((drill) => drill.id === fields.drillId)?.title ?? fields.practiceNext;
+}
+
+function lessonPracticeText(fields: CoachLessonFeedbackFields) {
+  const drillTitle = drillTitleForLesson(fields);
+  const trainingAid = fields.trainingAid === "Other" ? fields.customTrainingAid : fields.trainingAid;
+  return [
+    drillTitle,
+    fields.customDrillDescription,
+    fields.club && fields.club !== "No specific club" ? `Club: ${fields.club}` : "",
+    trainingAid && trainingAid !== "No training aid" ? `Training aid: ${trainingAid}` : "",
+    fields.volumePreset === "Custom" ? fields.customDrillVolume : fields.volumePreset,
+    fields.cues.length ? `Cues: ${fields.cues.join(" · ")}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+function progressText(fields: CoachLessonFeedbackFields) {
+  return [fields.progressStatus, fields.progressNote].filter(Boolean).join(": ");
+}
+
+function observationsText(fields: CoachLessonFeedbackFields) {
+  return [...fields.whatINoticed, fields.whatINoticedNote].filter(Boolean).join("\n");
+}
+
 function coachLessonFeedbackFromVideo(video: VideoLibraryRecord): CoachLessonFeedbackFields {
+  const structured = parseStructuredLessonDraft(video.coachPrivateNotes);
+  const mainFocus = structured?.mainFocus || getLessonMainFocus(video) || "Face control";
+  const selectedDrillId = structured?.drillId || findDrillIdFromText(video.practiceAssignment || video.recommendedDrill);
+  const legacyObservations = lineList(video.lessonSummary || video.memberFacingNotes);
+  const progressParts = (video.improvement ?? "").split(":");
+  const progressStatus = structured?.progressStatus ||
+    (COACH_LESSON_PROGRESS_OPTIONS.includes(progressParts[0]?.trim()) ? progressParts[0].trim() : "Not enough evidence");
   return {
-    mainFocus: getLessonMainFocus(video),
-    nextSessionGoal: video.nextSessionGoal ?? "",
+    club: structured?.club || video.club || "No specific club",
+    cues: Array.isArray(structured?.cues) ? structured.cues.slice(0, 3) : [],
+    customCue: "",
+    customDrill: structured?.customDrill || "",
+    customDrillDescription: structured?.customDrillDescription || "",
+    customDrillSuccess: structured?.customDrillSuccess || "",
+    customDrillVolume: structured?.customDrillVolume || "",
+    customFocus: structured?.customFocus || "",
+    customGoal: structured?.customGoal || "",
+    customObservation: "",
+    customTrainingAid: structured?.customTrainingAid || "",
+    drillId: selectedDrillId,
+    mainFocus,
+    nextSessionGoal: structured?.nextSessionGoal || video.nextSessionGoal || "Hit the target 12 of 15 times",
+    physicalConsideration: structured?.physicalConsideration || "",
+    privateCoachNote: structured?.privateCoachNote || (structured ? "" : video.coachPrivateNotes ?? ""),
     practiceNext: getLessonPracticeNext(video),
+    progressNote: structured?.progressNote || (progressStatus === progressParts[0]?.trim() ? progressParts.slice(1).join(":").trim() : ""),
     progressObserved: video.improvement ?? "",
-    quickFeedback: video.coachNotes ?? "",
-    whatINoticed: video.lessonSummary || video.memberFacingNotes || "",
+    progressStatus,
+    studentMessage: structured?.studentMessage || video.coachNotes || "",
+    supportingFocus: structured?.supportingFocus || "",
+    trainingAid: structured?.trainingAid || COACH_PRACTICE_DRILL_OPTIONS.find((drill) => drill.id === selectedDrillId)?.trainingAid || "No training aid",
+    volumePreset: structured?.volumePreset || COACH_PRACTICE_DRILL_OPTIONS.find((drill) => drill.id === selectedDrillId)?.volume || "15 shots",
+    whatINoticed: Array.isArray(structured?.whatINoticed) ? structured.whatINoticed : legacyObservations.slice(0, 6),
+    whatINoticedNote: structured?.whatINoticedNote || "",
+    whyEdited: Boolean(structured?.whyEdited),
+    whyItMatters: structured?.whyItMatters || COACH_FOCUS_WHY_DEFAULTS[mainFocus as keyof typeof COACH_FOCUS_WHY_DEFAULTS] || "",
   };
 }
 
 function coachLessonFeedbackHasContent(fields: CoachLessonFeedbackFields) {
-  return Object.values(fields).some((value) => value.trim().length > 0);
+  return Boolean(
+    fields.mainFocus.trim() ||
+    fields.whatINoticed.length ||
+    fields.progressStatus !== "Not enough evidence" ||
+    fields.progressNote.trim() ||
+    drillTitleForLesson(fields) ||
+    fields.nextSessionGoal.trim() ||
+    fields.studentMessage.trim(),
+  );
 }
 
 function appendFeedbackText(current: string, next: string) {
@@ -17633,6 +17820,7 @@ function VideoDetailView({
   onBack,
   onDelete,
   onAddSessionData,
+  onUploadVideo,
   onOpenRelated,
   onRemoveSessionLink,
   onPublish,
@@ -17647,6 +17835,7 @@ function VideoDetailView({
   onBack: () => void;
   onDelete: () => void;
   onAddSessionData: () => void;
+  onUploadVideo: () => void;
   onOpenRelated: (video: VideoLibraryItem) => void;
   onRemoveSessionLink: (linkId: string) => void;
   onPublish: (patch: Partial<VideoLibraryRecord>) => Promise<VideoLibraryRecord | void>;
@@ -17661,6 +17850,12 @@ function VideoDetailView({
   const [userNotes, setUserNotes] = useState(video.userNotes);
   const [coachNotesPrivate, setCoachNotesPrivate] = useState(video.coachNotesPrivate);
   const [coachFeedbackFields, setCoachFeedbackFields] = useState<CoachLessonFeedbackFields>(() => coachLessonFeedbackFromVideo(video));
+  const [focusSearch, setFocusSearch] = useState("");
+  const [observationSearch, setObservationSearch] = useState("");
+  const [drillSearch, setDrillSearch] = useState("");
+  const [aidSearch, setAidSearch] = useState("");
+  const [cueSearch, setCueSearch] = useState("");
+  const [showPreview, setShowPreview] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [publishPrompt, setPublishPrompt] = useState<"withFeedback" | "withoutFeedback" | null>(null);
@@ -17720,15 +17915,32 @@ function VideoDetailView({
   const lessonDateLabel = video.lessonDate ? formatVideoUploadDate(video.lessonDate) : formatVideoUploadDate(video.uploadedAt);
   const feedbackExists = coachLessonFeedbackHasContent(coachFeedbackFields);
   const practiceNextText = canEditCoachNotes ? coachFeedbackFields.practiceNext.trim() : approvedPracticeNext;
-  const practiceDrillTitle = practiceNextText
+  const selectedLessonDrill = COACH_PRACTICE_DRILL_OPTIONS.find((drill) => drill.id === coachFeedbackFields.drillId);
+  const practiceDrillTitle = canEditCoachNotes
+    ? drillTitleForLesson(coachFeedbackFields) || "No drill selected"
+    : practiceNextText
     ? practiceNextText.split(/\n+/)[0]?.replace(/^[-•\s]+/, "").trim() || "Coach-assigned practice"
     : "Add or choose a drill for this lesson.";
-  const practiceWhyItMatters = (canEditCoachNotes ? coachFeedbackFields.mainFocus || coachFeedbackFields.whatINoticed : approvedMainFocus || approvedLessonSummary)
+  const practiceWhyItMatters = (canEditCoachNotes ? coachFeedbackFields.whyItMatters || coachFeedbackFields.mainFocus || observationsText(coachFeedbackFields) : approvedMainFocus || approvedLessonSummary)
     || "This keeps the next practice connected to the lesson feedback.";
-  const practiceTrainingAid = video.recommendedDrill || (practiceNextText.toLowerCase().includes("towel") ? "Towel" : practiceNextText.toLowerCase().includes("alignment") ? "Alignment sticks" : "Coach choice");
-  const practiceSets = practiceNextText.match(/\b\d+\s*(shots?|sets?|minutes?|mins?)\b/i)?.[0] ?? "15 shots";
+  const practiceTrainingAid = canEditCoachNotes ? coachFeedbackFields.trainingAid : video.recommendedDrill || (practiceNextText.toLowerCase().includes("towel") ? "Towel" : practiceNextText.toLowerCase().includes("alignment") ? "Alignment sticks" : "Coach choice");
+  const practiceSets = canEditCoachNotes ? coachFeedbackFields.volumePreset : practiceNextText.match(/\b\d+\s*(shots?|sets?|minutes?|mins?)\b/i)?.[0] ?? "15 shots";
   const practiceSuccessGoal = video.nextSessionGoal || coachFeedbackFields.nextSessionGoal || "Repeat the feel with balanced contact and a clear target.";
   const publishDisabled = publishing || video.uploadStatus !== "ready";
+  const filteredLessonFocusOptions = COACH_PRACTICE_FOCUS_OPTIONS.filter((option) => !focusSearch.trim() || option.toLowerCase().includes(focusSearch.trim().toLowerCase()));
+  const filteredLessonDrills = COACH_PRACTICE_DRILL_OPTIONS.filter((drill) => {
+    const needle = drillSearch.trim().toLowerCase();
+    const haystack = `${drill.title} ${drill.focus} ${drill.description} ${drill.trainingAid}`.toLowerCase();
+    return !needle || haystack.includes(needle);
+  });
+  const filteredLessonAids = COACH_TRAINING_AID_OPTIONS.filter((option) => !aidSearch.trim() || option.toLowerCase().includes(aidSearch.trim().toLowerCase()));
+  const filteredLessonCues = COACHING_CUE_OPTIONS.filter((cue) => cue !== "Other" && (!cueSearch.trim() || cue.toLowerCase().includes(cueSearch.trim().toLowerCase())));
+  const filteredObservationGroups = COACH_LESSON_OBSERVATION_GROUPS
+    .map((group) => ({
+      ...group,
+      options: group.options.filter((option) => !observationSearch.trim() || option.toLowerCase().includes(observationSearch.trim().toLowerCase())),
+    }))
+    .filter((group) => group.options.length);
 
   useEffect(() => {
     setUserNotes(video.userNotes);
@@ -17738,6 +17950,7 @@ function VideoDetailView({
     setMoreMenuOpen(false);
     setPublishPrompt(null);
     setLessonWorkspaceMessage("");
+    setShowPreview(false);
     setShowFollowUpPanel(false);
     setFollowUpNote("");
     setFollowUpVideoFile(null);
@@ -17779,20 +17992,85 @@ function VideoDetailView({
     setCoachFeedbackFields((current) => ({ ...current, [key]: value }));
   }
 
+  function setLessonFocus(nextFocus: string) {
+    setCoachFeedbackFields((current) => ({
+      ...current,
+      customFocus: nextFocus === "Other" ? current.customFocus : "",
+      mainFocus: nextFocus,
+      studentMessage: current.studentMessage || `Focus on ${nextFocus.toLowerCase()}. Quality matters more than speed today.`,
+      whyItMatters: current.whyEdited ? current.whyItMatters : COACH_FOCUS_WHY_DEFAULTS[nextFocus as keyof typeof COACH_FOCUS_WHY_DEFAULTS] || current.whyItMatters,
+    }));
+  }
+
+  function toggleLessonObservation(observation: string) {
+    setCoachFeedbackFields((current) => {
+      const next = current.whatINoticed.includes(observation)
+        ? current.whatINoticed.filter((item) => item !== observation)
+        : [...current.whatINoticed, observation];
+      return { ...current, whatINoticed: next };
+    });
+  }
+
+  function addCustomObservation() {
+    const observation = coachFeedbackFields.customObservation.trim();
+    if (!observation || coachFeedbackFields.whatINoticed.includes(observation)) return;
+    setCoachFeedbackFields((current) => ({
+      ...current,
+      customObservation: "",
+      whatINoticed: [...current.whatINoticed, observation],
+    }));
+  }
+
+  function setLessonDrill(nextDrillId: string) {
+    const drill = COACH_PRACTICE_DRILL_OPTIONS.find((item) => item.id === nextDrillId);
+    const defaults = drill ? COACH_DRILL_DEFAULTS[drill.id as keyof typeof COACH_DRILL_DEFAULTS] : null;
+    setCoachFeedbackFields((current) => {
+      const nextCue = defaults?.cue && !current.cues.includes(defaults.cue)
+        ? [...current.cues, defaults.cue].slice(0, 3)
+        : current.cues;
+      return {
+        ...current,
+        customDrill: nextDrillId === COACH_LESSON_CUSTOM_DRILL ? current.customDrill : "",
+        drillId: nextDrillId,
+        nextSessionGoal: defaults?.success && current.nextSessionGoal === "Hit the target 12 of 15 times" ? defaults.success : current.nextSessionGoal,
+        trainingAid: drill?.trainingAid && COACH_TRAINING_AID_OPTIONS.includes(drill.trainingAid) ? drill.trainingAid : current.trainingAid,
+        volumePreset: drill?.volume && COACH_VOLUME_PRESETS.includes(drill.volume) ? drill.volume : current.volumePreset,
+        whyItMatters: current.whyEdited ? current.whyItMatters : defaults?.why || current.whyItMatters,
+        cues: nextCue,
+      };
+    });
+  }
+
+  function toggleLessonCue(cue: string) {
+    setCoachFeedbackFields((current) => {
+      const next = current.cues.includes(cue)
+        ? current.cues.filter((item) => item !== cue)
+        : [...current.cues, cue].slice(0, 3);
+      return { ...current, cues: next };
+    });
+  }
+
+  function addCustomLessonCue() {
+    const cue = coachFeedbackFields.customCue.trim();
+    if (!cue || coachFeedbackFields.cues.includes(cue) || coachFeedbackFields.cues.length >= 3) return;
+    setCoachFeedbackFields((current) => ({ ...current, customCue: "", cues: [...current.cues, cue].slice(0, 3) }));
+  }
+
   function coachFeedbackPatch(extra: Partial<VideoLibraryRecord> = {}): Partial<VideoLibraryRecord> {
-    const quickFeedback = coachFeedbackFields.quickFeedback.trim();
+    const structuredPrivateNotes = serializeStructuredLessonDraft(coachFeedbackFields);
     return {
-      coachNotes: quickFeedback,
-      coachNotesPrivate,
-      improvement: coachFeedbackFields.progressObserved.trim(),
+      coachNotes: coachFeedbackFields.studentMessage.trim(),
+      coachNotesPrivate: false,
+      coachPrivateNotes: structuredPrivateNotes,
+      improvement: progressText(coachFeedbackFields),
       keyIssue: "",
-      lessonSummary: coachFeedbackFields.whatINoticed.trim(),
-      memberFacingNotes: "",
-      nextSessionGoal: coachFeedbackFields.nextSessionGoal.trim(),
-      practiceAssignment: coachFeedbackFields.practiceNext.trim(),
+      lessonSummary: observationsText(coachFeedbackFields),
+      memberFacingNotes: coachFeedbackFields.whyItMatters.trim(),
+      nextSessionGoal: (coachFeedbackFields.customGoal || coachFeedbackFields.nextSessionGoal).trim(),
+      practiceAssignment: lessonPracticeText(coachFeedbackFields),
       recommendedDrill: "",
       status: "Coach Feedback",
-      workedOn: coachFeedbackFields.mainFocus.trim(),
+      workedOn: (coachFeedbackFields.mainFocus === "Other" ? coachFeedbackFields.customFocus : coachFeedbackFields.mainFocus).trim(),
       ...extra,
     };
   }
@@ -17814,13 +18092,15 @@ function VideoDetailView({
     const textToAdd = [finding.title, finding.explanation].filter(Boolean).join(": ");
     const classification = `${finding.classification ?? ""} ${finding.phase ?? ""} ${finding.title}`.toLowerCase();
     const target: keyof CoachLessonFeedbackFields = classification.includes("drill") || classification.includes("practice")
-      ? "practiceNext"
+      ? "whatINoticed"
       : classification.includes("strength") || classification.includes("progress")
-        ? "progressObserved"
+        ? "progressNote"
         : "whatINoticed";
     setCoachFeedbackFields((current) => ({
       ...current,
-      [target]: appendFeedbackText(current[target], textToAdd),
+      [target]: target === "whatINoticed"
+        ? Array.from(new Set([...current.whatINoticed, finding.title].filter(Boolean))).slice(0, 8)
+        : appendFeedbackText(current[target], textToAdd),
     }));
     setLessonWorkspaceMessage("Added to Coach Feedback.");
   }
@@ -17897,6 +18177,15 @@ function VideoDetailView({
     const params = new URLSearchParams();
     params.set("memberId", video.ownerId);
     params.set("lessonId", video.id);
+    params.set("focus", coachFeedbackFields.mainFocus === "Other" ? coachFeedbackFields.customFocus : coachFeedbackFields.mainFocus);
+    params.set("club", coachFeedbackFields.club);
+    params.set("drill", drillTitleForLesson(coachFeedbackFields));
+    params.set("trainingAid", coachFeedbackFields.trainingAid === "Other" ? coachFeedbackFields.customTrainingAid : coachFeedbackFields.trainingAid);
+    params.set("volume", coachFeedbackFields.volumePreset);
+    params.set("success", coachFeedbackFields.customGoal || coachFeedbackFields.nextSessionGoal);
+    params.set("cues", coachFeedbackFields.cues.join("|"));
+    params.set("why", coachFeedbackFields.whyItMatters);
+    params.set("message", coachFeedbackFields.studentMessage);
     const sourceSessionId = primaryLinkedSession?.id ?? video.sessionId;
     if (sourceSessionId) params.set("sessionId", sourceSessionId);
     window.location.href = `/coach/practice-builder?${params.toString()}`;
@@ -17920,11 +18209,14 @@ function VideoDetailView({
       <div className="coach-lesson-sticky-header">
         <button className="secondary-action" onClick={onBack}>← Back to Videos</button>
         <div className="coach-lesson-sticky-title">
-          <strong>{memberName}</strong>
-          <span>{lessonDateLabel} · {video.title}</span>
+          <strong>Lesson Guidance</strong>
+          <span>{memberName} · {lessonDateLabel} · {video.title}</span>
         </div>
         {canEditCoachNotes ? (
           <div className="button-row coach-lesson-primary-actions">
+            <button className="secondary-action" onClick={onUploadVideo} type="button">
+              {playbackMessage ? "Upload Video" : "Add Another Video"}
+            </button>
             {canManageMarkups && (
               <button className="secondary-action" onClick={() => setShowAnnotationWorkspace(true)} type="button">
                 Annotate Video
@@ -17935,6 +18227,9 @@ function VideoDetailView({
             </button>
             <button className="secondary-action" disabled={savingDraft} onClick={() => void saveCoachFeedbackDraft()} type="button">
               {savingDraft ? "Saving..." : "Save Draft"}
+            </button>
+            <button className="secondary-action" onClick={() => setShowPreview((current) => !current)} type="button">
+              Preview
             </button>
             <button className="primary-action" disabled={publishDisabled} onClick={requestPublish} type="button">
               {publishing ? "Publishing..." : `Publish to ${memberFirstName}`}
@@ -17989,6 +18284,14 @@ function VideoDetailView({
                   ? "This will send the video, Coach feedback, approved MAI observations, and assigned practice."
                   : "You have not added Coach feedback yet."}
               </p>
+              {publishPrompt === "withFeedback" && (
+                <dl>
+                  <div><dt>Focus</dt><dd>{coachFeedbackFields.mainFocus === "Other" ? coachFeedbackFields.customFocus || "Custom focus" : coachFeedbackFields.mainFocus}</dd></div>
+                  <div><dt>Practice</dt><dd>{drillTitleForLesson(coachFeedbackFields) || "No drill selected"}</dd></div>
+                  <div><dt>Volume</dt><dd>{coachFeedbackFields.volumePreset === "Custom" ? coachFeedbackFields.customDrillVolume || "Custom volume" : coachFeedbackFields.volumePreset}</dd></div>
+                  <div><dt>Goal</dt><dd>{coachFeedbackFields.customGoal || coachFeedbackFields.nextSessionGoal || "Coach review"}</dd></div>
+                </dl>
+              )}
             </div>
             <div className="video-modal-actions">
               <span>{publishing ? `Publishing to ${memberFirstName}...` : "Ready when you are."}</span>
@@ -18067,33 +18370,173 @@ function VideoDetailView({
         <section className="panel coach-feedback-section">
           {canEditCoachNotes ? (
             <>
-              <PanelHeader kicker="Coach Feedback" title={`Add the guidance you want ${memberFirstName} to receive.`} meta="Coach text is the primary lesson." />
-              <label className="coach-feedback-quick-entry">
-                <span>Add Coach Feedback</span>
-                <textarea value={coachFeedbackFields.quickFeedback} onChange={(event) => updateFeedbackField("quickFeedback", event.target.value)} placeholder="Write the key issue, improvement, next focus, or drill..." />
-              </label>
-              <div className="coach-feedback-grid">
-                <label><span>Main Focus</span><textarea value={coachFeedbackFields.mainFocus} onChange={(event) => updateFeedbackField("mainFocus", event.target.value)} /></label>
-                <label><span>What I Noticed</span><textarea value={coachFeedbackFields.whatINoticed} onChange={(event) => updateFeedbackField("whatINoticed", event.target.value)} /></label>
-                <label><span>Progress Observed</span><textarea value={coachFeedbackFields.progressObserved} onChange={(event) => updateFeedbackField("progressObserved", event.target.value)} /></label>
-                <label><span>Practice Next</span><textarea value={coachFeedbackFields.practiceNext} onChange={(event) => updateFeedbackField("practiceNext", event.target.value)} /></label>
-                <label className="coach-feedback-wide"><span>Next Session Goal</span><textarea value={coachFeedbackFields.nextSessionGoal} onChange={(event) => updateFeedbackField("nextSessionGoal", event.target.value)} /></label>
+              <PanelHeader
+                kicker="Practice Intelligence"
+                title={`Private review workspace`}
+                meta="Review the lesson, evidence, Student feedback, and MAI observations before deciding what becomes Student-facing guidance."
+              />
+              <div className="coach-structured-flow">
+                <section className="coach-structured-card">
+                  <p className="eyebrow">Main Focus</p>
+                  <div className="coach-structured-two">
+                    <label><span>Search focus</span><input value={focusSearch} onChange={(event) => setFocusSearch(event.target.value)} placeholder="Face, low point, tempo..." type="search" /></label>
+                    <label><span>Primary focus</span><select value={coachFeedbackFields.mainFocus} onChange={(event) => setLessonFocus(event.target.value)}>
+                      {filteredLessonFocusOptions.map((option) => <option key={option}>{option}</option>)}
+                    </select></label>
+                  </div>
+                  {coachFeedbackFields.mainFocus === "Other" && <label><span>Add Custom Focus</span><input value={coachFeedbackFields.customFocus} onChange={(event) => updateFeedbackField("customFocus", event.target.value)} /></label>}
+                  <label><span>Supporting focus optional</span><input value={coachFeedbackFields.supportingFocus} onChange={(event) => updateFeedbackField("supportingFocus", event.target.value)} placeholder="Optional secondary focus" /></label>
+                  <label><span>Why this matters <small>Editable suggestion</small></span><textarea value={coachFeedbackFields.whyItMatters} onChange={(event) => setCoachFeedbackFields((current) => ({ ...current, whyEdited: true, whyItMatters: event.target.value }))} /></label>
+                </section>
+
+                <section className="coach-structured-card">
+                  <p className="eyebrow">What I Noticed</p>
+                  <label><span>Search observations</span><input value={observationSearch} onChange={(event) => setObservationSearch(event.target.value)} placeholder="Start line, contact, setup..." type="search" /></label>
+                  <div className="coach-selected-chip-row" aria-label="Selected observations">
+                    {coachFeedbackFields.whatINoticed.map((observation) => (
+                      <button key={observation} onClick={() => toggleLessonObservation(observation)} type="button">{observation} <span aria-hidden="true">×</span></button>
+                    ))}
+                    {!coachFeedbackFields.whatINoticed.length && <span>No observations selected yet</span>}
+                  </div>
+                  <div className="coach-observation-groups">
+                    {filteredObservationGroups.map((group) => (
+                      <fieldset key={group.label}>
+                        <legend>{group.label}</legend>
+                        <div className="coach-builder-chip-grid">
+                          {group.options.map((option) => (
+                            <button aria-pressed={coachFeedbackFields.whatINoticed.includes(option)} className={coachFeedbackFields.whatINoticed.includes(option) ? "selected" : ""} key={option} onClick={() => toggleLessonObservation(option)} type="button">{option}</button>
+                          ))}
+                        </div>
+                      </fieldset>
+                    ))}
+                  </div>
+                  <div className="coach-structured-two">
+                    <label><span>Add Custom Observation</span><input value={coachFeedbackFields.customObservation} onChange={(event) => updateFeedbackField("customObservation", event.target.value)} /></label>
+                    <button className="secondary-action compact-action" disabled={!coachFeedbackFields.customObservation.trim()} onClick={addCustomObservation} type="button">+ Add Custom Observation</button>
+                  </div>
+                  <label><span>Additional note</span><textarea value={coachFeedbackFields.whatINoticedNote} onChange={(event) => updateFeedbackField("whatINoticedNote", event.target.value)} placeholder="Short Coach note, optional." /></label>
+                </section>
+
+                <section className="coach-structured-card">
+                  <p className="eyebrow">Progress</p>
+                  <div className="coach-progress-choice-group" role="group" aria-label="Progress">
+                    {COACH_LESSON_PROGRESS_OPTIONS.map((option) => (
+                      <button className={coachFeedbackFields.progressStatus === option ? "selected" : ""} onClick={() => updateFeedbackField("progressStatus", option)} type="button" key={option}>{option}</button>
+                    ))}
+                  </div>
+                  <label><span>Progress note</span><input value={coachFeedbackFields.progressNote} onChange={(event) => updateFeedbackField("progressNote", event.target.value)} placeholder="Optional, keep it short." /></label>
+                </section>
+
+                <section className="coach-structured-card">
+                  <p className="eyebrow">Practice Next</p>
+                  <div className="coach-structured-two">
+                    <label><span>Search drills</span><input value={drillSearch} onChange={(event) => setDrillSearch(event.target.value)} placeholder="Gate, towel, ladder..." type="search" /></label>
+                    <label><span>Drill</span><select value={coachFeedbackFields.drillId} onChange={(event) => setLessonDrill(event.target.value)}>
+                      {filteredLessonDrills.map((drill) => <option key={drill.id} value={drill.id}>{drill.title} · {drill.focus}</option>)}
+                      <option value={COACH_LESSON_NO_DRILL}>None</option>
+                      <option value={COACH_LESSON_CUSTOM_DRILL}>+ Add Custom Drill</option>
+                    </select></label>
+                  </div>
+                  {selectedLessonDrill && <div className="coach-builder-inline-preview"><strong>{selectedLessonDrill.title}</strong><span>{selectedLessonDrill.description}</span><small>{selectedLessonDrill.volume} · {selectedLessonDrill.trainingAid}</small></div>}
+                  {coachFeedbackFields.drillId === COACH_LESSON_CUSTOM_DRILL && (
+                    <div className="coach-builder-custom-panel">
+                      <p className="eyebrow">Add Custom Drill</p>
+                      <label><span>Drill name</span><input value={coachFeedbackFields.customDrill} onChange={(event) => updateFeedbackField("customDrill", event.target.value)} /></label>
+                      <label><span>Short instructions</span><textarea value={coachFeedbackFields.customDrillDescription} onChange={(event) => updateFeedbackField("customDrillDescription", event.target.value)} /></label>
+                      <div className="coach-structured-two">
+                        <label><span>Suggested volume</span><input value={coachFeedbackFields.customDrillVolume} onChange={(event) => updateFeedbackField("customDrillVolume", event.target.value)} placeholder="15 shots" /></label>
+                        <label><span>Success goal</span><input value={coachFeedbackFields.customDrillSuccess} onChange={(event) => updateFeedbackField("customDrillSuccess", event.target.value)} placeholder="Hit target 12 of 15 times" /></label>
+                      </div>
+                      <div className="button-row">
+                        <button className="secondary-action compact-action" onClick={() => setLessonWorkspaceMessage("Custom drill saved for this lesson. Coach library persistence is deferred for now.")} type="button">Use for This Lesson</button>
+                        <button className="secondary-action compact-action" disabled title="Coach-scoped drill library persistence is not available in the current schema." type="button">Save to My Library</button>
+                        <button className="text-button" onClick={() => setLessonDrill(COACH_LESSON_NO_DRILL)} type="button">Cancel</button>
+                      </div>
+                    </div>
+                  )}
+                  <div className="coach-structured-three">
+                    <ClubSelector compact label="Club" onChange={(value) => updateFeedbackField("club", value || "No specific club")} options={COACH_PRACTICE_CLUB_OPTIONS} value={coachFeedbackFields.club} />
+                    <label><span>Training Aid</span><select value={coachFeedbackFields.trainingAid} onChange={(event) => updateFeedbackField("trainingAid", event.target.value)}>
+                      {filteredLessonAids.map((option) => <option key={option}>{option}</option>)}
+                    </select></label>
+                    <label><span>Practice Volume</span><select value={coachFeedbackFields.volumePreset} onChange={(event) => updateFeedbackField("volumePreset", event.target.value)}>
+                      {COACH_VOLUME_PRESETS.map((option) => <option key={option}>{option}</option>)}
+                    </select></label>
+                  </div>
+                  {coachFeedbackFields.trainingAid === "Other" && <label><span>Add Custom Aid</span><input value={coachFeedbackFields.customTrainingAid} onChange={(event) => updateFeedbackField("customTrainingAid", event.target.value)} /></label>}
+                  {coachFeedbackFields.volumePreset === "Custom" && <label><span>Custom Volume</span><input value={coachFeedbackFields.customDrillVolume} onChange={(event) => updateFeedbackField("customDrillVolume", event.target.value)} placeholder="12 rehearsals, then 8 balls" /></label>}
+                  <div className="coach-selected-chip-row" aria-label="Selected coaching cues">
+                    {coachFeedbackFields.cues.map((cue) => (
+                      <button key={cue} onClick={() => toggleLessonCue(cue)} type="button">{cue} <span aria-hidden="true">×</span></button>
+                    ))}
+                    {coachFeedbackFields.cues.length < 3 && <span>{3 - coachFeedbackFields.cues.length} Student-facing cue{3 - coachFeedbackFields.cues.length === 1 ? "" : "s"} available</span>}
+                  </div>
+                  <label><span>Search Cues</span><input value={cueSearch} onChange={(event) => setCueSearch(event.target.value)} placeholder="Face, finish, posture..." type="search" /></label>
+                  <div className="coach-builder-chip-grid">
+                    {filteredLessonCues.map((cue) => (
+                      <button aria-pressed={coachFeedbackFields.cues.includes(cue)} className={coachFeedbackFields.cues.includes(cue) ? "selected" : ""} disabled={!coachFeedbackFields.cues.includes(cue) && coachFeedbackFields.cues.length >= 3} key={cue} onClick={() => toggleLessonCue(cue)} type="button">{cue}</button>
+                    ))}
+                  </div>
+                  <div className="coach-structured-two">
+                    <label><span>Add Custom Cue</span><input value={coachFeedbackFields.customCue} onChange={(event) => updateFeedbackField("customCue", event.target.value)} /></label>
+                    <button className="secondary-action compact-action" disabled={!coachFeedbackFields.customCue.trim() || coachFeedbackFields.cues.length >= 3} onClick={addCustomLessonCue} type="button">+ Add Cue</button>
+                  </div>
+                </section>
+
+                <section className="coach-structured-card">
+                  <p className="eyebrow">Next Session Goal</p>
+                  <label><span>Success goal</span><select value={coachFeedbackFields.nextSessionGoal} onChange={(event) => updateFeedbackField("nextSessionGoal", event.target.value)}>
+                    {COACH_SUCCESS_CRITERIA_OPTIONS.map((option) => <option key={option}>{option}</option>)}
+                  </select></label>
+                  {coachFeedbackFields.nextSessionGoal === "Custom success criterion" && <label><span>Add Custom Goal</span><input value={coachFeedbackFields.customGoal} onChange={(event) => updateFeedbackField("customGoal", event.target.value)} /></label>}
+                </section>
+
+                <section className="coach-structured-card">
+                  <p className="eyebrow">Student Message</p>
+                  <label>
+                    <span>Optional Student Message</span>
+                    <textarea value={coachFeedbackFields.studentMessage} onChange={(event) => updateFeedbackField("studentMessage", event.target.value)} placeholder="Add any encouragement or clarification you want the Student to hear directly." />
+                  </label>
+                </section>
+
+                <details className="coach-structured-card lesson-secondary-disclosure">
+                  <summary>Private Coach Context</summary>
+                  <div className="lesson-secondary-body">
+                    <label><span>Private Coach note</span><textarea value={coachFeedbackFields.privateCoachNote} onChange={(event) => updateFeedbackField("privateCoachNote", event.target.value)} placeholder="Private context. Not shown in Student Preview or published lesson." /></label>
+                    <label><span>Physical consideration</span><textarea value={coachFeedbackFields.physicalConsideration} onChange={(event) => updateFeedbackField("physicalConsideration", event.target.value)} placeholder="Private Coach context only." /></label>
+                    <small>Private notes, physical considerations, raw transcript, and diagnostic confidence are not published to the Student.</small>
+                  </div>
+                </details>
+
+                {showPreview && (
+                  <section className="coach-student-preview" aria-live="polite">
+                    <p className="eyebrow">Student Preview</p>
+                    <h3>{coachFeedbackFields.mainFocus === "Other" ? coachFeedbackFields.customFocus || "Custom focus" : coachFeedbackFields.mainFocus}</h3>
+                    <dl>
+                      <div><dt>Coach</dt><dd>{coachName}</dd></div>
+                      <div><dt>Lesson video</dt><dd>{video.title}</dd></div>
+                      <div><dt>What we noticed</dt><dd>{observationsText(coachFeedbackFields) || "Coach review"}</dd></div>
+                      <div><dt>Progress</dt><dd>{progressText(coachFeedbackFields)}</dd></div>
+                      <div><dt>Practice next</dt><dd>{drillTitleForLesson(coachFeedbackFields) || "Coach choice"}</dd></div>
+                      <div><dt>Training aid</dt><dd>{coachFeedbackFields.trainingAid}</dd></div>
+                      <div><dt>Volume</dt><dd>{coachFeedbackFields.volumePreset === "Custom" ? coachFeedbackFields.customDrillVolume || "Custom volume" : coachFeedbackFields.volumePreset}</dd></div>
+                      <div><dt>Coaching cues</dt><dd>{coachFeedbackFields.cues.join(" · ") || "None selected"}</dd></div>
+                      <div><dt>Next session goal</dt><dd>{coachFeedbackFields.customGoal || coachFeedbackFields.nextSessionGoal}</dd></div>
+                    </dl>
+                    {coachFeedbackFields.studentMessage && <p>{coachFeedbackFields.studentMessage}</p>}
+                    <small>Private Coach Context and raw diagnostic details are hidden.</small>
+                  </section>
+                )}
               </div>
-              <label className="video-private-toggle">
-                <input checked={coachNotesPrivate} onChange={(event) => setCoachNotesPrivate(event.target.checked)} type="checkbox" />
-                <span>Keep quick feedback private until published</span>
-              </label>
-              {video.coachPrivateNotes && (
-                <div className="coach-private-note">
-                  <span>Private coach note</span>
-                  <p>{video.coachPrivateNotes}</p>
-                </div>
-              )}
               <div className="coach-feedback-actions">
                 <span>{lessonWorkspaceMessage}</span>
-                <button className="primary-action" disabled={savingDraft} onClick={() => void saveCoachFeedbackDraft()} type="button">
-                  {savingDraft ? "Saving..." : "Save Draft"}
-                </button>
+                <div className="button-row">
+                  <button className="secondary-action" onClick={openPracticeBuilderFromLesson} type="button">Create Practice Plan</button>
+                  <button className="secondary-action" onClick={() => setShowPreview((current) => !current)} type="button">Preview</button>
+                  <button className="primary-action" disabled={savingDraft} onClick={() => void saveCoachFeedbackDraft()} type="button">
+                    {savingDraft ? "Saving..." : "Save Draft"}
+                  </button>
+                </div>
               </div>
             </>
           ) : hasApprovedRecap ? (
@@ -18105,6 +18548,7 @@ function VideoDetailView({
                 {video.improvement && <div><span>Progress observed</span><p>{video.improvement}</p></div>}
                 {approvedPracticeNext && <div><span>Practice next</span><p>{approvedPracticeNext}</p></div>}
                 {video.nextSessionGoal && <div><span>Next session goal</span><p>{video.nextSessionGoal}</p></div>}
+                {video.coachNotes && <div><span>Student message</span><p>{video.coachNotes}</p></div>}
               </div>
             </>
           ) : (
@@ -18124,14 +18568,7 @@ function VideoDetailView({
               <div><span>Sets / shots / time</span><p>{practiceSets}</p></div>
               <div><span>Success goal</span><p>{practiceSuccessGoal}</p></div>
             </div>
-            {canEditCoachNotes && (
-              <div className="button-row">
-                <button className="secondary-action compact-action" onClick={() => void saveCoachFeedbackDraft()} type="button">Edit</button>
-                <button className="secondary-action compact-action" onClick={() => updateFeedbackField("practiceNext", "15-Shot Start-Line Drill\n\nHit 15 shots with a clear start-line target and note how many start inside your window.")} type="button">Replace</button>
-                <button className="secondary-action compact-action" onClick={() => updateFeedbackField("practiceNext", "")} type="button">Remove</button>
-                <button className="secondary-action compact-action" onClick={() => updateFeedbackField("practiceNext", appendFeedbackText(coachFeedbackFields.practiceNext, "Custom Drill"))} type="button">Add Custom Drill</button>
-              </div>
-            )}
+            {canEditCoachNotes && <button className="secondary-action compact-action" onClick={openPracticeBuilderFromLesson} type="button">Create Practice Plan</button>}
           </section>
         ) : null}
 
@@ -18768,6 +19205,13 @@ function VideosView({
           onBack={() => setSelectedVideoId(null)}
           onAddSessionData={() => setSessionDataVideo(selectedVideo)}
           onDelete={() => void removeVideo(selectedVideo)}
+          onUploadVideo={() => {
+            resetUploadForm();
+            setUploadType("Coach Feedback");
+            setUploadVisibility("Coach + User");
+            setSelectedVideoId(null);
+            setShowUpload(true);
+          }}
           onOpenRelated={openVideo}
           onRemoveSessionLink={(linkId) => void removeLessonSession(selectedVideo.id, linkId)}
           onPublish={(patch) => publishVideoFromDetail(selectedVideo.id, patch)}

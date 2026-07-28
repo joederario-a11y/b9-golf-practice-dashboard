@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { MaiCoachLogoFull } from "@/components/brand/mai-coach-logo";
 import {
   buildStudentPracticePreview,
+  COACH_DRILL_DEFAULTS,
+  COACH_FOCUS_WHY_DEFAULTS,
   COACH_PRACTICE_CLUB_OPTIONS,
   COACH_PRACTICE_DRILL_OPTIONS,
   COACH_PRACTICE_FOCUS_OPTIONS,
@@ -50,55 +52,6 @@ type PracticeActivity = {
 const DRAFT_KEY = "mai-coach-practice-builder-draft";
 const CUSTOM_DRILL_VALUE = "__custom_drill__";
 const NO_DRILL_VALUE = "__no_drill__";
-
-const FOCUS_WHY_DEFAULTS: Record<string, string> = {
-  Alignment: "Better alignment makes the swing easier to repeat because the body and clubface start pointed at the same intention.",
-  "Ball position": "A consistent ball position helps contact, launch, and start direction become more predictable.",
-  Balance: "Improving balance helps the swing finish under control and makes contact patterns easier to trust.",
-  "Center-face contact": "More centered contact creates more reliable ball speed, carry, and distance control.",
-  "Club path": "Improving club path helps reduce curve and creates a more predictable start line.",
-  Contact: "Cleaner contact makes carry distance and launch conditions more stable from swing to swing.",
-  "Distance control": "Distance-control work helps turn good contact into predictable scoring windows.",
-  Dispersion: "Tighter dispersion turns misses into manageable shots and makes practice transfer to the course.",
-  "Driver accuracy": "Driver accuracy work keeps more tee shots playable while preserving useful speed.",
-  "Face control": "Improving face control helps reduce directional misses and creates more predictable ball flight.",
-  "Face-to-path": "Face-to-path control helps manage curve so the ball starts and finishes closer to the intended window.",
-  "Iron consistency": "More consistent iron delivery makes carry distance and start direction easier to repeat.",
-  "Low point": "Better low-point control helps produce ball-first contact and more dependable launch.",
-  Rotation: "Improving rotation helps the body support the club instead of relying on timing.",
-  "Short game": "Short-game structure turns touch practice into measurable scoring confidence.",
-  "Start line": "Start-line control gives immediate feedback on face direction and commitment through impact.",
-  Tempo: "Tempo work helps sequence the swing so speed, contact, and direction become more repeatable.",
-  "Wedge control": "Wedge-control work improves scoring shots by tightening carry windows and contact quality.",
-};
-
-const DRILL_DEFAULTS: Record<string, { cue?: string; success?: string; why?: string }> = {
-  "start-line-gate": {
-    cue: "Start the ball on line",
-    success: "Start-line target",
-    why: "Starting the ball through a gate gives immediate feedback on face control and commitment.",
-  },
-  "foot-spray-contact-map": {
-    cue: "Center contact first",
-    success: "Contact pattern",
-    why: "Contact mapping makes strike location visible so quality improves before speed is added.",
-  },
-  "towel-line-low-point": {
-    cue: "Pressure forward",
-    success: "Qualifying shots",
-    why: "The towel gives simple feedback on ball-first contact and low-point control.",
-  },
-  "three-club-distance-ladder": {
-    cue: "Swing at controlled speed",
-    success: "Carry window",
-    why: "A ladder drill trains predictable carry windows instead of one full-speed distance.",
-  },
-  "chair-wall-depth": {
-    cue: "Maintain posture",
-    success: "Hold balanced finish",
-    why: "Depth rehearsals help rotation stay organized without drifting toward the ball.",
-  },
-};
 
 function readApiJson<T>(response: Response, fallbackMessage: string): Promise<T> {
   return response.json().catch(() => ({})).then((payload: { error?: string; message?: string }) => {
@@ -248,13 +201,39 @@ export default function CoachPracticeBuilderPage() {
     const memberId = params.get("memberId") || "";
     const sourceLessonId = params.get("lessonId") || "";
     const sourceSessionId = params.get("sessionId") || "";
+    const lessonFocus = params.get("focus") || "";
+    const lessonClub = params.get("club") || "";
+    const lessonDrill = params.get("drill") || "";
+    const lessonTrainingAid = params.get("trainingAid") || "";
+    const lessonVolume = params.get("volume") || "";
+    const lessonSuccess = params.get("success") || "";
+    const lessonWhy = params.get("why") || "";
+    const lessonMessage = params.get("message") || "";
+    const lessonCues = (params.get("cues") || "").split("|").map((cue) => cue.trim()).filter(Boolean).slice(0, 3);
+    const matchedDrill = COACH_PRACTICE_DRILL_OPTIONS.find((drill) => drill.title.toLowerCase() === lessonDrill.toLowerCase());
     setForm((current) => ({
       ...current,
+      club: lessonClub || current.club,
+      cues: lessonCues.length ? lessonCues : current.cues,
+      customDrill: matchedDrill || !lessonDrill ? current.customDrill : lessonDrill,
+      customFocus: COACH_PRACTICE_FOCUS_OPTIONS.includes(lessonFocus) ? current.customFocus : lessonFocus || current.customFocus,
+      customSuccess: COACH_SUCCESS_CRITERIA_OPTIONS.includes(lessonSuccess) ? current.customSuccess : lessonSuccess || current.customSuccess,
+      drillId: matchedDrill?.id ?? (lessonDrill ? CUSTOM_DRILL_VALUE : current.drillId),
+      focusArea: COACH_PRACTICE_FOCUS_OPTIONS.includes(lessonFocus) ? lessonFocus : lessonFocus ? "Other" : current.focusArea,
+      instructions: lessonDrill && !matchedDrill ? [lessonDrill] : current.instructions,
       memberId,
       sourceContext: sourceLessonId ? "Latest Lesson" : sourceSessionId ? "Recent Session" : current.sourceContext,
       sourceLessonId,
       sourceSessionId,
+      successCriterion: COACH_SUCCESS_CRITERIA_OPTIONS.includes(lessonSuccess) ? lessonSuccess : lessonSuccess ? "Custom success criterion" : current.successCriterion,
+      trainingAid: COACH_TRAINING_AID_OPTIONS.includes(lessonTrainingAid) ? lessonTrainingAid : current.trainingAid,
+      volumePreset: COACH_VOLUME_PRESETS.includes(lessonVolume) ? lessonVolume : lessonVolume ? "Custom" : current.volumePreset,
+      customVolume: COACH_VOLUME_PRESETS.includes(lessonVolume) ? current.customVolume : lessonVolume || current.customVolume,
+      whyItMatters: lessonWhy || current.whyItMatters,
+      messageToStudent: lessonMessage || current.messageToStudent,
     }));
+    if (lessonWhy) setWhyEdited(true);
+    if (lessonMessage) setStudentMessageEdited(true);
   }, []);
 
   useEffect(() => {
@@ -299,7 +278,7 @@ export default function CoachPracticeBuilderPage() {
   function setFocus(nextFocus: string) {
     setAssignedActivity(null);
     setForm((current) => {
-      const suggestedWhy = FOCUS_WHY_DEFAULTS[nextFocus] || current.whyItMatters;
+      const suggestedWhy = COACH_FOCUS_WHY_DEFAULTS[nextFocus as keyof typeof COACH_FOCUS_WHY_DEFAULTS] || current.whyItMatters;
       const shouldReplaceWhy = !whyEdited;
       const nextMessage = !studentMessageEdited
         ? `Today is about ${nextFocus.toLowerCase()}. Quality matters more than speed.`
@@ -316,7 +295,7 @@ export default function CoachPracticeBuilderPage() {
   function setDrill(nextDrillId: string) {
     setAssignedActivity(null);
     const drill = COACH_PRACTICE_DRILL_OPTIONS.find((item) => item.id === nextDrillId);
-    const defaults = drill ? DRILL_DEFAULTS[drill.id] : null;
+    const defaults = drill ? COACH_DRILL_DEFAULTS[drill.id as keyof typeof COACH_DRILL_DEFAULTS] : null;
     setForm((current) => {
       const shouldReplaceWhy = !whyEdited;
       const nextCue = defaults?.cue && !current.cues.includes(defaults.cue) ? [...current.cues, defaults.cue].slice(0, 3) : current.cues;

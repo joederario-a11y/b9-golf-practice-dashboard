@@ -117,7 +117,10 @@ test("coach builder is a compact one-screen inline workflow", () => {
   assert.match(page, /Search Drills/);
   assert.match(page, /Search Aids/);
   assert.match(page, /Search Cues/);
-  assert.match(page, /FOCUS_WHY_DEFAULTS/);
+  assert.match(page, /COACH_FOCUS_WHY_DEFAULTS/);
+  assert.match(page, /COACH_DRILL_DEFAULTS/);
+  assert.match(page, /params\.get\("focus"\)/);
+  assert.match(page, /params\.get\("lessonId"\)/);
   assert.match(page, /setFocus\(event\.target\.value\)/);
   assert.match(page, /setDrill\(event\.target\.value\)/);
   assert.match(page, /NO_DRILL_VALUE/);

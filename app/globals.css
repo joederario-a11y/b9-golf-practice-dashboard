@@ -5621,6 +5621,177 @@ button:disabled {
   background: linear-gradient(145deg, rgba(151, 210, 46, 0.07), rgba(16, 29, 38, 0.96));
 }
 
+.coach-structured-flow,
+.coach-structured-card {
+  display: grid;
+  gap: 12px;
+}
+
+.coach-structured-flow {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.coach-structured-card {
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(3, 9, 12, 0.48);
+  padding: 14px;
+}
+
+.coach-structured-card:nth-child(1),
+.coach-structured-card:nth-child(2),
+.coach-structured-card:nth-child(4),
+.coach-structured-card:nth-child(8) {
+  grid-column: 1 / -1;
+}
+
+.coach-structured-card label,
+.coach-structured-two,
+.coach-structured-three,
+.coach-observation-groups,
+.coach-observation-groups fieldset {
+  display: grid;
+  gap: 8px;
+}
+
+.coach-structured-two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.coach-structured-three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.coach-structured-card label > span,
+.coach-observation-groups legend {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.coach-structured-card input,
+.coach-structured-card select,
+.coach-structured-card textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(3, 9, 12, 0.76);
+  color: var(--text);
+  font: inherit;
+  line-height: 1.45;
+  padding: 11px;
+}
+
+.coach-structured-card textarea {
+  min-height: 78px;
+  resize: vertical;
+}
+
+.coach-selected-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.coach-selected-chip-row button,
+.coach-selected-chip-row span {
+  min-height: 36px;
+  border: 1px solid rgba(151, 210, 46, 0.3);
+  border-radius: 999px;
+  background: rgba(151, 210, 46, 0.13);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 850;
+  padding: 7px 10px;
+}
+
+.coach-selected-chip-row span {
+  border-color: var(--line);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+}
+
+.coach-observation-groups fieldset {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.coach-progress-choice-group {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.coach-progress-choice-group button {
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 850;
+  padding: 8px;
+}
+
+.coach-progress-choice-group button.selected,
+.coach-progress-choice-group button:focus-visible {
+  border-color: rgba(151, 210, 46, 0.8);
+  background: rgba(151, 210, 46, 0.18);
+  outline: none;
+}
+
+.coach-student-preview {
+  display: grid;
+  gap: 12px;
+  grid-column: 1 / -1;
+  border: 1px solid rgba(151, 210, 46, 0.42);
+  border-radius: 10px;
+  background: linear-gradient(145deg, rgba(151, 210, 46, 0.13), rgba(3, 9, 12, 0.82));
+  padding: 16px;
+}
+
+.coach-student-preview h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 26px;
+}
+
+.coach-student-preview dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.coach-student-preview dl div {
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.16);
+  padding: 10px;
+}
+
+.coach-student-preview dt {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.coach-student-preview dd {
+  overflow-wrap: anywhere;
+  margin: 5px 0 0;
+  color: var(--text);
+  font-weight: 850;
+}
+
 .coach-feedback-quick-entry,
 .coach-feedback-grid label {
   display: grid;
@@ -5798,6 +5969,13 @@ button:disabled {
 
   .lesson-video-metadata,
   .coach-feedback-grid {
+    grid-template-columns: 1fr;
+  }
+  .coach-structured-flow,
+  .coach-structured-two,
+  .coach-structured-three,
+  .coach-progress-choice-group,
+  .coach-student-preview dl {
     grid-template-columns: 1fr;
   }
 }
