@@ -48,6 +48,57 @@ type PracticeActivity = {
 };
 
 const DRAFT_KEY = "mai-coach-practice-builder-draft";
+const CUSTOM_DRILL_VALUE = "__custom_drill__";
+const NO_DRILL_VALUE = "__no_drill__";
+
+const FOCUS_WHY_DEFAULTS: Record<string, string> = {
+  Alignment: "Better alignment makes the swing easier to repeat because the body and clubface start pointed at the same intention.",
+  "Ball position": "A consistent ball position helps contact, launch, and start direction become more predictable.",
+  Balance: "Improving balance helps the swing finish under control and makes contact patterns easier to trust.",
+  "Center-face contact": "More centered contact creates more reliable ball speed, carry, and distance control.",
+  "Club path": "Improving club path helps reduce curve and creates a more predictable start line.",
+  Contact: "Cleaner contact makes carry distance and launch conditions more stable from swing to swing.",
+  "Distance control": "Distance-control work helps turn good contact into predictable scoring windows.",
+  Dispersion: "Tighter dispersion turns misses into manageable shots and makes practice transfer to the course.",
+  "Driver accuracy": "Driver accuracy work keeps more tee shots playable while preserving useful speed.",
+  "Face control": "Improving face control helps reduce directional misses and creates more predictable ball flight.",
+  "Face-to-path": "Face-to-path control helps manage curve so the ball starts and finishes closer to the intended window.",
+  "Iron consistency": "More consistent iron delivery makes carry distance and start direction easier to repeat.",
+  "Low point": "Better low-point control helps produce ball-first contact and more dependable launch.",
+  Rotation: "Improving rotation helps the body support the club instead of relying on timing.",
+  "Short game": "Short-game structure turns touch practice into measurable scoring confidence.",
+  "Start line": "Start-line control gives immediate feedback on face direction and commitment through impact.",
+  Tempo: "Tempo work helps sequence the swing so speed, contact, and direction become more repeatable.",
+  "Wedge control": "Wedge-control work improves scoring shots by tightening carry windows and contact quality.",
+};
+
+const DRILL_DEFAULTS: Record<string, { cue?: string; success?: string; why?: string }> = {
+  "start-line-gate": {
+    cue: "Start the ball on line",
+    success: "Start-line target",
+    why: "Starting the ball through a gate gives immediate feedback on face control and commitment.",
+  },
+  "foot-spray-contact-map": {
+    cue: "Center contact first",
+    success: "Contact pattern",
+    why: "Contact mapping makes strike location visible so quality improves before speed is added.",
+  },
+  "towel-line-low-point": {
+    cue: "Pressure forward",
+    success: "Qualifying shots",
+    why: "The towel gives simple feedback on ball-first contact and low-point control.",
+  },
+  "three-club-distance-ladder": {
+    cue: "Swing at controlled speed",
+    success: "Carry window",
+    why: "A ladder drill trains predictable carry windows instead of one full-speed distance.",
+  },
+  "chair-wall-depth": {
+    cue: "Maintain posture",
+    success: "Hold balanced finish",
+    why: "Depth rehearsals help rotation stay organized without drifting toward the ball.",
+  },
+};
 
 function readApiJson<T>(response: Response, fallbackMessage: string): Promise<T> {
   return response.json().catch(() => ({})).then((payload: { error?: string; message?: string }) => {
@@ -78,6 +129,9 @@ function defaultForm(memberId = "") {
     customClub: "",
     customCue: "",
     customDrill: "",
+    customDrillDescription: "",
+    customDrillSuccess: "",
+    customDrillVolume: "",
     customFocus: "",
     customPattern: "",
     customSuccess: "",
@@ -121,12 +175,19 @@ export default function CoachPracticeBuilderPage() {
   const [saving, setSaving] = useState(false);
   const [assignedActivity, setAssignedActivity] = useState<PracticeActivity | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [focusSearch, setFocusSearch] = useState("");
+  const [drillSearch, setDrillSearch] = useState("");
+  const [aidSearch, setAidSearch] = useState("");
+  const [cueSearch, setCueSearch] = useState("");
+  const [whyEdited, setWhyEdited] = useState(false);
+  const [studentMessageEdited, setStudentMessageEdited] = useState(false);
 
   const selectedMember = members.find((member) => member.id === form.memberId) ?? null;
   const selectedDrill = COACH_PRACTICE_DRILL_OPTIONS.find((drill) => drill.id === form.drillId);
+  const studentFirstName = selectedMember?.firstName || selectedMember?.name?.split(/\s+/)[0] || "Student";
   const preview = buildStudentPracticePreview({
     ...form,
-    drillTitle: form.customDrill || selectedDrill?.title || "",
+    drillTitle: form.drillId === NO_DRILL_VALUE ? "" : form.customDrill || selectedDrill?.title || "",
     successCriterion: form.customSuccess || form.successCriterion,
     trainingAid: form.customTrainingAid || form.trainingAid,
     volumePreset: form.volumePreset === "Custom" ? form.customVolume : form.volumePreset,
@@ -151,20 +212,36 @@ export default function CoachPracticeBuilderPage() {
       return `${member.name} ${member.email}`.toLowerCase().includes(needle);
     });
   }, [members, memberSearch]);
+  const filteredFocusOptions = useMemo(() => {
+    const needle = focusSearch.trim().toLowerCase();
+    return COACH_PRACTICE_FOCUS_OPTIONS.filter((option) => !needle || option.toLowerCase().includes(needle));
+  }, [focusSearch]);
   const filteredDrills = useMemo(() => {
     const focus = (form.customFocus || form.focusArea).toLowerCase();
+    const needle = drillSearch.trim().toLowerCase();
     return COACH_PRACTICE_DRILL_OPTIONS.filter((drill) => {
-      if (!focus || focus === "other") return true;
-      return `${drill.focus} ${drill.title} ${drill.description}`.toLowerCase().includes(focus.split(" ")[0]);
+      const searchable = `${drill.focus} ${drill.title} ${drill.description} ${drill.trainingAid}`.toLowerCase();
+      const matchesSearch = !needle || searchable.includes(needle);
+      const matchesFocus = !focus || focus === "other" || searchable.includes(focus.split(" ")[0]);
+      return matchesSearch && matchesFocus;
     });
-  }, [form.customFocus, form.focusArea]);
+  }, [drillSearch, form.customFocus, form.focusArea]);
+  const filteredTrainingAids = useMemo(() => {
+    const needle = aidSearch.trim().toLowerCase();
+    return COACH_TRAINING_AID_OPTIONS.filter((option) => !needle || option.toLowerCase().includes(needle));
+  }, [aidSearch]);
+  const filteredCues = useMemo(() => {
+    const needle = cueSearch.trim().toLowerCase();
+    return COACHING_CUE_OPTIONS.filter((cue) => cue !== "Other" && (!needle || cue.toLowerCase().includes(needle)));
+  }, [cueSearch]);
   const customDuplicate = {
     cue: isDuplicateCoachCustomOption(form.customCue, COACHING_CUE_OPTIONS),
     drill: isDuplicateCoachCustomOption(form.customDrill, COACH_PRACTICE_DRILL_OPTIONS),
     focus: isDuplicateCoachCustomOption(form.customFocus, COACH_PRACTICE_FOCUS_OPTIONS),
     trainingAid: isDuplicateCoachCustomOption(form.customTrainingAid, COACH_TRAINING_AID_OPTIONS),
   };
-  const canAssign = Boolean(form.memberId && preview.title && preview.drill && (preview.volume.label || preview.volume.attemptCount || preview.volume.durationMinutes));
+  const canAssign = Boolean(form.memberId && preview.title && (preview.drill || form.instructions.length) && (preview.volume.label || preview.volume.attemptCount || preview.volume.durationMinutes));
+  const hasSourceContext = Boolean(form.sourceLessonId || form.sourceSessionId || form.sourceContext !== "Start Blank");
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -219,12 +296,61 @@ export default function CoachPracticeBuilderPage() {
     setAssignedActivity(null);
   }
 
+  function setFocus(nextFocus: string) {
+    setAssignedActivity(null);
+    setForm((current) => {
+      const suggestedWhy = FOCUS_WHY_DEFAULTS[nextFocus] || current.whyItMatters;
+      const shouldReplaceWhy = !whyEdited;
+      const nextMessage = !studentMessageEdited
+        ? `Today is about ${nextFocus.toLowerCase()}. Quality matters more than speed.`
+        : current.messageToStudent;
+      return {
+        ...current,
+        focusArea: nextFocus,
+        whyItMatters: shouldReplaceWhy ? suggestedWhy : current.whyItMatters,
+        messageToStudent: nextMessage,
+      };
+    });
+  }
+
+  function setDrill(nextDrillId: string) {
+    setAssignedActivity(null);
+    const drill = COACH_PRACTICE_DRILL_OPTIONS.find((item) => item.id === nextDrillId);
+    const defaults = drill ? DRILL_DEFAULTS[drill.id] : null;
+    setForm((current) => {
+      const shouldReplaceWhy = !whyEdited;
+      const nextCue = defaults?.cue && !current.cues.includes(defaults.cue) ? [...current.cues, defaults.cue].slice(0, 3) : current.cues;
+      return {
+        ...current,
+        drillId: nextDrillId,
+        customDrill: nextDrillId === CUSTOM_DRILL_VALUE ? current.customDrill : "",
+        successCriterion: defaults?.success && COACH_SUCCESS_CRITERIA_OPTIONS.includes(defaults.success) ? defaults.success : current.successCriterion,
+        trainingAid: drill?.trainingAid && COACH_TRAINING_AID_OPTIONS.includes(drill.trainingAid) ? drill.trainingAid : current.trainingAid,
+        volumePreset: drill?.volume && COACH_VOLUME_PRESETS.includes(drill.volume) ? drill.volume : current.volumePreset,
+        whyItMatters: shouldReplaceWhy && defaults?.why ? defaults.why : current.whyItMatters,
+        cues: nextCue,
+      };
+    });
+  }
+
   function toggleCue(cue: string) {
     setForm((current) => {
       const hasCue = current.cues.includes(cue);
       const next = hasCue ? current.cues.filter((item) => item !== cue) : [...current.cues, cue].slice(0, 3);
       return { ...current, cues: next };
     });
+  }
+
+  function removeCue(cue: string) {
+    setForm((current) => ({ ...current, cues: current.cues.filter((item) => item !== cue) }));
+    setAssignedActivity(null);
+  }
+
+  function addCustomCue() {
+    const cue = form.customCue.trim();
+    if (!cue || customDuplicate.cue) return;
+    setForm((current) => ({ ...current, cues: [...current.cues, cue].slice(0, 3), customCue: "" }));
+    setAssignedActivity(null);
   }
 
   function saveDraft() {
@@ -237,7 +363,7 @@ export default function CoachPracticeBuilderPage() {
       setMessage("Choose a Student, focus, drill or instructions, and volume before assigning.");
       return;
     }
-    const confirmed = window.confirm(`Assign this Practice Plan to ${selectedMember?.name ?? "this Student"}?\n\nFocus: ${preview.focus}\nPractice: ${preview.drill}\nComplete: ${preview.volume.label || "Assigned volume"}\nSuccess: ${preview.success || "Coach review"}`);
+    const confirmed = window.confirm(`Assign this Practice Plan to ${selectedMember?.name ?? "this Student"}?\n\nFocus\n${preview.focus}\n\nClub\n${preview.club || "No specific club"}\n\nDrill\n${preview.drill || "No specific drill"}\n\nPractice\n${preview.volume.label || "Assigned volume"}\n\nSuccess\n${preview.success || "Coach review"}`);
     if (!confirmed) return;
     setSaving(true);
     setMessage("Assigning Practice Plan...");
@@ -250,11 +376,11 @@ export default function CoachPracticeBuilderPage() {
           action: "assign_coach_practice_plan",
           club: form.club === "Other" ? form.customClub : form.club,
           cues: form.customCue ? [...form.cues, form.customCue].slice(0, 3) : form.cues,
-          drillTitle: form.customDrill || selectedDrill?.title || "",
+          drillTitle: form.drillId === NO_DRILL_VALUE ? "" : form.customDrill || selectedDrill?.title || "",
           focusArea: form.focusArea === "Other" ? form.customFocus : form.focusArea,
           instructions: form.instructions,
           pattern: form.pattern === "Other" ? form.customPattern : form.pattern,
-          successCriterion: form.successCriterion === "Custom success criterion" ? form.customSuccess : form.successCriterion,
+          successCriterion: form.successCriterion === "Custom success criterion" ? form.customSuccess || form.customDrillSuccess : form.successCriterion,
           trainingAid: form.trainingAid === "Other" ? form.customTrainingAid : form.trainingAid,
           volumePreset: form.volumePreset === "Custom" ? form.customVolume : form.volumePreset,
         }),
@@ -286,133 +412,193 @@ export default function CoachPracticeBuilderPage() {
   return (
     <main className="app-shell coach-builder-shell">
       <section className="panel coach-builder-panel">
-        <header className="coach-builder-header">
+        <header className="coach-builder-header compact">
           <MaiCoachLogoFull className="brand-lockup" />
           <div>
             <p className="eyebrow">Coach Practice Plan Builder</p>
-            <h1>Create, preview, and assign one clear plan.</h1>
-            <p>Choose a Student, structure the focus, preview the assignment, then publish it into the existing Student Practice Plan experience.</p>
+            <h1>Create Practice Plan</h1>
+            <p>{selectedMember ? `For ${selectedMember.name}` : "Choose a Student, then assign one clear next step."}</p>
+            {hasSourceContext && <small>{form.sourceContext}{form.sourceLessonId ? " · latest lesson" : form.sourceSessionId ? " · saved session" : ""}</small>}
           </div>
-          <a className="secondary-action practice-link-button" href="/?tab=videos">Back to Coach Dashboard</a>
+          <div className="coach-builder-header-actions">
+            <button className="secondary-action" onClick={saveDraft} type="button">Save Draft</button>
+            <a className="secondary-action practice-link-button" href="#student-preview">Preview</a>
+            <button className="primary-action" disabled={!canAssign || saving} onClick={() => void assignPlan()} type="button">{saving ? "Assigning..." : selectedMember ? `Assign to ${studentFirstName}` : "Assign"}</button>
+          </div>
         </header>
 
         {message && <div className="practice-status-message" role="status" aria-live="polite">{message}</div>}
 
         <div className="coach-builder-grid">
-          <form className="coach-builder-form" onSubmit={(event) => { event.preventDefault(); void assignPlan(); }}>
-            <section className="panel coach-builder-section">
-              <p className="eyebrow">1. Student</p>
+          <form className="coach-builder-form one-screen" onSubmit={(event) => { event.preventDefault(); void assignPlan(); }}>
+            <section className="panel coach-builder-section coach-builder-card student">
+              <p className="eyebrow">Student</p>
               <div className="coach-builder-student-card">
                 <span className="coach-builder-avatar">{initials(selectedMember)}</span>
                 <div>
-                  <strong>{memberLabel(selectedMember)}</strong>
+                  <strong>{selectedMember?.name ?? "Choose a Student"}</strong>
                   <small>{selectedMember ? `${selectedMember.videoCount ?? 0} videos · ${selectedMember.accountStatus ?? "active"}` : "Only assigned Students are shown."}</small>
                 </div>
               </div>
-              <label>
+              {!selectedMember && <label>
                 <span>Search Students</span>
                 <input type="search" value={memberSearch} onChange={(event) => setMemberSearch(event.target.value)} placeholder="Name or email" />
-              </label>
-              <label>
-                <span>Student</span>
+              </label>}
+              <label className={selectedMember ? "compact-field" : ""}>
+                <span>{selectedMember ? "Change Student" : "Student"}</span>
                 <select value={form.memberId} onChange={(event) => updateField("memberId", event.target.value)}>
                   <option value="">Choose a Student</option>
                   {filteredMembers.map((member) => <option key={member.id} value={member.id}>{member.name} · {member.email}</option>)}
                 </select>
               </label>
-              <div className="coach-builder-source-grid">
-                {["Latest Lesson", "Recent Session", "Practice Result", "Start Blank"].map((source) => (
-                  <button aria-pressed={form.sourceContext === source} className={form.sourceContext === source ? "selected" : ""} key={source} onClick={() => updateField("sourceContext", source)} type="button">
-                    {source}
-                  </button>
-                ))}
-              </div>
             </section>
 
-            <section className="panel coach-builder-section">
-              <p className="eyebrow">2. Focus</p>
-              <label><span>Primary Focus</span><select value={form.focusArea} onChange={(event) => updateField("focusArea", event.target.value)}>
-                {COACH_PRACTICE_FOCUS_OPTIONS.map((option) => <option key={option}>{option}</option>)}
+            <section className="panel coach-builder-section coach-builder-card">
+              <p className="eyebrow">Focus</p>
+              <label><span>Search Focus</span><input type="search" value={focusSearch} onChange={(event) => setFocusSearch(event.target.value)} placeholder="Face, low point, tempo..." /></label>
+              <label><span>Primary Focus</span><select value={form.focusArea} onChange={(event) => setFocus(event.target.value)}>
+                {filteredFocusOptions.map((option) => <option key={option}>{option}</option>)}
               </select></label>
               {form.focusArea === "Other" && (
                 <label><span>Add Custom Focus</span><input value={form.customFocus} onChange={(event) => updateField("customFocus", event.target.value)} placeholder="Coach wording" /></label>
               )}
               {customDuplicate.focus && <small className="coach-builder-warning">That focus already exists as a standard option.</small>}
-              <label><span>Common Miss or Pattern</span><select value={form.pattern} onChange={(event) => updateField("pattern", event.target.value)}>
-                {COACH_PRACTICE_PATTERN_OPTIONS.map((option) => <option key={option}>{option}</option>)}
-              </select></label>
-              {form.pattern === "Other" && <label><span>Add Custom Pattern</span><input value={form.customPattern} onChange={(event) => updateField("customPattern", event.target.value)} /></label>}
+            </section>
+
+            <section className="panel coach-builder-section coach-builder-card">
+              <p className="eyebrow">Club</p>
               <label><span>Club</span><select value={form.club} onChange={(event) => updateField("club", event.target.value)}>
                 {COACH_PRACTICE_CLUB_OPTIONS.map((option) => <option key={option}>{option}</option>)}
               </select></label>
               {form.club === "Other" && <label><span>Add Custom Club</span><input value={form.customClub} onChange={(event) => updateField("customClub", event.target.value)} /></label>}
             </section>
 
-            <section className="panel coach-builder-section">
-              <p className="eyebrow">3. Practice</p>
-              <label><span>Search or Select Drill</span><select value={form.drillId} onChange={(event) => {
-                const drill = COACH_PRACTICE_DRILL_OPTIONS.find((item) => item.id === event.target.value);
-                setForm((current) => ({
-                  ...current,
-                  drillId: event.target.value,
-                  trainingAid: drill?.trainingAid && COACH_TRAINING_AID_OPTIONS.includes(drill.trainingAid) ? drill.trainingAid : current.trainingAid,
-                  volumePreset: drill?.volume && COACH_VOLUME_PRESETS.includes(drill.volume) ? drill.volume : current.volumePreset,
-                }));
-              }}>
+            <section className="panel coach-builder-section coach-builder-card wide">
+              <p className="eyebrow">Drill</p>
+              <label><span>Search Drills</span><input type="search" value={drillSearch} onChange={(event) => setDrillSearch(event.target.value)} placeholder="Start line, gate, towel..." /></label>
+              <label><span>Drill</span><select value={form.drillId || CUSTOM_DRILL_VALUE} onChange={(event) => setDrill(event.target.value)}>
                 {filteredDrills.map((drill) => <option key={drill.id} value={drill.id}>{drill.title} · {drill.focus}</option>)}
-                <option value="">Other / Add Custom</option>
+                <option value={NO_DRILL_VALUE}>None</option>
+                <option value={CUSTOM_DRILL_VALUE}>+ Add New Drill</option>
               </select></label>
-              {selectedDrill && <p className="coach-builder-helper">{selectedDrill.description}</p>}
-              {!form.drillId && <label><span>Add Custom Drill</span><input value={form.customDrill} onChange={(event) => updateField("customDrill", event.target.value)} placeholder="Zac's Chair Drill" /></label>}
-              {customDuplicate.drill && <small className="coach-builder-warning">That drill already exists in the shared list.</small>}
-              <fieldset className="practice-fieldset">
-                <legend>Coaching Cues</legend>
-                <div className="coach-builder-chip-grid">
-                  {COACHING_CUE_OPTIONS.filter((cue) => cue !== "Other").map((cue) => (
-                    <button aria-pressed={form.cues.includes(cue)} className={form.cues.includes(cue) ? "selected" : ""} key={cue} onClick={() => toggleCue(cue)} type="button">{cue}</button>
-                  ))}
+              {selectedDrill && <div className="coach-builder-inline-preview"><strong>{selectedDrill.title}</strong><span>{selectedDrill.description}</span><small>Suggested by MAI · {selectedDrill.volume} · {selectedDrill.trainingAid}</small></div>}
+              {form.drillId === CUSTOM_DRILL_VALUE && (
+                <div className="coach-builder-custom-panel">
+                  <p className="eyebrow">Add New Drill</p>
+                  <label><span>Drill Name</span><input value={form.customDrill} onChange={(event) => updateField("customDrill", event.target.value)} placeholder="Zac's Chair Drill" /></label>
+                  <label><span>Description</span><textarea value={form.customDrillDescription} onChange={(event) => updateField("customDrillDescription", event.target.value)} placeholder="What the Student should do." /></label>
+                  <div className="coach-builder-two">
+                    <label><span>Suggested Reps or Volume</span><input value={form.customDrillVolume} onChange={(event) => updateField("customDrillVolume", event.target.value)} placeholder="15 shots" /></label>
+                    <label><span>Default Success Goal</span><input value={form.customDrillSuccess} onChange={(event) => updateField("customDrillSuccess", event.target.value)} placeholder="Hit the target 12 of 15 times" /></label>
+                  </div>
+                  <div className="button-row">
+                    <button className="secondary-action compact-action" onClick={() => {
+                      setForm((current) => ({
+                        ...current,
+                        instructions: current.customDrillDescription ? [current.customDrillDescription] : current.instructions,
+                        volumePreset: current.customDrillVolume ? "Custom" : current.volumePreset,
+                        customVolume: current.customDrillVolume || current.customVolume,
+                        successCriterion: current.customDrillSuccess ? "Custom success criterion" : current.successCriterion,
+                        customSuccess: current.customDrillSuccess || current.customSuccess,
+                      }));
+                      setMessage("Custom drill saved for this Practice Plan. Coach library persistence is deferred for now.");
+                    }} type="button">Save for This Plan</button>
+                    <button className="secondary-action compact-action" disabled title="Coach-scoped drill library persistence is not available in the current schema." type="button">Save to My Library</button>
+                    <button className="text-button" onClick={() => setDrill(COACH_PRACTICE_DRILL_OPTIONS[0]?.id ?? NO_DRILL_VALUE)} type="button">Cancel</button>
+                  </div>
                 </div>
-                <label><span>Add Custom Cue</span><input value={form.customCue} onChange={(event) => updateField("customCue", event.target.value)} /></label>
-                {customDuplicate.cue && <small className="coach-builder-warning">That cue already exists as a standard option.</small>}
-              </fieldset>
+              )}
+              {customDuplicate.drill && <small className="coach-builder-warning">That drill already exists in the shared list.</small>}
+            </section>
+
+            <section className="panel coach-builder-section coach-builder-card">
+              <p className="eyebrow">Training Aid</p>
+              <label><span>Search Aids</span><input type="search" value={aidSearch} onChange={(event) => setAidSearch(event.target.value)} placeholder="Towel, spray, gate..." /></label>
               <label><span>Training Aid</span><select value={form.trainingAid} onChange={(event) => updateField("trainingAid", event.target.value)}>
-                {COACH_TRAINING_AID_OPTIONS.map((option) => <option key={option}>{option}</option>)}
+                {filteredTrainingAids.map((option) => <option key={option}>{option}</option>)}
               </select></label>
-              {form.trainingAid === "Other" && <label><span>Add Custom Training Aid</span><input value={form.customTrainingAid} onChange={(event) => updateField("customTrainingAid", event.target.value)} /></label>}
+              {form.trainingAid === "Other" && <div className="coach-builder-custom-panel">
+                <p className="eyebrow">Add Coach Aid</p>
+                <label><span>Aid name</span><input value={form.customTrainingAid} onChange={(event) => updateField("customTrainingAid", event.target.value)} placeholder="Foam noodle gate" /></label>
+                <label><span>No-equipment alternative</span><input value={form.noEquipmentAlternative} onChange={(event) => updateField("noEquipmentAlternative", event.target.value)} /></label>
+                <small>Save to Coach library is deferred because no safe Coach-scoped aid library exists yet.</small>
+              </div>}
               {customDuplicate.trainingAid && <small className="coach-builder-warning">That training aid already exists as a standard option.</small>}
             </section>
 
-            <section className="panel coach-builder-section">
-              <p className="eyebrow">4. Volume and Success</p>
+            <section className="panel coach-builder-section coach-builder-card">
+              <p className="eyebrow">Practice</p>
               <label><span>Practice Volume</span><select value={form.volumePreset} onChange={(event) => updateField("volumePreset", event.target.value)}>
                 {COACH_VOLUME_PRESETS.map((option) => <option key={option}>{option}</option>)}
               </select></label>
               {form.volumePreset === "Custom" && <label><span>Custom Volume</span><input value={form.customVolume} onChange={(event) => updateField("customVolume", event.target.value)} placeholder="12 rehearsals, then 8 balls" /></label>}
-              <label><span>Success Criterion</span><select value={form.successCriterion} onChange={(event) => updateField("successCriterion", event.target.value)}>
+            </section>
+
+            <section className="panel coach-builder-section coach-builder-card">
+              <p className="eyebrow">Success</p>
+              <label><span>Success Goal</span><select value={form.successCriterion} onChange={(event) => updateField("successCriterion", event.target.value)}>
                 {COACH_SUCCESS_CRITERIA_OPTIONS.map((option) => <option key={option}>{option}</option>)}
               </select></label>
-              {form.successCriterion === "Custom success criterion" && <label><span>Custom Success Criterion</span><input value={form.customSuccess} onChange={(event) => updateField("customSuccess", event.target.value)} /></label>}
-              <label><span>Why It Matters</span><textarea value={form.whyItMatters} onChange={(event) => updateField("whyItMatters", event.target.value)} /></label>
-              <label><span>Message to Student</span><textarea value={form.messageToStudent} onChange={(event) => updateField("messageToStudent", event.target.value)} /></label>
+              {form.successCriterion === "Custom success criterion" && <label><span>Custom Success Goal</span><input value={form.customSuccess} onChange={(event) => updateField("customSuccess", event.target.value)} placeholder="Hit the target 12 of 15 times" /></label>}
+            </section>
+
+            <section className="panel coach-builder-section coach-builder-card wide">
+              <p className="eyebrow">Coaching Cues</p>
+              <div className="coach-builder-selected-cues" aria-label="Selected coaching cues">
+                {form.cues.map((cue) => (
+                  <button key={cue} onClick={() => removeCue(cue)} type="button">{cue} <span aria-hidden="true">×</span></button>
+                ))}
+                {form.cues.length < 3 && <span>{3 - form.cues.length} cue{3 - form.cues.length === 1 ? "" : "s"} available</span>}
+              </div>
+              <fieldset className="practice-fieldset">
+                <legend>Add Cue</legend>
+                <label><span>Search Cues</span><input type="search" value={cueSearch} onChange={(event) => setCueSearch(event.target.value)} placeholder="Face, finish, posture..." /></label>
+                <div className="coach-builder-chip-grid">
+                  {filteredCues.map((cue) => (
+                    <button aria-pressed={form.cues.includes(cue)} className={form.cues.includes(cue) ? "selected" : ""} disabled={!form.cues.includes(cue) && form.cues.length >= 3} key={cue} onClick={() => toggleCue(cue)} type="button">{cue}</button>
+                  ))}
+                </div>
+                <label><span>Custom Cue</span><input value={form.customCue} onChange={(event) => updateField("customCue", event.target.value)} /></label>
+                <button className="secondary-action compact-action" disabled={!form.customCue.trim() || form.cues.length >= 3 || customDuplicate.cue} onClick={addCustomCue} type="button">+ Add Cue</button>
+                {customDuplicate.cue && <small className="coach-builder-warning">That cue already exists as a standard option.</small>}
+              </fieldset>
+            </section>
+
+            <section className="panel coach-builder-section coach-builder-card wide">
+              <p className="eyebrow">Why and Message</p>
+              <label><span>Why It Matters <small>Suggested by MAI</small></span><textarea value={form.whyItMatters} onChange={(event) => {
+                setWhyEdited(true);
+                updateField("whyItMatters", event.target.value);
+              }} /></label>
+              <label><span>Message to Student <small>Optional</small></span><textarea value={form.messageToStudent} onChange={(event) => {
+                setStudentMessageEdited(true);
+                updateField("messageToStudent", event.target.value);
+              }} /></label>
               <details open={showAdvanced} onToggle={(event) => setShowAdvanced(event.currentTarget.open)}>
-                <summary>Private and advanced context</summary>
+                <summary>Private Coach Context</summary>
+                <label><span>Common Miss or Pattern</span><select value={form.pattern} onChange={(event) => updateField("pattern", event.target.value)}>
+                  {COACH_PRACTICE_PATTERN_OPTIONS.map((option) => <option key={option}>{option}</option>)}
+                </select></label>
+                {form.pattern === "Other" && <label><span>Add Custom Pattern</span><input value={form.customPattern} onChange={(event) => updateField("customPattern", event.target.value)} /></label>}
                 <label><span>Physical consideration · Optional and private</span><textarea value={form.physicalConsideration} onChange={(event) => updateField("physicalConsideration", event.target.value)} placeholder="Private Coach context. Not published to Student." /></label>
                 <label><span>Private Coach Note</span><textarea value={form.privateCoachNote} onChange={(event) => updateField("privateCoachNote", event.target.value)} placeholder="Not included in Student preview or published assignment." /></label>
-                <label><span>No-equipment alternative</span><input value={form.noEquipmentAlternative} onChange={(event) => updateField("noEquipmentAlternative", event.target.value)} /></label>
+                <label><span>Source evidence</span><input value={form.sourceContext} onChange={(event) => updateField("sourceContext", event.target.value)} /></label>
               </details>
             </section>
 
             <div className="coach-builder-actions">
               <button className="secondary-action" onClick={saveDraft} type="button">Save Draft</button>
-              <button className="primary-action" disabled={!canAssign || saving} type="submit">{saving ? "Assigning..." : selectedMember ? `Publish to ${selectedMember.name.split(/\s+/)[0]}` : "Assign Practice Plan"}</button>
+              <a className="secondary-action practice-link-button" href="#student-preview">Preview</a>
+              <button className="primary-action" disabled={!canAssign || saving} type="submit">{saving ? "Assigning..." : selectedMember ? `Assign to ${studentFirstName}` : "Assign Practice Plan"}</button>
             </div>
           </form>
 
-          <aside className="panel coach-builder-preview" aria-live="polite">
+          <aside className="panel coach-builder-preview" id="student-preview" aria-live="polite">
             <p className="eyebrow">Student Preview</p>
             <h2>{preview.title}</h2>
             <strong>{selectedMember ? `Assigned by ${accountUser?.displayName || "Coach"}` : "Choose a Student"}</strong>
             <dl>
+              <div><dt>Student</dt><dd>{selectedMember?.name ?? "Choose a Student"}</dd></div>
               <div><dt>Today’s Focus</dt><dd>{preview.focus}</dd></div>
               <div><dt>Practice</dt><dd>{preview.drill}</dd></div>
               <div><dt>Club</dt><dd>{preview.club || "Any club"}</dd></div>

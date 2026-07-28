@@ -88,7 +88,8 @@ test("coach builder source uses existing practice API, student route, and privac
   const dashboard = readFileSync(new URL("../app/page.tsx", import.meta.url), "utf8");
 
   assert.match(page, /Student Preview/);
-  assert.match(page, /Assign Practice Plan/);
+  assert.match(page, /Create Practice Plan/);
+  assert.match(page, /Assign to/);
   assert.match(page, /Private Coach notes and private physical considerations are not shown/);
   assert.match(page, /localStorage/);
   assert.match(page, /assignedActivity\.id/);
@@ -103,4 +104,45 @@ test("coach builder source uses existing practice API, student route, and privac
   assert.match(dashboard, /Create Practice Plan/);
   assert.match(dashboard, /openPracticeBuilderFromLesson/);
   assert.match(dashboard, /lessonId/);
+});
+
+test("coach builder is a compact one-screen inline workflow", () => {
+  const page = readFileSync(new URL("../app/coach/practice-builder/page.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+
+  assert.doesNotMatch(page, /Create, preview, and assign one clear plan/);
+  assert.match(page, /coach-builder-header compact/);
+  assert.match(page, /coach-builder-form one-screen/);
+  assert.match(page, /Search Focus/);
+  assert.match(page, /Search Drills/);
+  assert.match(page, /Search Aids/);
+  assert.match(page, /Search Cues/);
+  assert.match(page, /FOCUS_WHY_DEFAULTS/);
+  assert.match(page, /setFocus\(event\.target\.value\)/);
+  assert.match(page, /setDrill\(event\.target\.value\)/);
+  assert.match(page, /NO_DRILL_VALUE/);
+  assert.match(page, /CUSTOM_DRILL_VALUE/);
+  assert.match(page, /Save for This Plan/);
+  assert.match(page, /Save to My Library/);
+  assert.match(page, /Coach library persistence is deferred/);
+  assert.match(page, /Private Coach Context/);
+  assert.match(css, /\.coach-builder-form\.one-screen/);
+  assert.match(css, /\.coach-builder-selected-cues/);
+  assert.match(css, /bottom: 10px/);
+});
+
+test("coach builder preserves edited text and caps student-facing cues", () => {
+  const page = readFileSync(new URL("../app/coach/practice-builder/page.tsx", import.meta.url), "utf8");
+
+  assert.match(page, /const \[whyEdited, setWhyEdited\]/);
+  assert.match(page, /const \[studentMessageEdited, setStudentMessageEdited\]/);
+  assert.match(page, /const shouldReplaceWhy = !whyEdited/);
+  assert.match(page, /setWhyEdited\(true\)/);
+  assert.match(page, /setStudentMessageEdited\(true\)/);
+  assert.match(page, /\.slice\(0, 3\)/);
+  assert.match(page, /disabled=\{!form\.cues\.includes\(cue\) && form\.cues\.length >= 3\}/);
+  assert.match(page, /privateCoachNote/);
+  assert.match(page, /physicalConsideration/);
+  const previewBlock = page.slice(page.indexOf('<aside className="panel coach-builder-preview"'));
+  assert.doesNotMatch(previewBlock, /privateCoachNote|physicalConsideration/);
 });

@@ -12370,6 +12370,30 @@ input::file-selector-button {
   padding-bottom: 20px;
 }
 
+.coach-builder-header.compact {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding-bottom: 14px;
+}
+
+.coach-builder-header.compact small {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: 8px;
+  border: 1px solid rgba(150, 203, 57, 0.26);
+  border-radius: 999px;
+  color: var(--green);
+  padding: 5px 9px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.coach-builder-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .coach-builder-header h1,
 .coach-builder-preview h2 {
   margin: 0;
@@ -12378,7 +12402,7 @@ input::file-selector-button {
 }
 
 .coach-builder-header h1 {
-  font-size: clamp(34px, 5vw, 66px);
+  font-size: clamp(30px, 4vw, 46px);
 }
 
 .coach-builder-header p,
@@ -12391,7 +12415,7 @@ input::file-selector-button {
 
 .coach-builder-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(340px, 0.44fr);
+  grid-template-columns: minmax(0, 1fr) minmax(330px, 0.38fr);
   gap: 18px;
   align-items: start;
   margin-top: 20px;
@@ -12406,8 +12430,22 @@ input::file-selector-button {
   gap: 14px;
 }
 
+.coach-builder-form.one-screen {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+}
+
 .coach-builder-section {
   border-color: rgba(150, 203, 57, 0.22);
+}
+
+.coach-builder-card.wide,
+.coach-builder-actions {
+  grid-column: 1 / -1;
+}
+
+.coach-builder-card.student {
+  border-color: rgba(150, 203, 57, 0.32);
 }
 
 .coach-builder-section label,
@@ -12446,6 +12484,20 @@ input::file-selector-button {
   resize: vertical;
 }
 
+.coach-builder-section label span small {
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.coach-builder-two {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
 .coach-builder-student-card {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -12471,7 +12523,7 @@ input::file-selector-button {
 .coach-builder-source-grid,
 .coach-builder-chip-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -12490,6 +12542,65 @@ input::file-selector-button {
   border-color: var(--green);
   background: rgba(150, 203, 57, 0.16);
   color: var(--green);
+}
+
+.coach-builder-chip-grid button:disabled {
+  opacity: 0.46;
+  cursor: not-allowed;
+}
+
+.coach-builder-inline-preview,
+.coach-builder-custom-panel,
+.coach-builder-selected-cues {
+  display: grid;
+  gap: 10px;
+  border: 1px solid rgba(150, 203, 57, 0.22);
+  border-radius: 8px;
+  background: rgba(150, 203, 57, 0.07);
+  padding: 12px;
+}
+
+.coach-builder-inline-preview strong {
+  color: var(--ink);
+  font-size: 18px;
+}
+
+.coach-builder-inline-preview span,
+.coach-builder-inline-preview small,
+.coach-builder-custom-panel small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.coach-builder-selected-cues {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.coach-builder-selected-cues button,
+.coach-builder-selected-cues span {
+  min-height: 38px;
+  border: 1px solid rgba(150, 203, 57, 0.34);
+  border-radius: 999px;
+  background: rgba(150, 203, 57, 0.12);
+  color: var(--green);
+  padding: 8px 12px;
+  font-weight: 900;
+}
+
+.coach-builder-selected-cues button span {
+  min-height: auto;
+  border: 0;
+  background: transparent;
+  padding: 0 0 0 4px;
+  color: inherit;
+}
+
+.coach-builder-selected-cues > span {
+  border-color: var(--line);
+  background: var(--field);
+  color: var(--muted);
 }
 
 .coach-builder-warning {
@@ -12779,6 +12890,10 @@ input::file-selector-button {
     grid-template-columns: 1fr;
   }
 
+  .coach-builder-form.one-screen {
+    grid-template-columns: 1fr;
+  }
+
   .coach-builder-preview,
   .coach-builder-actions {
     position: static;
@@ -12786,8 +12901,17 @@ input::file-selector-button {
 
   .coach-builder-source-grid,
   .coach-builder-chip-grid,
-  .coach-builder-preview dl {
+  .coach-builder-preview dl,
+  .coach-builder-two {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .coach-builder-header-actions {
+    justify-content: stretch;
+  }
+
+  .coach-builder-header-actions > * {
+    flex: 1 1 150px;
   }
 }
 
@@ -12815,6 +12939,12 @@ input::file-selector-button {
 
   .coach-builder-actions {
     display: grid;
+    position: sticky;
+    bottom: 10px;
+  }
+
+  .coach-builder-header-actions {
+    display: none;
   }
 
   .practice-primary-action {
