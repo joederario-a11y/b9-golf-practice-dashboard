@@ -78,6 +78,7 @@ type PracticeActivity = {
   };
   attemptCount?: number;
   club?: string;
+  createdAt?: string;
   durationMinutes?: number;
   focusArea: string;
   id: string;
@@ -98,6 +99,24 @@ type PracticeActivity = {
     trainingAid?: TrainingAidRecommendation | null;
   };
   latestAttempt?: PracticeAttempt | null;
+  latestResult?: {
+    nextRecommendation?: {
+      nextPlan?: {
+        activityId?: string | null;
+        created?: boolean;
+        reason?: string;
+        title?: string;
+      };
+      recommendedNextAction?: string;
+      recommendation?: string;
+      visibility?: {
+        coachReviewRequired?: boolean;
+        label?: string;
+        memberVisible?: boolean;
+        source?: string;
+      };
+    } | null;
+  } | null;
   reasonSelected: string;
   scoring?: {
     enabled?: boolean;
@@ -111,6 +130,7 @@ type PracticeActivity = {
     successTarget?: string;
   };
   title: string;
+  updatedAt?: string;
 };
 
 type EligibleSession = {
@@ -146,6 +166,39 @@ function sourceLabel(activity: PracticeActivity | null) {
   if (source === "coach_approved_ai") return "Coach-approved MAI Practice";
   if (source === "challenge") return "Challenge-linked Practice";
   return "Independent MAI Practice";
+}
+
+function isCoachPrimary(activity: PracticeActivity | null) {
+  const source = activity?.assignment?.source;
+  return source === "coach" || source === "coach_approved_ai";
+}
+
+function isIndependentPlan(activity: PracticeActivity | null) {
+  return !isCoachPrimary(activity) && activity?.assignment?.source !== "challenge";
+}
+
+function coachFirstName(activity: PracticeActivity | null) {
+  const coachName = activity?.instructions.coachConnection?.coachName?.trim();
+  if (!coachName) return "your Coach";
+  return coachName.split(/\s+/)[0] || coachName;
+}
+
+function planEyebrow(activity: PracticeActivity | null) {
+  const source = activity?.assignment?.source;
+  if (source === "coach") return `${coachFirstName(activity)}'s Priority`;
+  if (source === "coach_approved_ai") return "Coach-approved Practice Plan";
+  if (source === "challenge") return "Challenge Practice Plan";
+  return "MAI Practice Plan";
+}
+
+function stateLabel(state: string) {
+  if (state === "overview") return "Ready to start";
+  if (state === "active") return "In progress";
+  if (state === "completion") return "Awaiting reflection";
+  if (state === "submitting") return "Submitting result";
+  if (state === "coach_review_pending") return "Coach review pending";
+  if (state === "outcome") return "Completed";
+  return "Ready";
 }
 
 function formatDate(value?: string) {
@@ -189,6 +242,19 @@ function planSourceLabel(activity: PracticeActivity | null) {
   return "Created by MAI Coach";
 }
 
+function planSourceSummary(activity: PracticeActivity | null) {
+  if (!activity) return "";
+  if (isCoachPrimary(activity)) {
+    const coach = activity.instructions.coachConnection?.coachName || "your Coach";
+    return activity.instructions.sourceSummary
+      || activity.instructions.coachConnection?.summary
+      || `${coach} selected this work as the next step in your practice plan.`;
+  }
+  return activity.instructions.sourceSummary
+    || activity.reasonSelected
+    || "MAI Coach selected this from your saved sessions and practice history.";
+}
+
 function planTrackLabel(activity: PracticeActivity | null) {
   const source = activity?.assignment?.source;
   if (source === "coach") return "Coach Practice Plan";
@@ -202,6 +268,24 @@ function workTarget(activity: PracticeActivity | null) {
   if (activity.attemptCount) return `${activity.attemptCount} shots`;
   if (activity.durationMinutes) return `${activity.durationMinutes} minutes`;
   return activity.activityType === "challenge" ? "Challenge progress" : "Member recorded";
+}
+
+function successCue(activity: PracticeActivity | null) {
+  if (!activity) return "Record what happens honestly so the next step can improve.";
+  if (activity.target?.successTarget) return activity.target.successTarget;
+  if (activity.activityType === "challenge") return "Only measured shots count toward challenge progress.";
+  return "Complete the assignment, then add measured evidence when you have it.";
+}
+
+function reflectionPrompt(activity: PracticeActivity | null) {
+  if (isCoachPrimary(activity)) return "What should your Coach know before reviewing this practice?";
+  if (activity?.assignment?.source === "challenge") return "What should be remembered about this challenge attempt?";
+  return "What should MAI Coach know before recommending the next step?";
+}
+
+function evidenceHelper(activity: PracticeActivity | null) {
+  if (isCoachPrimary(activity)) return "Add something that helps your Coach review how the practice went.";
+  return "Add measured practice results when available so MAI Coach can keep the next recommendation factual.";
 }
 
 function currentProgressLabel(activity: PracticeActivity | null, attempt: PracticeAttempt | null) {
@@ -233,6 +317,11 @@ function visibleAidForUser(aid: TrainingAidRecommendation | null | undefined, us
   if (user?.role === "coach" || user?.role === "admin") return aid;
   if (aid.studentVisible === false || aid.approvalState === "draft") return null;
   return aid;
+}
+
+function nextPlanUrl(activity: PracticeActivity | null) {
+  const id = activity?.latestResult?.nextRecommendation?.nextPlan?.activityId;
+  return id ? `/practice/${encodeURIComponent(id)}` : "";
 }
 
 export default function PracticeAssignmentPage() {
@@ -267,14 +356,17 @@ export default function PracticeAssignmentPage() {
   const outcome = completedAttempt?.evaluation;
   const visibleAid = visibleAidForUser(activity?.instructions.trainingAid, accountUser);
   const practiceSteps = useMemo(() => activity?.instructions.instructions ?? [], [activity]);
-  const pageState = completedAttempt
+  const pageState = loadingAction === "complete"
+    ? "submitting"
+    : completedAttempt
     ? outcome?.coachReviewRequired ? "coach_review_pending" : "outcome"
     : showComplete ? "completion"
     : activeAttempt ? "active"
     : "overview";
+  const nextPlanHref = nextPlanUrl(activity);
   const resourceLinks = useMemo(() => {
     const links: Array<{ href: string; label: string; priority: "coach" | "mai" }> = [];
-    if (activity?.coachFeedbackSourceId) links.push({ href: "/videos", label: "View Coach Feedback", priority: "coach" });
+    if (activity?.coachFeedbackSourceId) links.push({ href: "/videos", label: "Review Coach Lesson", priority: "coach" });
     if (activity?.relatedSessionId) links.push({ href: `/sessions?session=${encodeURIComponent(activity.relatedSessionId)}`, label: "Review Session Results", priority: "mai" });
     if (completedAttempt?.linkedSessionId) links.push({ href: `/sessions?session=${encodeURIComponent(completedAttempt.linkedSessionId)}`, label: "View Practice Results", priority: "mai" });
     if (visibleAid) links.push({ href: "#training-aid", label: "Training-Aid Instructions", priority: activity?.coachId ? "coach" : "mai" });
@@ -299,7 +391,7 @@ export default function PracticeAssignmentPage() {
   }, [activeAttempt?.startedAt, completedAttempt?.id]);
 
   useEffect(() => {
-    if (pageState === "completion") completionRef.current?.focus();
+    if (pageState === "completion" || pageState === "submitting") completionRef.current?.focus();
     if (pageState === "outcome" || pageState === "coach_review_pending") outcomeRef.current?.focus();
   }, [pageState]);
 
@@ -402,8 +494,7 @@ export default function PracticeAssignmentPage() {
   }
 
   function openVideoEvidence() {
-    const params = new URLSearchParams({ tab: "videos", practiceAssignmentId: activityId, evidence: "video" });
-    window.location.href = `/?${params.toString()}`;
+    setMessage("Video evidence linking is deliberately deferred until lesson uploads can attach to this Practice Plan. Add a photo, CSV, manual result, or existing session for this completion.");
   }
 
   function viewLinkedSession() {
@@ -426,16 +517,35 @@ export default function PracticeAssignmentPage() {
           <>
             <section className={["practice-plan-hero", pageState].join(" ")}>
               <div>
-                <p className="eyebrow">Today's Practice Plan</p>
+                <p className="eyebrow">{planEyebrow(activity)}</p>
                 <h1>{activity.title}</h1>
                 <strong>{planSourceLabel(activity)}</strong>
-                <p>{activity.instructions.sourceSummary || activity.instructions.coachConnection?.summary || activity.reasonSelected}</p>
+                <p>{planSourceSummary(activity)}</p>
+                <div className="practice-plan-actions">
+                  {pageState === "overview" && (
+                    <button className="primary-action" disabled={loadingAction === "start"} onClick={() => void startPractice()} type="button">
+                      Start Practice
+                    </button>
+                  )}
+                  {pageState === "active" && (
+                    <button className="primary-action" onClick={() => setShowComplete(true)} type="button">
+                      Continue Practice
+                    </button>
+                  )}
+                  {(pageState === "outcome" || pageState === "coach_review_pending") && (
+                    <button className="primary-action" onClick={() => { window.location.href = "/?tab=practice"; }} type="button">
+                      Return to Today
+                    </button>
+                  )}
+                </div>
               </div>
               <dl className="practice-plan-meta">
-                <div><dt>Track</dt><dd>{planTrackLabel(activity)}</dd></div>
+                <div><dt>Status</dt><dd><span className="practice-status-pill">{stateLabel(pageState)}</span></dd></div>
+                <div><dt>Assigned</dt><dd>{formatDate(activity.createdAt || activity.updatedAt)}</dd></div>
                 <div><dt>Focus</dt><dd>{activity.focusArea}</dd></div>
                 <div><dt>Estimated time</dt><dd>{activity.durationMinutes ? `${activity.durationMinutes} minutes` : "NA"}</dd></div>
                 <div><dt>Complete</dt><dd>{workTarget(activity)}</dd></div>
+                <div><dt>Track</dt><dd>{planTrackLabel(activity)}</dd></div>
               </dl>
             </section>
 
@@ -447,9 +557,9 @@ export default function PracticeAssignmentPage() {
                     <h2>{activity.focusArea}</h2>
                   </div>
                   <ul>
-                    <li>Improve {activity.focusArea.toLowerCase()}</li>
+                    <li>{isCoachPrimary(activity) ? `${coachFirstName(activity)} wants this to be your next priority.` : `This is the clearest next practice focus from your saved work.`}</li>
                     <li>{activity.reasonSelected || "Keep the work tied to this saved Practice Plan."}</li>
-                    {activity.target?.successTarget && <li>{activity.target.successTarget}</li>}
+                    <li>{successCue(activity)}</li>
                   </ul>
                   <button className="primary-action" disabled={loadingAction === "start"} onClick={() => void startPractice()} type="button">
                     Start Practice
@@ -499,7 +609,7 @@ export default function PracticeAssignmentPage() {
 
                 {resourceLinks.length > 0 && (
                   <section className="panel practice-resources">
-                    <p className="eyebrow">Resources</p>
+                    <p className="eyebrow">{isCoachPrimary(activity) ? "Coaching Resources" : "Practice Resources"}</p>
                     <div className="practice-resource-grid">
                       {resourceLinks.map((link) => (
                         <a className={link.priority === "coach" ? "coach-resource" : ""} href={link.href} key={`${link.label}-${link.href}`}>
@@ -514,7 +624,7 @@ export default function PracticeAssignmentPage() {
 
             {pageState === "active" && (
               <section className="panel practice-active-panel" aria-live="polite">
-                <p className="eyebrow">Practice Started</p>
+                <p className="eyebrow">Practice In Progress</p>
                 <div className="challenge-detail-section-heading">
                   <div>
                     <h2>{activity.title}</h2>
@@ -539,17 +649,20 @@ export default function PracticeAssignmentPage() {
                   </div>
                 )}
                 <div className="practice-evidence-actions">
+                  {resourceLinks.some((link) => link.priority === "coach") && (
+                    <a className="secondary-action practice-link-button" href={resourceLinks.find((link) => link.priority === "coach")?.href ?? "/videos"}>Review Lesson</a>
+                  )}
                   <button className="secondary-action" onClick={() => setShowComplete(true)} type="button">Add Practice Evidence</button>
                   <button className="primary-action" onClick={() => setShowComplete(true)} type="button">Complete Practice</button>
                 </div>
               </section>
             )}
 
-            {pageState === "completion" && (
-              <section className="panel practice-detail-completion" ref={completionRef} tabIndex={-1}>
+            {(pageState === "completion" || pageState === "submitting") && (
+              <section className="panel practice-detail-completion" ref={completionRef} tabIndex={-1} aria-busy={pageState === "submitting"}>
                 <div className="challenge-detail-section-heading">
                   <div>
-                    <p className="eyebrow">Complete Practice</p>
+                    <p className="eyebrow">{pageState === "submitting" ? "Submitting" : "Complete Practice"}</p>
                     <h2>Record only what actually happened</h2>
                   </div>
                   <button className="secondary-action" onClick={() => setShowComplete(false)} type="button">Back to Practice</button>
@@ -569,7 +682,7 @@ export default function PracticeAssignmentPage() {
                       ))}
                     </div>
                   </fieldset>
-                  <label><span>Anything you'd like your Coach or MAI Coach to know?</span><textarea value={form.notes} onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))} placeholder="What changed, what felt hard, or what should be reviewed?" /></label>
+                  <label><span>{reflectionPrompt(activity)}</span><textarea value={form.notes} onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))} placeholder="What changed, what felt hard, or what should be reviewed?" /></label>
                   <label><span>Completed amount</span><select value={form.completedAmount} onChange={(event) => setForm((current) => ({ ...current, completedAmount: event.target.value }))}>
                     <option value="yes">Completed</option>
                     <option value="partial">Partially completed</option>
@@ -600,7 +713,7 @@ export default function PracticeAssignmentPage() {
                   )}
                   <section className="practice-evidence-panel">
                     <p className="eyebrow">Add Practice Evidence</p>
-                    <p>Add something that helps your Coach or MAI Coach understand how the practice went.</p>
+                    <p>{evidenceHelper(activity)}</p>
                     <div className="practice-result-options">
                       <button onClick={() => openImport("photo")} type="button">Add Photo</button>
                       <button onClick={openVideoEvidence} type="button">Add Video</button>
@@ -643,10 +756,13 @@ export default function PracticeAssignmentPage() {
                 {pageState === "coach_review_pending" ? (
                   <p>{activity.instructions.coachConnection?.coachName || "Your Coach"} will review your practice, reflection, and evidence before assigning the next step.</p>
                 ) : (
-                  <p>MAI-generated recommendation: {outcome.recommendedReason ?? "Repeat this Practice Plan once more or add measured Practice Results next time."}</p>
+                  <p>MAI-generated recommendation: {activity.latestResult?.nextRecommendation?.recommendation || outcome.recommendedReason || "Repeat this Practice Plan once more or add measured Practice Results next time."}</p>
                 )}
                 <div className="button-row">
-                  <button className="primary-action" onClick={() => { window.location.href = "/?tab=practice"; }} type="button">Done</button>
+                  <button className="primary-action" onClick={() => { window.location.href = "/?tab=practice"; }} type="button">Return to Today</button>
+                  {isIndependentPlan(activity) && nextPlanHref && (
+                    <a className="secondary-action practice-link-button" href={nextPlanHref}>View Next MAI Plan</a>
+                  )}
                   <button className="secondary-action" disabled={!completedAttempt.linkedSessionId} onClick={viewLinkedSession} type="button">View Practice Results</button>
                 </div>
               </section>

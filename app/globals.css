@@ -12208,6 +12208,13 @@ input::file-selector-button {
   font-weight: 950;
 }
 
+.practice-plan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+
 .practice-plan-meta {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -12249,6 +12256,20 @@ input::file-selector-button {
   margin: 0;
   color: var(--ink);
   font-weight: 950;
+}
+
+.practice-status-pill {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  border: 1px solid rgba(150, 203, 57, 0.34);
+  border-radius: 999px;
+  background: rgba(150, 203, 57, 0.12);
+  color: var(--green);
+  padding: 4px 9px;
+  font-size: 12px;
+  line-height: 1;
+  text-transform: uppercase;
 }
 
 .practice-plan-focus {
@@ -12320,6 +12341,14 @@ input::file-selector-button {
 .practice-resource-grid a.coach-resource {
   border-color: rgba(150, 203, 57, 0.48);
   color: var(--green);
+}
+
+.practice-link-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  text-decoration: none;
 }
 
 .practice-active-panel {

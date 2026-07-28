@@ -278,11 +278,16 @@ test("practice completion schema and API expose attempts, idempotency, and same-
   assert.match(server, /mai_next_practice_created/);
   assert.match(server, /coach_review_requested/);
   assert.match(api, /activityId/);
-  assert.match(page, /Today's Practice Plan/);
+  assert.match(page, /MAI Practice Plan/);
+  assert.match(page, /Coach Review Pending/);
+  assert.match(page, /Practice In Progress/);
   assert.match(page, /Complete Practice/);
   assert.match(page, /How did today.*practice feel/);
+  assert.match(page, /What should your Coach know/);
+  assert.match(page, /What should MAI Coach know/);
   assert.match(page, /Add Practice Evidence/);
   assert.match(page, /Add Photo/);
   assert.match(page, /Add Video/);
   assert.match(page, /Add Practice Results/);
+  assert.match(page, /Video evidence linking is deliberately deferred/);
 });
