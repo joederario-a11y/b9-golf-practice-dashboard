@@ -1257,6 +1257,9 @@ function difficultyFromValues(values: Record<string, unknown>) {
       rating: explicit,
     };
   }
+  if (label === "great") return { label: "great", rating: -1 };
+  if (label === "expected") return { label: "expected", rating: 0 };
+  if (label === "struggled") return { label: "struggled", rating: 1 };
   if (label.includes("easy")) return { label: "easier", rating: -1 };
   if (label.includes("hard")) return { label: "harder", rating: 1 };
   if (label.includes("same") || label.includes("about")) return { label: "about_same", rating: 0 };
@@ -1297,6 +1300,7 @@ async function upsertPracticeResultForAttempt(
     notes: string;
     reflection: string;
     sharedWithCoach: number;
+    mediaReferences?: Record<string, unknown>;
   },
 ) {
   const existing = await database
@@ -1317,7 +1321,7 @@ async function upsertPracticeResultForAttempt(
          SET related_session_id = ?, submission_type = ?, score = ?, attempts = ?,
              successful_attempts = ?, metrics_json = ?, result_notes = ?,
              user_reflection = ?, progress_status = ?, progress_evidence_json = ?,
-             next_recommendation_json = ?, shared_with_coach = ?, updated_at = CURRENT_TIMESTAMP
+             next_recommendation_json = ?, media_reference_json = ?, shared_with_coach = ?, updated_at = CURRENT_TIMESTAMP
          WHERE id = ?`,
       )
       .bind(
@@ -1332,6 +1336,7 @@ async function upsertPracticeResultForAttempt(
         progressStatus,
         safeArrayJson(evidenceLabels),
         safeJson(nextRecommendation),
+        safeJson(values.mediaReferences ?? {}),
         values.sharedWithCoach,
         existing.id,
       )
@@ -1362,7 +1367,7 @@ async function upsertPracticeResultForAttempt(
       safeJson({ outcome: values.evaluation }),
       values.notes,
       values.reflection,
-      safeJson({}),
+      safeJson(values.mediaReferences ?? {}),
       progressStatus,
       safeArrayJson(evidenceLabels),
       safeJson(nextRecommendation),
@@ -1422,6 +1427,7 @@ export async function updatePracticeActivity(
     score?: unknown;
     attempts?: unknown;
     successfulAttempts?: unknown;
+    evidenceSources?: unknown;
     notes?: unknown;
     reflection?: unknown;
     submissionType?: unknown;
@@ -1520,6 +1526,20 @@ export async function updatePracticeActivity(
     const notes = text(values.notes ?? values.memberNotes, 2000);
     const reflection = text(values.reflection, 2000);
     const memberNotes = text(values.memberNotes ?? values.reflection ?? values.notes, 2000);
+    const evidenceSources = Array.isArray(values.evidenceSources)
+      ? values.evidenceSources
+          .map((value) => text(value, 60))
+          .filter((value) => ["manual", "photo", "video", "session", "challenge_attempt", "csv"].includes(value))
+      : [];
+    const evidenceReferences = {
+      sources: Array.from(new Set([
+        ...evidenceSources,
+        relatedSessionId ? "session" : "",
+      ].filter(Boolean))),
+      linkedSessionId: relatedSessionId,
+      linkedChallengeAttemptId: null,
+    };
+    const existingSnapshot = parseJson(attempt.source_snapshot_json, {});
     const outcome = evaluatePracticeOutcome({
       activity: {
         id: activity.id,
@@ -1556,7 +1576,7 @@ export async function updatePracticeActivity(
              member_difficulty_label = ?, member_confidence_rating = ?,
              member_completed_amount = ?, member_notes = ?, training_aid_used = ?,
              training_aid_helpfulness = ?, measured_outcome_json = ?,
-             evaluation_json = ?, coach_review_status = ?, updated_at = CURRENT_TIMESTAMP
+             evaluation_json = ?, source_snapshot_json = ?, coach_review_status = ?, updated_at = CURRENT_TIMESTAMP
          WHERE id = ? AND practice_activity_id = ? AND user_id = ?`,
       )
       .bind(
@@ -1581,6 +1601,15 @@ export async function updatePracticeActivity(
           ...outcome,
           nextActionVisibility: nextActionVisibility(activity, outcome),
         }),
+        safeJson({
+          ...(existingSnapshot && typeof existingSnapshot === "object" ? existingSnapshot : {}),
+          completion: {
+            completedAmount: completed,
+            evidenceReferences,
+            reflectionFeeling: difficulty.label || null,
+            submittedAt: new Date().toISOString(),
+          },
+        }),
         coachReviewStatus,
         attempt.id,
         activity.id,
@@ -1600,13 +1629,15 @@ export async function updatePracticeActivity(
       notes,
       reflection,
       sharedWithCoach: coachReviewStatus === "pending" ? 1 : 0,
+      mediaReferences: evidenceReferences,
     });
+    const completionAction = completed === "partial" ? "practice_partially_completed" : "practice_completed";
     await database
       .prepare("UPDATE practice_activities SET status = ?, completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ?")
       .bind(coachReviewStatus === "pending" ? "results_submitted" : "completed", activity.id)
       .run();
     await recordPracticeAttemptActivityOnce(database, {
-      action: "practice_completed",
+      action: completionAction,
       actor: identity,
       entityId: attempt.id,
       entityType: "practice_attempt",
@@ -1625,6 +1656,38 @@ export async function updatePracticeActivity(
       summary: `Completed ${activity.title}.`,
       targetUserId: activity.user_id,
     });
+    if (difficulty.label || reflection || memberNotes) {
+      await recordPracticeAttemptActivityOnce(database, {
+        action: "practice_reflection_submitted",
+        actor: identity,
+        entityId: attempt.id,
+        entityType: "practice_attempt",
+        memberId: activity.user_id,
+        metadata: {
+          activityId: activity.id,
+          reflectionFeeling: difficulty.label || null,
+          hasNote: Boolean(memberNotes || reflection),
+        },
+        summary: `Submitted reflection for ${activity.title}.`,
+        targetUserId: activity.user_id,
+      });
+    }
+    if (evidenceReferences.sources.length > 0) {
+      await recordPracticeAttemptActivityOnce(database, {
+        action: "practice_evidence_added",
+        actor: identity,
+        entityId: attempt.id,
+        entityType: "practice_attempt",
+        memberId: activity.user_id,
+        metadata: {
+          activityId: activity.id,
+          evidenceSources: evidenceReferences.sources,
+          linkedSessionId: relatedSessionId,
+        },
+        summary: `Added practice evidence for ${activity.title}.`,
+        targetUserId: activity.user_id,
+      });
+    }
     await recordPracticeAttemptActivityOnce(database, {
       action: practiceEventActionForOutcome(outcome),
       actor: identity,

@@ -12174,6 +12174,202 @@ input::file-selector-button {
   max-width: 1180px;
 }
 
+.practice-plan-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.42fr);
+  gap: 18px;
+  align-items: stretch;
+  border: 1px solid rgba(150, 203, 57, 0.28);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(150, 203, 57, 0.13), rgba(15, 27, 34, 0.74)),
+    var(--surface);
+  padding: clamp(18px, 3vw, 34px);
+}
+
+.practice-plan-hero h1 {
+  margin: 0;
+  color: var(--ink);
+  font-size: clamp(40px, 6vw, 78px);
+  line-height: 0.95;
+}
+
+.practice-plan-hero p {
+  max-width: 760px;
+  margin: 12px 0 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.practice-plan-hero strong {
+  display: inline-block;
+  margin-top: 10px;
+  color: var(--green);
+  font-weight: 950;
+}
+
+.practice-plan-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.practice-plan-meta div,
+.practice-plan-focus,
+.practice-how-to,
+.practice-resources,
+.practice-active-panel,
+.practice-evidence-panel {
+  min-width: 0;
+}
+
+.practice-plan-meta div {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.16);
+  padding: 12px;
+}
+
+.practice-plan-meta dt,
+.practice-plan-focus li,
+.practice-instruction-block span,
+.practice-elapsed span,
+.practice-fieldset legend {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 950;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.practice-plan-meta dd {
+  margin: 0;
+  color: var(--ink);
+  font-weight: 950;
+}
+
+.practice-plan-focus {
+  display: grid;
+  gap: 16px;
+}
+
+.practice-plan-focus h2,
+.practice-how-to h2,
+.practice-active-panel h2 {
+  margin: 0;
+  color: var(--ink);
+  font-size: clamp(30px, 4vw, 56px);
+  line-height: 0.98;
+}
+
+.practice-plan-focus ul {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.practice-plan-focus li {
+  border: 1px solid rgba(150, 203, 57, 0.24);
+  border-radius: 8px;
+  background: rgba(150, 203, 57, 0.08);
+  color: var(--ink);
+  padding: 12px;
+}
+
+.practice-instruction-block {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+  padding: 14px;
+}
+
+.practice-instruction-block p,
+.practice-evidence-panel p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.practice-resource-grid,
+.practice-evidence-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.practice-resource-grid a {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+  color: var(--ink);
+  font-weight: 950;
+  text-decoration: none;
+}
+
+.practice-resource-grid a.coach-resource {
+  border-color: rgba(150, 203, 57, 0.48);
+  color: var(--green);
+}
+
+.practice-active-panel {
+  display: grid;
+  gap: 18px;
+  border-color: rgba(150, 203, 57, 0.42);
+}
+
+.practice-elapsed {
+  display: grid;
+  gap: 6px;
+  min-width: 170px;
+  border: 1px solid rgba(150, 203, 57, 0.28);
+  border-radius: 8px;
+  background: rgba(150, 203, 57, 0.1);
+  padding: 14px;
+}
+
+.practice-elapsed strong {
+  color: var(--green);
+  font-size: clamp(32px, 4vw, 54px);
+  line-height: 1;
+}
+
+.practice-fieldset {
+  display: grid;
+  gap: 10px;
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.practice-evidence-panel {
+  display: grid;
+  gap: 12px;
+  border: 1px solid rgba(150, 203, 57, 0.24);
+  border-radius: 8px;
+  background: rgba(150, 203, 57, 0.07);
+  padding: 14px;
+}
+
+.practice-result-options.secondary-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.practice-complete-card.coach_review_pending {
+  border-color: rgba(244, 211, 94, 0.42);
+  background: rgba(244, 211, 94, 0.08);
+}
+
 .practice-detail-steps {
   margin-top: 12px;
 }
@@ -12316,17 +12512,21 @@ input::file-selector-button {
 @media (max-width: 1020px) {
   .practice-hero,
   .practice-challenge-panel,
-  .practice-current-grid {
+  .practice-current-grid,
+  .practice-plan-hero {
     grid-template-columns: 1fr;
   }
 
   .member-mission-context,
-  .practice-progress-strip {
+  .practice-progress-strip,
+  .practice-resource-grid,
+  .practice-evidence-actions {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 760px) {
+  .practice-plan-meta,
   .practice-activity-meta,
   .practice-activity-actions,
   .practice-training-aid-actions,
@@ -12334,7 +12534,10 @@ input::file-selector-button {
   .practice-focus-grid,
   .practice-segment-row,
   .member-mission-context,
-  .practice-progress-strip {
+  .practice-progress-strip,
+  .practice-resource-grid,
+  .practice-evidence-actions,
+  .practice-result-options.secondary-grid {
     grid-template-columns: 1fr;
   }
 
