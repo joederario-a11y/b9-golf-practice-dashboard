@@ -2,7 +2,7 @@
 
 import { type CSSProperties, type FormEvent, type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { MaiCoachLogoCompact, MaiCoachLogoFull, MaiCoachLogoMark } from "@/components/brand/mai-coach-logo";
-import { APP_BUILD_INFO } from "@/lib/build-info";
+import { APP_BUILD_INFO, APP_VERSION_INFO } from "@/lib/build-info";
 import { accountPayloadConfirmsUser } from "@/lib/auth-session-policy.mjs";
 import { splitDisplayNameForRegistration } from "@/lib/admin-user-policy.mjs";
 import {
@@ -11498,6 +11498,22 @@ function AdminView({
         ["Feedback review", dashboard.summary.coachFeedbackAwaitingReview],
       ]
     : [];
+  const buildInfoRows: [string, string][] = [
+    ["Environment", APP_VERSION_INFO.environment],
+    ["Branch", APP_VERSION_INFO.branch],
+    ["Full commit SHA", APP_VERSION_INFO.commitSha],
+    ["Short SHA", APP_VERSION_INFO.shortCommitSha],
+    ["Build timestamp", APP_VERSION_INFO.buildTimestamp],
+  ];
+
+  async function copyBuildCommitSha() {
+    try {
+      await navigator.clipboard.writeText(APP_VERSION_INFO.commitSha);
+      setMessage("Build commit SHA copied.");
+    } catch {
+      setMessage("Build commit SHA could not be copied.");
+    }
+  }
 
   return (
     <section className="admin-workspace view-stack">
@@ -11567,6 +11583,25 @@ function AdminView({
             <strong>{value}</strong>
           </article>
         ))}
+      </section>
+
+      <section className="panel admin-system-panel" aria-label="System build information">
+        <div className="admin-system-header">
+          <PanelHeader
+            kicker="System"
+            title="Build information"
+            meta={`Version ${APP_VERSION_INFO.shortCommitSha}`}
+          />
+          <button className="secondary-action" onClick={() => void copyBuildCommitSha()} type="button">Copy SHA</button>
+        </div>
+        <div className="admin-system-grid">
+          {buildInfoRows.map(([label, value]) => (
+            <article key={label}>
+              <span>{label}</span>
+              <strong>{value}</strong>
+            </article>
+          ))}
+        </div>
       </section>
 
       <section className="admin-ops-grid">

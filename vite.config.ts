@@ -22,7 +22,11 @@ export default defineConfig(async () => {
   const plugins = [vinext()];
   const buildCommit = gitValue(["rev-parse", "HEAD"], "local");
   const buildBranch = gitValue(["branch", "--show-current"], "local");
-  const buildWorker = process.env.MAI_COACH_WORKER || (buildBranch === "dev" ? "mai-coach-dev" : "local");
+  const buildWorker = process.env.MAI_COACH_WORKER ||
+    (buildBranch === "dev" ? "mai-coach-dev" : buildBranch === "main" ? "b9-golf-practice-dashboard" : "local");
+  const appEnvironment = process.env.APP_ENVIRONMENT ||
+    process.env.MAI_COACH_APP_ENVIRONMENT ||
+    (buildWorker === "mai-coach-dev" ? "dev" : buildWorker === "local" ? "local" : "production");
 
   if (!useLocalPreview) {
     const { cloudflare } = await import("@cloudflare/vite-plugin");
@@ -41,6 +45,7 @@ export default defineConfig(async () => {
       __MAI_COACH_BUILD_COMMIT__: JSON.stringify(buildCommit),
       __MAI_COACH_BUILD_TIME__: JSON.stringify(new Date().toISOString()),
       __MAI_COACH_BUILD_WORKER__: JSON.stringify(buildWorker),
+      __MAI_COACH_APP_ENVIRONMENT__: JSON.stringify(appEnvironment),
     },
     optimizeDeps: {
       exclude: ["react/jsx-dev-runtime", "react/jsx-runtime"],

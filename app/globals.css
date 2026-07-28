@@ -10235,6 +10235,53 @@ input::file-selector-button {
   color: var(--muted);
 }
 
+.admin-system-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.admin-system-header {
+  display: flex;
+  gap: 12px;
+  align-items: start;
+  justify-content: space-between;
+}
+
+.admin-system-header .secondary-action {
+  flex: 0 0 auto;
+}
+
+.admin-system-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.admin-system-grid article {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field);
+  padding: 12px;
+}
+
+.admin-system-grid span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.admin-system-grid strong {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .admin-ops-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -10602,7 +10649,8 @@ input::file-selector-button {
     justify-content: flex-start;
   }
 
-  .admin-summary-grid {
+  .admin-summary-grid,
+  .admin-system-grid {
     grid-template-columns: repeat(4, minmax(128px, 1fr));
   }
 
@@ -10645,6 +10693,10 @@ input::file-selector-button {
   }
 
   .admin-reconciliation-item {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-system-grid {
     grid-template-columns: 1fr;
   }
 

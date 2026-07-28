@@ -46,6 +46,7 @@ next-env.d.ts
 /supabase/.temp/
 /.wrangler/
 /.vinext/
+.vinext.stale-*/
 /.local-run/
 /work/
 /outputs/
