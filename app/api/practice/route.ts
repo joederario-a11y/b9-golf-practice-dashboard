@@ -1,4 +1,5 @@
 import {
+  assignCoachPracticePlan,
   generatePracticeActivity,
   getPracticeActivityDetail,
   listPracticeActivities,
@@ -28,6 +29,9 @@ export async function POST(request: Request) {
   try {
     const identity = await requireIdentity();
     const payload = await request.json() as Record<string, unknown>;
+    if (text(payload.action, 80) === "assign_coach_practice_plan") {
+      return assignCoachPracticePlan(identity, payload);
+    }
     return generatePracticeActivity(identity, payload);
   } catch (error) {
     return responseFromError(error);

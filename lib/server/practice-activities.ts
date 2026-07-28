@@ -16,6 +16,12 @@ import {
   PRACTICE_PROMPT_VERSION,
 } from "@/lib/practice-activity-policy.mjs";
 import {
+  buildStudentPracticePreview,
+  normalizeCoachBuilderList,
+  normalizeCoachBuilderValue,
+  parseCoachPracticeVolume,
+} from "@/lib/coach-practice-builder-policy.mjs";
+import {
   applyCoachTrainingAidAction,
   buildTrainingAidRecommendation,
   visibleTrainingAidRecommendation,
@@ -1035,6 +1041,258 @@ export async function listPracticeActivities(identity: AuthIdentity, memberId?: 
   return Response.json({
     activities,
     currentActivity: activities.find((activity) => activity.status === "generated" || activity.status === "in_progress") ?? null,
+  });
+}
+
+export async function assignCoachPracticePlan(
+  identity: AuthIdentity,
+  values: Record<string, unknown>,
+) {
+  if (identity.role === "member") {
+    throw new Response("Coach or admin access is required to assign practice plans.", { status: 403 });
+  }
+  const database = getRequiredDatabase();
+  await preparePracticeDatabase(database);
+  const memberId = text(values.memberId, 120);
+  if (!memberId) throw new Response("Choose a Student before assigning a Practice Plan.", { status: 400 });
+  const member = await database
+    .prepare("SELECT id, first_name, last_name, email, role FROM users WHERE id = ? AND role = 'member'")
+    .bind(memberId)
+    .first<PracticeUserRow>();
+  if (!member) throw new Response("Student could not be found.", { status: 404 });
+
+  const requestedCoachId = text(values.coachId, 120);
+  const effectiveCoachId = identity.role === "coach" ? identity.id : requestedCoachId || null;
+  let coachName = identity.displayName || "Coach";
+  if (identity.role === "coach") {
+    const assigned = await database
+      .prepare("SELECT id FROM coach_members WHERE coach_id = ? AND member_id = ?")
+      .bind(identity.id, memberId)
+      .first<{ id: string }>();
+    if (!assigned) throw new Response("You can only assign Practice Plans to your assigned Students.", { status: 403 });
+  } else if (effectiveCoachId) {
+    const coach = await database
+      .prepare("SELECT id, first_name, last_name, email FROM users WHERE id = ? AND role = 'coach'")
+      .bind(effectiveCoachId)
+      .first<PracticeUserRow>();
+    if (!coach) throw new Response("Choose a valid Coach for this Practice Plan.", { status: 400 });
+    coachName = userDisplayName(coach);
+  }
+
+  const preview = buildStudentPracticePreview(values) as {
+    club?: string;
+    cueList?: string[];
+    drill?: string;
+    focus?: string;
+    instructions?: string[];
+    messageToStudent?: string;
+    pattern?: string;
+    success?: string;
+    title?: string;
+    trainingAid?: string;
+    volume?: { attemptCount?: number | null; durationMinutes?: number | null; label?: string; sets?: number; repetitionsPerSet?: number };
+    whyItMatters?: string;
+  };
+  const title = text(preview.title, 140);
+  const focusArea = text(preview.focus, 80);
+  const drillTitle = text(preview.drill, 140);
+  const instructionList = normalizeCoachBuilderList(preview.instructions, 6, 220);
+  const volume = parseCoachPracticeVolume(preview.volume?.label || values.volumePreset || values.customVolume) as {
+    attemptCount?: number | null;
+    durationMinutes?: number | null;
+    label?: string;
+    sets?: number;
+    repetitionsPerSet?: number;
+  };
+  const successCriterion = normalizeCoachBuilderValue(preview.success || values.successCriterion || values.customSuccess, 220);
+  if (!title || !focusArea) {
+    throw new Response("Add a Practice Plan title or focus before assigning this plan.", { status: 400 });
+  }
+  if (!drillTitle && instructionList.length === 0) {
+    throw new Response("Add a drill or practice instruction before assigning this plan.", { status: 400 });
+  }
+  if (!volume.label && !volume.attemptCount && !volume.durationMinutes) {
+    throw new Response("Add practice volume before assigning this plan.", { status: 400 });
+  }
+
+  const sourceSessionId = text(values.sourceSessionId, 160);
+  const relatedSession = sourceSessionId ? await loadOwnedSession(database, memberId, sourceSessionId) : null;
+  if (sourceSessionId && !relatedSession) {
+    throw new Response("Only this Student's saved sessions can be used as source context.", { status: 403 });
+  }
+  const sourceLessonId = text(values.sourceLessonId, 120);
+  if (sourceLessonId) {
+    const lesson = await database
+      .prepare(
+        `SELECT id FROM lesson_videos
+         WHERE id = ? AND member_id = ?
+           AND (? IS NULL OR coach_id = ?)
+         LIMIT 1`,
+      )
+      .bind(sourceLessonId, memberId, effectiveCoachId, effectiveCoachId)
+      .first<{ id: string }>();
+    if (!lesson) throw new Response("Lesson source is not available for this Student and Coach.", { status: 403 });
+  }
+
+  const idempotencyKey = text(values.idempotencyKey, 120);
+  if (idempotencyKey) {
+    const prior = await database
+      .prepare(
+        `SELECT * FROM practice_activities
+         WHERE user_id = ?
+           AND generated_by = ?
+           AND source_context_json LIKE ?
+         ORDER BY created_at DESC
+         LIMIT 1`,
+      )
+      .bind(memberId, identity.id, `%${idempotencyKey}%`)
+      .first<PracticeActivityRow>();
+    if (prior) {
+      return Response.json({
+        activity: serializePracticeActivity(prior, await loadActiveCoachContext(database, memberId)),
+        message: "Practice Plan already assigned.",
+        reused: true,
+      });
+    }
+  }
+
+  const existingActive = await database
+    .prepare(
+      `SELECT * FROM practice_activities
+       WHERE user_id = ?
+         AND activity_type = 'drill'
+         AND focus_area = ?
+         AND status IN ('generated', 'in_progress')
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    )
+    .bind(memberId, focusArea)
+    .first<PracticeActivityRow>();
+  if (existingActive) {
+    return Response.json({
+      activity: serializePracticeActivity(existingActive, await loadActiveCoachContext(database, memberId)),
+      message: "This Student already has an active Practice Plan for that focus. Open it or choose a different focus before assigning another.",
+      reused: true,
+    });
+  }
+
+  const trainingAid = normalizeCoachBuilderValue(preview.trainingAid || "No training aid", 120);
+  const cues = Array.isArray(preview.cueList) ? preview.cueList.slice(0, 3) : [];
+  const instructions = {
+    setup: normalizeCoachBuilderValue(values.setup || `Set up ${drillTitle} for ${focusArea}.`, 260),
+    instructions: instructionList.length
+      ? instructionList
+      : [
+          `Complete ${volume.label || "the assigned work"} with ${drillTitle}.`,
+          successCriterion ? `Score success against: ${successCriterion}.` : "Record what happened honestly when you finish.",
+        ],
+    equipment: trainingAid && trainingAid !== "No training aid" ? [trainingAid] : [],
+    feel: cues.join(" · "),
+    commonMistake: normalizeCoachBuilderValue(preview.pattern || values.pattern || values.customPattern, 180),
+    easierVersion: normalizeCoachBuilderValue(values.easierVersion, 220),
+    harderVersion: normalizeCoachBuilderValue(values.harderVersion, 220),
+    resultRequest: "After practice, record what you completed and attach measured evidence when available.",
+    resultFields: ["completed amount", "reflection", "optional session evidence"],
+    nextStepLogic: effectiveCoachId ? "Your Coach reviews completion before assigning the next step." : "MAI Coach uses this result to recommend the next practice step.",
+    coachConnection: effectiveCoachId
+      ? { connected: true, coachName, summary: `${coachName} assigned this Practice Plan.` }
+      : { connected: false, coachName: null, summary: "Assigned by MAI Coach staff." },
+    sourceMode: "coach_builder",
+    sourceSummary: normalizeCoachBuilderValue(values.sourceSummary, 260) || `${coachName} built this plan from Coach guidance.`,
+    studentMessage: normalizeCoachBuilderValue(preview.messageToStudent, 500),
+    whyItMatters: normalizeCoachBuilderValue(preview.whyItMatters, 320),
+    cues,
+    trainingAid: {
+      aidId: trainingAid.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "none",
+      approvalState: "approved",
+      confidence: "coach_selected",
+      name: trainingAid || "No training aid",
+      noEquipmentAlternative: normalizeCoachBuilderValue(values.noEquipmentAlternative, 220),
+      safetyNotes: [],
+      setupSteps: trainingAid && trainingAid !== "No training aid" ? [`Use ${trainingAid} only as your Coach described.`] : [],
+      source: "coach",
+      studentVisible: trainingAid !== "No training aid",
+      whyItFits: trainingAid && trainingAid !== "No training aid" ? "Selected by your Coach for this Practice Plan." : "",
+    },
+  };
+  const sourceContext = {
+    promptVersion: "coach-practice-builder-v1",
+    source: "coach_practice_builder",
+    idempotencyKey: idempotencyKey || null,
+    sourceLessonId: sourceLessonId || null,
+    sourceSessionId: relatedSession?.id || null,
+    selectedPattern: preview.pattern || null,
+    selectedDrill: drillTitle,
+    selectedCues: cues,
+    customValuesUsed: {
+      focus: Boolean(text(values.customFocus, 120)),
+      drill: Boolean(text(values.customDrill, 160)),
+      cue: normalizeCoachBuilderList(values.customCues, 3, 80).length > 0,
+      trainingAid: Boolean(text(values.customTrainingAid, 120)),
+      successCriterion: Boolean(text(values.customSuccess, 220)),
+    },
+    privateFieldsPersisted: false,
+    disabledFeatures: {
+      coachPersonalLibraryPersistence: true,
+      medicalAdvice: true,
+      automaticPublishFromAi: true,
+    },
+  };
+  const activityId = crypto.randomUUID();
+  await database
+    .prepare(
+      `INSERT INTO practice_activities (
+        id, user_id, generated_by, activity_type, focus_area, title, reason_selected,
+        instructions_json, club, duration_minutes, attempt_count, target_json,
+        scoring_json, source_context_json, coach_id, coach_feedback_source_id,
+        related_session_id, status, model, prompt_version, created_at, updated_at
+      ) VALUES (?, ?, ?, 'drill', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'generated', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+    )
+    .bind(
+      activityId,
+      memberId,
+      identity.id,
+      focusArea,
+      title,
+      normalizeCoachBuilderValue(values.whyItMatters || values.reasonSelected, 500) || `${focusArea} is the next Coach-assigned priority.`,
+      safeJson(instructions),
+      preview.club && preview.club !== "No specific club" ? preview.club : null,
+      volume.durationMinutes ?? null,
+      volume.attemptCount ?? null,
+      safeJson({ successTarget: successCriterion, volume: volume.label || null, sets: volume.sets ?? null, repetitionsPerSet: volume.repetitionsPerSet ?? null }),
+      safeJson({ enabled: false, system: "coach_completion_review" }),
+      safeJson(sourceContext),
+      effectiveCoachId,
+      sourceLessonId || null,
+      relatedSession?.id || null,
+      "coach:practice-builder",
+      "coach-practice-builder-v1",
+    )
+    .run();
+
+  await recordActivity({
+    action: "practice_plan_assigned",
+    actor: identity,
+    database,
+    entityId: activityId,
+    entityType: "practice_activity",
+    memberId,
+    metadata: {
+      coachId: effectiveCoachId,
+      focusArea,
+      source: "coach_practice_builder",
+      sourceLessonId: sourceLessonId || null,
+      sourceSessionId: relatedSession?.id || null,
+    },
+    summary: `${coachName} assigned a new Practice Plan: ${title}.`,
+    targetUserId: memberId,
+  });
+
+  const saved = await getActivityRow(database, activityId);
+  return Response.json({
+    activity: saved ? serializePracticeActivity(saved, await loadActiveCoachContext(database, memberId)) : null,
+    message: `Practice Plan assigned to ${userDisplayName(member)}.`,
+    reused: false,
   });
 }
 

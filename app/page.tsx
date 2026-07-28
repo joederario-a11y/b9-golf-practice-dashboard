@@ -13775,6 +13775,17 @@ function CoachVideoWorkspace({
             )}
             {coachDashboardActions.showMemberTools && (
               <>
+                <button
+                  className="secondary-action"
+                  disabled={!coachDashboardActions.canUseMemberTools}
+                  onClick={() => {
+                    const params = new URLSearchParams();
+                    if (selectedMemberId) params.set("memberId", selectedMemberId);
+                    window.location.href = `/coach/practice-builder${params.toString() ? `?${params.toString()}` : ""}`;
+                  }}
+                >
+                  Create Practice Plan
+                </button>
                 <button className="secondary-action" disabled={!coachDashboardActions.canUseMemberTools} onClick={() => setCoachQuickMode("session")}>Add Session</button>
                 <button className="secondary-action" disabled={!coachDashboardActions.canUseMemberTools} onClick={() => setCoachQuickMode("content")}>Assign Drill/Note</button>
               </>
@@ -13970,6 +13981,7 @@ function CoachVideoWorkspace({
                 <CoachAvatar coach={selectedMember} />
                 <div><span>Selected Student</span><strong>{selectedMember.name}</strong><small>{selectedMember.email}</small></div>
                 <div><span>Lesson archive</span><strong>{selectedMember.videoCount ?? 0} videos</strong><small>{selectedMember.lastVideoAt ? formatVideoUploadDate(selectedMember.lastVideoAt) : "No lesson videos yet"}</small></div>
+                <button className="secondary-action" onClick={() => { window.location.href = `/coach/practice-builder?memberId=${encodeURIComponent(selectedMember.id)}`; }} type="button">Create Practice Plan</button>
                 <button className="secondary-action" onClick={() => onOpenMemberVideos(selectedMember.id, selectedMember.name)} type="button">View videos</button>
               </div>
             )}
@@ -17881,6 +17893,15 @@ function VideoDetailView({
     }
   }
 
+  function openPracticeBuilderFromLesson() {
+    const params = new URLSearchParams();
+    params.set("memberId", video.ownerId);
+    params.set("lessonId", video.id);
+    const sourceSessionId = primaryLinkedSession?.id ?? video.sessionId;
+    if (sourceSessionId) params.set("sessionId", sourceSessionId);
+    window.location.href = `/coach/practice-builder?${params.toString()}`;
+  }
+
   if (publishConfirmation) {
     return (
       <LessonPublishConfirmationModal
@@ -17909,6 +17930,9 @@ function VideoDetailView({
                 Annotate Video
               </button>
             )}
+            <button className="secondary-action" onClick={openPracticeBuilderFromLesson} type="button">
+              Create Practice Plan
+            </button>
             <button className="secondary-action" disabled={savingDraft} onClick={() => void saveCoachFeedbackDraft()} type="button">
               {savingDraft ? "Saving..." : "Save Draft"}
             </button>
