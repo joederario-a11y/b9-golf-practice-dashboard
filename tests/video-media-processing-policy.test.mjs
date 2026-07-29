@@ -82,13 +82,13 @@ test("small supported WebM can use direct transcription fallback after Cloudflar
   }), MAX_DIRECT_MEDIA_TRANSCRIPTION_BYTES);
 });
 
-test("MOV media is normalized before transcription instead of sent directly", () => {
+test("small MOV media can use direct fallback after normalization fails", () => {
   assert.equal(mediaContainerFromMimeType("video/quicktime"), "mov");
   assert.equal(canDirectTranscribeStoredMedia({
     hasAudio: true,
     mimeType: "video/quicktime",
     size: 25 * 1024 * 1024,
-  }), false);
+  }), true);
 });
 
 test("extracted audio keeps the stricter transcription size limit", () => {

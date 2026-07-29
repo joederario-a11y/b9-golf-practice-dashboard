@@ -476,8 +476,11 @@ function transcriptionFileInfo(video: VideoRecapRow, storagePath: string) {
     const rawSourceMimeType = text(video.source_mime_type, 100) || text(video.mime_type, 100) || "video/mp4";
     const sourceMimeType = rawSourceMimeType.includes("quicktime") ? "video/mp4" : rawSourceMimeType;
     const sourceExtension = rawSourceMimeType.includes("quicktime") ? "mp4" : rawSourceMimeType.includes("webm") ? "webm" : "mp4";
+    const sourceName = text(video.source_file_name, 180) || text(video.file_name, 180) || `coach-video.${sourceExtension}`;
     return {
-      name: text(video.source_file_name, 180) || text(video.file_name, 180) || `coach-video.${sourceExtension}`,
+      name: rawSourceMimeType.includes("quicktime")
+        ? sourceName.replace(/\.[^./\\]+$/, "") + ".mp4"
+        : sourceName,
       type: sourceMimeType,
     };
   }
@@ -485,8 +488,11 @@ function transcriptionFileInfo(video: VideoRecapRow, storagePath: string) {
   const rawMimeType = text(video.mime_type, 100) || "video/mp4";
   const mimeType = rawMimeType.includes("quicktime") ? "video/mp4" : rawMimeType;
   const extension = rawMimeType.includes("quicktime") ? "mp4" : rawMimeType.includes("webm") ? "webm" : "mp4";
+  const fileName = text(video.file_name, 180) || `coach-video.${extension}`;
   return {
-    name: text(video.file_name, 180) || `coach-video.${extension}`,
+    name: rawMimeType.includes("quicktime")
+      ? fileName.replace(/\.[^./\\]+$/, "") + ".mp4"
+      : fileName,
     type: mimeType,
   };
 }
