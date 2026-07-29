@@ -70,6 +70,7 @@ import {
 } from "@/lib/video-ai-recap-policy.mjs";
 import {
   canShowVideoInLibrary,
+  lessonProcessingProgress,
   lessonProcessingStatus,
   lessonProcessingSteps,
   transcriptProof,
@@ -17028,6 +17029,12 @@ function LessonProcessingTracker({ state, video }: { state: VideoRecapState | nu
     transcript: state?.transcript,
     video,
   });
+  const progress = lessonProcessingProgress({
+    draft: state?.draft,
+    job: state?.job,
+    transcript: state?.transcript,
+    video,
+  });
   const proof = transcriptProof(state?.transcript);
 
   return (
@@ -17048,6 +17055,11 @@ function LessonProcessingTracker({ state, video }: { state: VideoRecapState | nu
           </li>
         ))}
       </ol>
+      <div className="lesson-processing-progress" aria-label={`Lesson processing ${progress.percent}% complete`}>
+        <span style={{ width: `${progress.percent}%` }} />
+        <strong>{progress.percent}%</strong>
+        <small>Step {progress.stepNumber} of {progress.totalSteps}: {progress.currentLabel}</small>
+      </div>
       {proof && <p className="lesson-transcript-proof">{proof}</p>}
       {status.safeFailureCode && <p className="lesson-safe-error">Safe code: {status.safeFailureCode}</p>}
     </section>
@@ -17072,6 +17084,12 @@ function LessonAudioAnalysisPanel({
   const activeJobStatuses = new Set(["queued", "extracting_audio", "transcribing", "generating_recap"]);
   const processingActive = Boolean(state?.job && activeJobStatuses.has(state.job.status));
   const audioStatus = coachAudioStatusCopy(state, video);
+  const audioProgress = lessonProcessingProgress({
+    draft: state?.draft,
+    job: state?.job,
+    transcript: state?.transcript,
+    video,
+  });
   const proof = transcriptProof(state?.transcript);
   const hasDraft = Boolean(state?.draft);
   const canRetry = audioStatus.action === "Retry Audio Analysis" || audioStatus.action === "Analyze Coach Audio";
@@ -17213,6 +17231,11 @@ function LessonAudioAnalysisPanel({
         <span>Audio analysis</span>
         <strong>{audioStatus.title}</strong>
         <p>{audioStatus.copy}</p>
+        <div className="lesson-processing-progress compact" aria-label={`Audio analysis ${audioProgress.percent}% complete`}>
+          <span style={{ width: `${audioProgress.percent}%` }} />
+          <strong>{audioProgress.percent}%</strong>
+          <small>Step {audioProgress.stepNumber} of {audioProgress.totalSteps}: {audioProgress.currentLabel}</small>
+        </div>
         {proof && <small>{proof}</small>}
         {message && <small>{message}</small>}
         {retryProgress !== null && <small>Audio retry progress: {retryProgress}%</small>}
@@ -19364,6 +19387,7 @@ function VideosView({
   const [uploadSessionId, setUploadSessionId] = useState("");
   const [uploadClub, setUploadClub] = useState("");
   const [uploadSwingType, setUploadSwingType] = useState<VideoSwingType | "">("");
+  const [uploadCoachId, setUploadCoachId] = useState("");
   const [uploadVisibility, setUploadVisibility] = useState<VideoVisibility>(
     viewerRole === "user" ? "User only" : "Coach + User",
   );
@@ -19399,8 +19423,10 @@ function VideosView({
       .then(([records, coaches, memberDetail]) => {
         if (cancelled) return;
         const items = records.map((record) => createVideoLibraryItem(record));
+        const nextAssignedCoaches = viewerRole === "user" ? coaches : memberDetail?.assignedCoaches ?? [];
         setVideos(items);
-        setAssignedCoaches(coaches);
+        setAssignedCoaches(nextAssignedCoaches);
+        setUploadCoachId(nextAssignedCoaches[0]?.id ?? "");
         if (memberDetail?.sessions) setLibrarySessions(sanitizeSessionList(memberDetail.sessions) as Session[]);
         if (requestedVideoId && items.some((item) => item.id === requestedVideoId && canViewLibraryVideo(item, ownerId, viewerRole))) {
           setSelectedVideoId(requestedVideoId);
@@ -19695,6 +19721,7 @@ function VideosView({
     setUploadSessionId("");
     setUploadClub("");
     setUploadSwingType("");
+    setUploadCoachId(assignedCoaches[0]?.id ?? "");
     setUploadVisibility(viewerRole === "user" ? "User only" : "Coach + User");
     setAnalyzeMySwing(true);
     setUploadProgress(0);
@@ -19740,11 +19767,13 @@ function VideosView({
         description: uploadDescription.trim(),
         videoType: uploadType,
         tags: uploadTags.split(",").map((tag) => tag.trim()).filter(Boolean),
+        coachId: viewerRole === "admin" ? uploadCoachId || undefined : undefined,
         sessionId: uploadSessionId || undefined,
         club: uploadClub || undefined,
         swingType: uploadSwingType || undefined,
         duration,
         publicationStatus: "Published",
+        generateAiRecap: viewerRole === "admin" ? Boolean(uploadCoachId) : viewerRole !== "user",
         generateVisualAnalysis: Boolean(viewerRole === "user" && analyzeMySwing),
       }, videoFile);
       await uploadVideoAsset(created.id, videoFile, "video", setUploadProgress);
@@ -19987,6 +20016,9 @@ function VideosView({
               <summary>Add Lesson Details</summary>
               <div className="video-form-grid">
               <label className="video-form-wide"><span>Title optional</span><input maxLength={120} onChange={(event) => setUploadTitle(event.target.value)} placeholder={videoFile ? videoDateTitleFromFile(videoFile) : "Jul 19, 2026"} value={uploadTitle} /></label>
+              {viewerRole === "admin" && (
+                <label><span>Coach for feedback</span><select value={uploadCoachId} onChange={(event) => setUploadCoachId(event.target.value)}><option value="">No coach selected</option>{assignedCoaches.map((coach) => <option key={coach.id} value={coach.id}>{coach.name}</option>)}</select></label>
+              )}
               <label><span>Video type</span><select value={uploadType} onChange={(event) => setUploadType(event.target.value as VideoType)}>{VIDEO_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>
               <label><span>Visibility</span><select value={uploadVisibility} onChange={(event) => setUploadVisibility(event.target.value as VideoVisibility)}>{viewerRole === "user" ? <><option>User only</option><option>Coach + User</option></> : viewerRole === "coach" ? <><option>Coach + User</option><option>Admin only</option></> : <><option>User only</option><option>Coach + User</option><option>Admin only</option></>}</select></label>
               <label><span>Related session</span><select value={uploadSessionId} onChange={(event) => setUploadSessionId(event.target.value)}><option value="">No session attached</option>{librarySessions.map((session) => <option key={session.id} value={session.id}>{formatDate(session.date)} · {session.title}</option>)}</select></label>
@@ -20000,6 +20032,13 @@ function VideosView({
                 </label>
               )}
               <label className="video-form-wide"><span>Description or notes</span><textarea onChange={(event) => setUploadDescription(event.target.value)} placeholder="Context, lesson recap, or what to review..." value={uploadDescription} /></label>
+              {viewerRole === "admin" && (
+                <p className="coach-inline-note video-form-wide">
+                  {uploadCoachId
+                    ? "MAI Coach audio analysis will be queued for the selected coach. No email is sent until you choose Notify Member."
+                    : "Select an assigned coach to queue MAI Coach audio analysis. The video can still be uploaded without audio analysis."}
+                </p>
+              )}
               </div>
             </details>
 

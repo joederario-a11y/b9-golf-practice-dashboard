@@ -5849,6 +5849,11 @@ button:disabled {
   align-items: start;
 }
 
+.lesson-audio-status-panel > div:first-child {
+  display: grid;
+  gap: 7px;
+}
+
 .lesson-audio-status-panel.processing,
 .lesson-audio-status-panel.audio_detected {
   border-color: rgba(255, 211, 38, 0.36);
@@ -8601,6 +8606,51 @@ button:disabled {
 .lesson-processing-step.attention span {
   background: #ff7678;
   color: #160405;
+}
+
+.lesson-processing-progress {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 7px 10px;
+  margin-top: 2px;
+}
+
+.lesson-processing-progress::before {
+  content: "";
+  grid-column: 1 / -1;
+  grid-row: 1;
+  height: 8px;
+  border: 1px solid rgba(151, 210, 46, 0.25);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.lesson-processing-progress > span {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  display: block;
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--green), #ffd326);
+  box-shadow: 0 0 18px rgba(151, 210, 46, 0.22);
+  transition: width 240ms ease;
+}
+
+.lesson-processing-progress strong,
+.lesson-processing-progress small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.lesson-processing-progress small {
+  justify-self: end;
+  text-align: right;
+}
+
+.lesson-processing-progress.compact {
+  max-width: 460px;
 }
 
 .lesson-transcript-proof {

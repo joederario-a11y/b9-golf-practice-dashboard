@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   canShowVideoInLibrary,
+  lessonProcessingProgress,
   lessonProcessingStatus,
   lessonProcessingSteps,
   transcriptProof,
@@ -64,6 +65,17 @@ test("stored queued video shows uploaded then waits for processing", () => {
     ["transcript", "pending"],
     ["recap", "pending"],
   ]);
+  assert.deepEqual(lessonProcessingProgress({
+    job: { status: "queued", currentStep: "queued_for_transcription", updatedAt: "2026-07-24T10:48:00Z" },
+    video: { ownerId, uploadStatus: "ready", updatedAt: "2026-07-24T10:47:00Z" },
+  }), {
+    completedCount: 1,
+    currentLabel: "Extracting audio",
+    percent: 25,
+    state: "active",
+    stepNumber: 2,
+    totalSteps: 4,
+  });
 });
 
 test("transcript proof appears before recap draft completion", () => {
@@ -84,6 +96,11 @@ test("transcript proof appears before recap draft completion", () => {
   assert.equal(status.title, "Transcript created");
   assert.equal(steps.find((step) => step.key === "transcript")?.state, "done");
   assert.equal(steps.find((step) => step.key === "recap")?.state, "pending");
+  assert.equal(lessonProcessingProgress({
+    job: { status: "transcribing", currentStep: "transcription_completed", updatedAt: "2026-07-24T10:52:00Z" },
+    transcript: { text: "Keep the face stable and rehearse the takeaway before speed work." },
+    video: { ownerId, uploadStatus: "ready", updatedAt: "2026-07-24T10:47:00Z" },
+  }).percent, 75);
   assert.match(transcriptProof({ durationSeconds: 131, text: "Keep the face stable and rehearse the takeaway before speed work." }), /11 words captured from 2:11/);
 });
 

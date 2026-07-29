@@ -294,6 +294,15 @@ test("failed lesson retry can prepare private audio from the stored playable vid
   assert.match(pageSource, /Audio summary was added to the Coach Feedback fields/);
 });
 
+test("admin member-library uploads preserve the selected coach for audio analysis", async () => {
+  const pageSource = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(pageSource, /Coach for feedback/);
+  assert.match(pageSource, /setUploadCoachId\(nextAssignedCoaches\[0\]\?\.id \?\? ""\)/);
+  assert.match(pageSource, /coachId: viewerRole === "admin" \? uploadCoachId \|\| undefined : undefined/);
+  assert.match(pageSource, /generateAiRecap: viewerRole === "admin" \? Boolean\(uploadCoachId\) : viewerRole !== "user"/);
+  assert.match(pageSource, /No email is sent until you choose Notify Member/);
+});
+
 test("server accepts private transcription audio without replacing the source video", async () => {
   const routeSource = await readFile(new URL("../app/api/videos/route.ts", import.meta.url), "utf8");
   assert.match(routeSource, /parseVideoUploadAsset/);
