@@ -6054,6 +6054,54 @@ function mergeLessonVideoAudioProbes(...probes: LessonVideoAudioProbe[]): Lesson
   return probes.find(Boolean) ?? { codec: "", hasAudio: null, method: "unavailable", trackCount: null };
 }
 
+function lessonVideoAudioProbeFromMediaProbe(probe?: Record<string, unknown> | null): LessonVideoAudioProbe {
+  if (!probe || typeof probe !== "object") {
+    return { codec: "", hasAudio: null, method: "stored_probe_unavailable", trackCount: null };
+  }
+  const rawAudioTrackCount = probe.audioTrackCount;
+  const audioTrackCount = Number(rawAudioTrackCount);
+  const hasAudioTrackCount = rawAudioTrackCount !== undefined && rawAudioTrackCount !== null && Number.isFinite(audioTrackCount);
+  const audioCodec = typeof probe.audioCodec === "string" ? probe.audioCodec : "";
+  const hasAudioValue = probe.hasAudio;
+  const hasAudio = audioTrackCount > 0 || Boolean(audioCodec)
+    ? true
+    : hasAudioValue === false || (hasAudioTrackCount && audioTrackCount === 0)
+      ? false
+      : null;
+  return {
+    codec: audioCodec,
+    hasAudio,
+    method: "stored_media_probe",
+    trackCount: hasAudioTrackCount && audioTrackCount > 0 ? audioTrackCount : hasAudio === false ? 0 : null,
+  };
+}
+
+function lessonVideoMetadataFromStoredVideo(video: VideoLibraryItem): LessonVideoMetadata {
+  const sourceProbe = lessonVideoAudioProbeFromMediaProbe(video.sourceMediaProbe);
+  const playbackProbe = lessonVideoAudioProbeFromMediaProbe(video.playbackMediaProbe);
+  const audioProbe = mergeLessonVideoAudioProbes(sourceProbe, playbackProbe);
+  return {
+    audioCodec: audioProbe.codec,
+    audioProbeMethod: audioProbe.method,
+    audioTrackCount: audioProbe.trackCount,
+    duration: Number(video.duration || 0),
+    hasAudio: audioProbe.hasAudio,
+    height: 0,
+    width: 0,
+  };
+}
+
+function shouldPrepareStoredLessonAudioSidecar(video: VideoLibraryItem) {
+  const sourceProbe = lessonVideoAudioProbeFromMediaProbe(video.sourceMediaProbe);
+  const playbackProbe = lessonVideoAudioProbeFromMediaProbe(video.playbackMediaProbe);
+  const audioProbe = mergeLessonVideoAudioProbes(sourceProbe, playbackProbe);
+  return shouldPrepareLessonVideoAudioSidecar({
+    fileSize: video.sourceFileSize ?? video.fileSize ?? 0,
+    hasAudio: audioProbe.hasAudio,
+    mimeType: video.sourceMimeType || video.mimeType,
+  });
+}
+
 function captureVideoElementStream(video: HTMLVideoElement) {
   const capture = (video as HTMLVideoElement & {
     captureStream?: () => MediaStream;
@@ -6437,6 +6485,32 @@ async function prepareLessonAudioSidecarForUpload(
     timeoutMs: number;
   },
 ) {
+  const objectUrl = URL.createObjectURL(file);
+  return prepareLessonAudioSidecarFromSource(
+    objectUrl,
+    file.name,
+    file.lastModified || Date.now(),
+    metadata,
+    sourceAudioProbe,
+    options,
+    true,
+  );
+}
+
+async function prepareLessonAudioSidecarFromSource(
+  sourceUrl: string,
+  outputName: string,
+  lastModified: number,
+  metadata: LessonVideoMetadata,
+  sourceAudioProbe: LessonVideoAudioProbe,
+  options: {
+    audioBitsPerSecond: number;
+    onProgress: (progress: number, message: string) => void;
+    signal: AbortSignal;
+    timeoutMs: number;
+  },
+  revokeSourceUrl = false,
+) {
   if (sourceAudioProbe.hasAudio === false) {
     throw new Error("This video does not appear to include audio.");
   }
@@ -6447,7 +6521,6 @@ async function prepareLessonAudioSidecarForUpload(
   if (!recorderFormat) {
     throw new Error("This browser cannot create supported transcription audio.");
   }
-  const objectUrl = URL.createObjectURL(file);
   const video = document.createElement("video");
   const chunks: Blob[] = [];
   let audioContext: AudioContext | null = null;
@@ -6472,7 +6545,7 @@ async function prepareLessonAudioSidecarForUpload(
     video.pause();
     video.removeAttribute("src");
     video.load();
-    URL.revokeObjectURL(objectUrl);
+    if (revokeSourceUrl) URL.revokeObjectURL(sourceUrl);
     stream?.getTracks().forEach((track) => track.stop());
     sourceCaptureStream?.getTracks().forEach((track) => track.stop());
     audioSource?.disconnect();
@@ -6514,7 +6587,7 @@ async function prepareLessonAudioSidecarForUpload(
     video.playsInline = true;
     video.volume = 0;
     video.muted = false;
-    video.src = objectUrl;
+    video.src = sourceUrl;
     video.onerror = () => fail(new Error("This video could not be opened for audio preparation."));
     video.onloadedmetadata = async () => {
       try {
@@ -6566,15 +6639,13 @@ async function prepareLessonAudioSidecarForUpload(
             fail(new Error("Prepared lesson audio was empty."));
             return;
           }
-          const sidecar = new File([blob], lessonAudioSidecarFileName(file.name, recorderFormat), {
-            lastModified: Date.now(),
+          const sidecar = new File([blob], lessonAudioSidecarFileName(outputName, recorderFormat), {
+            lastModified,
             type: mimeType,
           });
           logLessonVideoDiagnostic("audio-sidecar-complete", {
             durationMs: Math.round(performance.now() - startedAt),
             mimeType: sidecar.type,
-            originalMimeType: file.type,
-            originalSize: file.size,
             sidecarSize: sidecar.size,
           });
           done(sidecar);
@@ -16968,15 +17039,20 @@ function LessonProcessingTracker({ state, video }: { state: VideoRecapState | nu
 }
 
 function LessonAudioAnalysisPanel({
+  autoApplyDraft,
   onApplyDraft,
   video,
 }: {
+  autoApplyDraft?: boolean;
   onApplyDraft: (draft: VideoRecapDraft) => void;
   video: VideoLibraryItem;
 }) {
   const [state, setState] = useState<VideoRecapState | null>(null);
   const [message, setMessage] = useState("Checking Coach audio analysis...");
   const [busyAction, setBusyAction] = useState("");
+  const [retryProgress, setRetryProgress] = useState<number | null>(null);
+  const retryAbortRef = useRef<AbortController | null>(null);
+  const autoAppliedDraftRef = useRef("");
   const activeJobStatuses = new Set(["queued", "extracting_audio", "transcribing", "generating_recap"]);
   const processingActive = Boolean(state?.job && activeJobStatuses.has(state.job.status));
   const audioStatus = coachAudioStatusCopy(state, video);
@@ -17011,6 +17087,13 @@ function LessonAudioAnalysisPanel({
   }, [video.id]);
 
   useEffect(() => {
+    retryAbortRef.current?.abort();
+    retryAbortRef.current = null;
+    setRetryProgress(null);
+    autoAppliedDraftRef.current = "";
+  }, [video.id]);
+
+  useEffect(() => {
     if (!processingActive) return;
     let cancelled = false;
     const timer = window.setInterval(() => {
@@ -17026,20 +17109,84 @@ function LessonAudioAnalysisPanel({
     };
   }, [processingActive, video.id]);
 
+  useEffect(() => {
+    if (!autoApplyDraft || !state?.draft || audioStatus.code !== "summary_ready") return;
+    const draftKey = state.draft.id || `${video.id}:${state.draft.createdAt || state.draft.lessonSummary || state.draft.workedOn}`;
+    if (!draftKey || autoAppliedDraftRef.current === draftKey) return;
+    autoAppliedDraftRef.current = draftKey;
+    onApplyDraft(state.draft);
+    setMessage("Audio summary was added to the Coach Feedback fields.");
+  }, [autoApplyDraft, audioStatus.code, onApplyDraft, state?.draft, video.id]);
+
   async function runAudioAction(action: "regenerateRecapFromTranscript" | "retry" | "retranscribeVideo") {
     if (busyAction) return;
     setBusyAction(action);
+    setRetryProgress(null);
     try {
-      const payload = await updateVideoRecap({
-        action,
-        notifyMember: false,
-        videoId: video.id,
-      });
+      let payload: VideoRecapState;
+      if (action === "retry" && shouldPrepareStoredLessonAudioSidecar(video) && video.objectUrl) {
+        const controller = new AbortController();
+        retryAbortRef.current = controller;
+        setBusyAction("prepare_audio_sidecar");
+        setMessage("Preparing private lesson audio from the saved video before retrying MAI analysis.");
+        const metadata = lessonVideoMetadataFromStoredVideo(video);
+        const audioProbe = mergeLessonVideoAudioProbes(
+          lessonVideoAudioProbeFromMediaProbe(video.sourceMediaProbe),
+          lessonVideoAudioProbeFromMediaProbe(video.playbackMediaProbe),
+        );
+        const audioSidecar = await prepareLessonAudioSidecarFromSource(
+          video.objectUrl,
+          video.sourceFileName || video.fileName || `${video.title || "lesson-video"}.mp4`,
+          Date.now(),
+          metadata,
+          audioProbe,
+          {
+            audioBitsPerSecond: 128_000,
+            signal: controller.signal,
+            timeoutMs: LESSON_VIDEO_COMPRESSION_TIMEOUT_MS,
+            onProgress: (progress, nextMessage) => {
+              setRetryProgress(progress);
+              setMessage(nextMessage);
+            },
+          },
+        );
+        setBusyAction("upload_audio_sidecar");
+        setMessage("Uploading prepared private lesson audio for transcription.");
+        const uploadPayload = await uploadVideoAsset(
+          video.id,
+          audioSidecar,
+          "transcription-audio",
+          (progress) => {
+            setRetryProgress(progress);
+            setMessage(`Uploading prepared lesson audio: ${progress}% transferred.`);
+          },
+          controller.signal,
+        ) as { audioStoragePath?: string };
+        if (!uploadPayload.audioStoragePath) {
+          throw new Error("Prepared lesson audio was uploaded, but the repair path was not confirmed.");
+        }
+        setBusyAction("process_audio_sidecar");
+        setMessage("Transcribing lesson audio and generating Coach Feedback.");
+        payload = await updateVideoRecap({
+          action: "processExistingAudio",
+          audioStoragePath: uploadPayload.audioStoragePath,
+          notifyMember: false,
+          videoId: video.id,
+        });
+      } else {
+        payload = await updateVideoRecap({
+          action,
+          notifyMember: false,
+          videoId: video.id,
+        });
+      }
       setState(payload);
       setMessage(action === "regenerateRecapFromTranscript" ? "Lesson-summary processing started." : "Audio analysis was queued.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Audio analysis could not be started.");
     } finally {
+      retryAbortRef.current = null;
+      setRetryProgress(null);
       setBusyAction("");
     }
   }
@@ -17052,6 +17199,7 @@ function LessonAudioAnalysisPanel({
         <p>{audioStatus.copy}</p>
         {proof && <small>{proof}</small>}
         {message && <small>{message}</small>}
+        {retryProgress !== null && <small>Audio retry progress: {retryProgress}%</small>}
       </div>
       <div className="button-row">
         {canRetry && (
@@ -17061,7 +17209,16 @@ function LessonAudioAnalysisPanel({
             onClick={() => void runAudioAction("retry")}
             type="button"
           >
-            {busyAction ? "Queuing..." : audioStatus.action}
+            {busyAction ? "Working..." : audioStatus.action}
+          </button>
+        )}
+        {busyAction && retryAbortRef.current && (
+          <button
+            className="text-button"
+            onClick={() => retryAbortRef.current?.abort()}
+            type="button"
+          >
+            Cancel
           </button>
         )}
         {audioStatus.action === "Generate Summary" && (
@@ -18049,6 +18206,7 @@ function VideoDetailView({
   const [userNotes, setUserNotes] = useState(video.userNotes);
   const [coachNotesPrivate, setCoachNotesPrivate] = useState(video.coachNotesPrivate);
   const [coachFeedbackFields, setCoachFeedbackFields] = useState<CoachLessonFeedbackFields>(() => coachLessonFeedbackFromVideo(video));
+  const [coachFeedbackTouched, setCoachFeedbackTouched] = useState(false);
   const [focusSearch, setFocusSearch] = useState("");
   const [observationSearch, setObservationSearch] = useState("");
   const [drillSearch, setDrillSearch] = useState("");
@@ -18145,6 +18303,7 @@ function VideoDetailView({
     setUserNotes(video.userNotes);
     setCoachNotesPrivate(video.coachNotesPrivate);
     setCoachFeedbackFields(coachLessonFeedbackFromVideo(video));
+    setCoachFeedbackTouched(false);
     setConfirmDelete(false);
     setMoreMenuOpen(false);
     setPublishPrompt(null);
@@ -18188,10 +18347,12 @@ function VideoDetailView({
   }
 
   function updateFeedbackField(key: keyof CoachLessonFeedbackFields, value: string) {
+    setCoachFeedbackTouched(true);
     setCoachFeedbackFields((current) => ({ ...current, [key]: value }));
   }
 
   function setLessonFocus(nextFocus: string) {
+    setCoachFeedbackTouched(true);
     setCoachFeedbackFields((current) => ({
       ...current,
       customFocus: nextFocus === "Other" ? current.customFocus : "",
@@ -18202,6 +18363,7 @@ function VideoDetailView({
   }
 
   function toggleLessonObservation(observation: string) {
+    setCoachFeedbackTouched(true);
     setCoachFeedbackFields((current) => {
       const next = current.whatINoticed.includes(observation)
         ? current.whatINoticed.filter((item) => item !== observation)
@@ -18213,6 +18375,7 @@ function VideoDetailView({
   function addCustomObservation() {
     const observation = coachFeedbackFields.customObservation.trim();
     if (!observation || coachFeedbackFields.whatINoticed.includes(observation)) return;
+    setCoachFeedbackTouched(true);
     setCoachFeedbackFields((current) => ({
       ...current,
       customObservation: "",
@@ -18221,6 +18384,7 @@ function VideoDetailView({
   }
 
   function setLessonDrill(nextDrillId: string) {
+    setCoachFeedbackTouched(true);
     const drill = COACH_PRACTICE_DRILL_OPTIONS.find((item) => item.id === nextDrillId);
     const defaults = drill ? COACH_DRILL_DEFAULTS[drill.id as keyof typeof COACH_DRILL_DEFAULTS] : null;
     setCoachFeedbackFields((current) => {
@@ -18241,6 +18405,7 @@ function VideoDetailView({
   }
 
   function toggleLessonCue(cue: string) {
+    setCoachFeedbackTouched(true);
     setCoachFeedbackFields((current) => {
       const next = current.cues.includes(cue)
         ? current.cues.filter((item) => item !== cue)
@@ -18252,10 +18417,11 @@ function VideoDetailView({
   function addCustomLessonCue() {
     const cue = coachFeedbackFields.customCue.trim();
     if (!cue || coachFeedbackFields.cues.includes(cue) || coachFeedbackFields.cues.length >= 3) return;
+    setCoachFeedbackTouched(true);
     setCoachFeedbackFields((current) => ({ ...current, customCue: "", cues: [...current.cues, cue].slice(0, 3) }));
   }
 
-  function applyAudioDraftToFeedback(draft: VideoRecapDraft) {
+  const applyAudioDraftToFeedback = useCallback((draft: VideoRecapDraft) => {
     const simplified = simplifiedFieldsFromVideoRecapDraft(draft);
     setCoachFeedbackFields((current) => ({
       ...current,
@@ -18269,7 +18435,7 @@ function VideoDetailView({
       whatINoticedNote: simplified.lessonSummary || current.whatINoticedNote,
     }));
     setLessonWorkspaceMessage("Audio summary applied to editable Coach Feedback. Save Draft when ready.");
-  }
+  }, []);
 
   function coachFeedbackPatch(extra: Partial<VideoLibraryRecord> = {}): Partial<VideoLibraryRecord> {
     const structuredPrivateNotes = serializeStructuredLessonDraft(coachFeedbackFields);
@@ -18541,7 +18707,13 @@ function VideoDetailView({
               src={video.objectUrl}
             />
           )}
-          {canEditCoachNotes && <LessonAudioAnalysisPanel onApplyDraft={applyAudioDraftToFeedback} video={video} />}
+          {canEditCoachNotes && (
+            <LessonAudioAnalysisPanel
+              autoApplyDraft={!coachFeedbackTouched && !hasApprovedRecap}
+              onApplyDraft={applyAudioDraftToFeedback}
+              video={video}
+            />
+          )}
           <div className="video-detail-title">
             <div>
               <p className="eyebrow">{video.type}</p>
@@ -18621,7 +18793,10 @@ function VideoDetailView({
                   </div>
                   {coachFeedbackFields.mainFocus === "Other" && <label><span>Add Custom Focus</span><input value={coachFeedbackFields.customFocus} onChange={(event) => updateFeedbackField("customFocus", event.target.value)} /></label>}
                   <label><span>Supporting focus optional</span><input value={coachFeedbackFields.supportingFocus} onChange={(event) => updateFeedbackField("supportingFocus", event.target.value)} placeholder="Optional secondary focus" /></label>
-                  <label><span>Why this matters <small>Editable suggestion</small></span><textarea value={coachFeedbackFields.whyItMatters} onChange={(event) => setCoachFeedbackFields((current) => ({ ...current, whyEdited: true, whyItMatters: event.target.value }))} /></label>
+                  <label><span>Why this matters <small>Editable suggestion</small></span><textarea value={coachFeedbackFields.whyItMatters} onChange={(event) => {
+                    setCoachFeedbackTouched(true);
+                    setCoachFeedbackFields((current) => ({ ...current, whyEdited: true, whyItMatters: event.target.value }));
+                  }} /></label>
                 </section>
 
                 <section className="coach-structured-card">
@@ -18714,7 +18889,10 @@ function VideoDetailView({
                     {COACH_PRACTICE_FOCUS_OPTIONS.map((option) => <option key={option}>{option}</option>)}
                   </select></label>
                   {coachFeedbackFields.mainFocus === "Other" && <label><span>Add Custom Focus</span><input value={coachFeedbackFields.customFocus} onChange={(event) => updateFeedbackField("customFocus", event.target.value)} /></label>}
-                  <label><span>Why it matters</span><textarea value={coachFeedbackFields.whyItMatters} onChange={(event) => setCoachFeedbackFields((current) => ({ ...current, whyEdited: true, whyItMatters: event.target.value }))} /></label>
+                  <label><span>Why it matters</span><textarea value={coachFeedbackFields.whyItMatters} onChange={(event) => {
+                    setCoachFeedbackTouched(true);
+                    setCoachFeedbackFields((current) => ({ ...current, whyEdited: true, whyItMatters: event.target.value }));
+                  }} /></label>
                 </section>
                 <section className="coach-structured-card">
                   <p className="eyebrow">Drill</p>

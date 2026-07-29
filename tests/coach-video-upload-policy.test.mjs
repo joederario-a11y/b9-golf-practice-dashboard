@@ -191,6 +191,11 @@ test("large common phone videos prepare a private audio sidecar for transcriptio
   }), true);
   assert.equal(shouldPrepareLessonVideoAudioSidecar({
     fileSize: 178 * 1024 * 1024,
+    hasAudio: null,
+    mimeType: "video/quicktime",
+  }), true);
+  assert.equal(shouldPrepareLessonVideoAudioSidecar({
+    fileSize: 178 * 1024 * 1024,
     hasAudio: false,
     mimeType: "video/quicktime",
   }), false);
@@ -254,6 +259,15 @@ test("large coach lesson uploads use multipart chunks without creating another l
   assert.match(pageSource, /file\.slice\(offset, end\)/);
   assert.match(pageSource, /uploadMultipartVideoAsset\(videoId, file, onProgress, signal\)/);
   assert.doesNotMatch(pageSource, /createVideoRecord\(metadata, uploadFile\)[\s\S]+createVideoRecord\(metadata, uploadFile\)/);
+});
+
+test("failed lesson retry can prepare private audio from the stored playable video", async () => {
+  const pageSource = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(pageSource, /prepareLessonAudioSidecarFromSource/);
+  assert.match(pageSource, /shouldPrepareStoredLessonAudioSidecar\(video\)/);
+  assert.match(pageSource, /asset: VideoUploadAsset/);
+  assert.match(pageSource, /action: "processExistingAudio"/);
+  assert.match(pageSource, /Audio summary was added to the Coach Feedback fields/);
 });
 
 test("server accepts private transcription audio without replacing the source video", async () => {
