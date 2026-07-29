@@ -4518,6 +4518,27 @@ button:disabled {
   background: rgba(47, 235, 118, 0.18);
 }
 
+.video-notify-quick-action {
+  margin: 0 13px 13px;
+  min-height: 36px;
+  border: 1px solid rgba(151, 210, 43, 0.42);
+  border-radius: 8px;
+  background: rgba(151, 210, 43, 0.12);
+  color: var(--green);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.video-notify-quick-action:hover:not(:disabled) {
+  background: rgba(151, 210, 43, 0.2);
+}
+
+.video-notify-quick-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
 .video-thumbnail {
   position: relative;
   aspect-ratio: 16 / 9;

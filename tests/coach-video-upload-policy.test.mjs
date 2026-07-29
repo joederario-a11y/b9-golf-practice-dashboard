@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   canStartCoachLessonUpload,
   canAttachCoachSessionData,
+  canUploadFromMemberVideoLibrary,
   chooseLessonVideoCompressionPlan,
   coachLessonMaiAssistanceSummary,
   coachLessonUploadMode,
@@ -18,6 +19,7 @@ import {
   LESSON_VIDEO_WEBM_AUDIO_COMPATIBILITY_ERROR,
   shouldPrepareLessonVideoAudioSidecar,
   shouldPrepareLessonVideoCompression,
+  shouldAutoNotifyOnLibraryPublish,
   shouldShowLessonUploadStallWarning,
   studentFollowUpCanSubmit,
   validateLessonVideoAudioPreservation,
@@ -106,6 +108,28 @@ test("student follow-up requires the assigned Student, a published lesson, and c
   assert.equal(studentFollowUpCanSubmit({ isStudent: false, isPublished: true, note: "Coach text" }), false);
   assert.equal(studentFollowUpCanSubmit({ isStudent: true, isPublished: false, note: "Draft" }), false);
   assert.equal(studentFollowUpCanSubmit({ isStudent: true, isPublished: true, note: "" }), false);
+});
+
+test("admin member video libraries upload quietly until Admin manually notifies", () => {
+  assert.equal(canUploadFromMemberVideoLibrary({ authenticated: true, viewerRole: "admin" }), true);
+  assert.equal(canUploadFromMemberVideoLibrary({ authenticated: true, viewerRole: "coach" }), true);
+  assert.equal(canUploadFromMemberVideoLibrary({ authenticated: true, viewerRole: "user" }), false);
+  assert.equal(canUploadFromMemberVideoLibrary({ authenticated: false, viewerRole: "admin" }), false);
+  assert.equal(shouldAutoNotifyOnLibraryPublish({
+    currentPublicationStatus: "Draft",
+    emailStatus: "Not sent",
+    viewerRole: "admin",
+  }), false);
+  assert.equal(shouldAutoNotifyOnLibraryPublish({
+    currentPublicationStatus: "Draft",
+    emailStatus: "Not sent",
+    viewerRole: "coach",
+  }), true);
+  assert.equal(shouldAutoNotifyOnLibraryPublish({
+    currentPublicationStatus: "Published",
+    emailStatus: "Sent",
+    viewerRole: "coach",
+  }), false);
 });
 
 test("member-dependent coach tools stay visible but disabled until a member is selected", () => {

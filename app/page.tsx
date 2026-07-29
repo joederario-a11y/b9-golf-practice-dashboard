@@ -44,6 +44,7 @@ import {
 import {
   canStartCoachLessonUpload,
   canAttachCoachSessionData,
+  canUploadFromMemberVideoLibrary,
   chooseLessonVideoCompressionPlan,
   coachLessonMaiAssistanceSummary,
   coachLessonUploadMode,
@@ -58,6 +59,7 @@ import {
   LESSON_VIDEO_WEBM_AUDIO_COMPATIBILITY_ERROR,
   shouldPrepareLessonVideoAudioSidecar,
   shouldPrepareLessonVideoCompression,
+  shouldAutoNotifyOnLibraryPublish,
   shouldShowLessonUploadStallWarning,
   studentFollowUpCanSubmit,
   validateLessonVideoAudioPreservation,
@@ -16385,14 +16387,18 @@ function VideoLibraryCard({
   comparisonSelected,
   onAddSessionData,
   onCompare,
+  onNotifyMember,
   onOpen,
+  notifyDisabled = false,
   session,
   video,
 }: {
   comparisonSelected: boolean;
   onAddSessionData: () => void;
   onCompare: () => void;
+  onNotifyMember?: () => void;
   onOpen: () => void;
+  notifyDisabled?: boolean;
   session?: Session;
   video: VideoLibraryItem;
 }) {
@@ -16445,6 +16451,16 @@ function VideoLibraryCard({
       <button className="video-session-quick-action" onClick={onAddSessionData} type="button">
         + Session Data
       </button>
+      {onNotifyMember && (
+        <button
+          className="video-notify-quick-action"
+          disabled={notifyDisabled}
+          onClick={onNotifyMember}
+          type="button"
+        >
+          {video.emailStatus === "Sent" ? "Resend Email" : "Notify Member"}
+        </button>
+      )}
       <button
         aria-label={`${comparisonSelected ? "Remove" : "Add"} ${video.title} ${comparisonSelected ? "from" : "to"} comparison`}
         aria-pressed={comparisonSelected}
@@ -19355,6 +19371,7 @@ function VideosView({
   const [uploadState, setUploadState] = useState<"idle" | "saving">("idle");
   const [uploadProgress, setUploadProgress] = useState(0);
   const [sessionDataVideo, setSessionDataVideo] = useState<VideoLibraryItem | null>(null);
+  const canUploadToMemberLibrary = canUploadFromMemberVideoLibrary({ authenticated, viewerRole });
 
   useEffect(() => {
     if (!requestedVideoId) {
@@ -19520,7 +19537,11 @@ function VideosView({
     const updated = { ...current, ...patch };
     setVideos((items) => items.map((item) => item.id === videoId ? updated : item));
     try {
-      const notifyMember = getVideoPublicationStatus(current) !== "Published" || current.emailStatus !== "Sent";
+      const notifyMember = shouldAutoNotifyOnLibraryPublish({
+        currentPublicationStatus: getVideoPublicationStatus(current),
+        emailStatus: current.emailStatus,
+        viewerRole,
+      });
       const record = await finalizeVideoRecord(videoId, {
         ...videoPatchPayload(stripVideoObjectUrl(updated)),
         notifyMember,
@@ -19533,6 +19554,27 @@ function VideosView({
       setVideos((items) => items.map((item) => item.id === videoId ? current : item));
       setLibraryMessage(error instanceof Error ? error.message : "The lesson could not be published.");
       throw error;
+    }
+  }
+
+  async function notifyMemberAboutVideo(video: VideoLibraryItem) {
+    if (getVideoPublicationStatus(video) !== "Published") {
+      setLibraryMessage("Publish the video before notifying the member.");
+      return;
+    }
+    try {
+      const record = await finalizeVideoRecord(video.id, {
+        ...videoPatchPayload(stripVideoObjectUrl(video)),
+        publicationStatus: "Published",
+        notifyMember: true,
+      });
+      const item = createVideoLibraryItem(record);
+      setVideos((items) => items.map((current) => current.id === item.id ? item : current));
+      setLibraryMessage(record.emailStatus === "Sent"
+        ? `Email notification sent to ${record.memberName ?? ownerName ?? "the member"}.`
+        : "The video stayed published, but the email notification could not be sent.");
+    } catch (error) {
+      setLibraryMessage(error instanceof Error ? error.message : "The email notification could not be sent.");
     }
   }
 
@@ -19658,6 +19700,16 @@ function VideosView({
     setUploadProgress(0);
   }
 
+  function openLibraryUpload() {
+    resetUploadForm();
+    if (viewerRole !== "user") {
+      setUploadType("Coach Feedback");
+      setUploadVisibility("Coach + User");
+      setLibraryMessage(`Upload a lesson video directly to ${ownerName ?? "this member"}'s library. No email will be sent until you choose Notify Member.`);
+    }
+    setShowUpload(true);
+  }
+
   async function uploadVideo(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!videoFile) {
@@ -19710,10 +19762,13 @@ function VideosView({
         duration,
         publicationStatus: "Published",
         generateVisualAnalysis: Boolean(viewerRole === "user" && analyzeMySwing),
+        notifyMember: false,
       });
       const item = createVideoLibraryItem(record);
       setVideos((items) => [item, ...items]);
-      setLibraryMessage(`${record.title} was uploaded successfully.${viewerRole === "user" && analyzeMySwing ? " MAI swing analysis is queued." : ""}`);
+      setLibraryMessage(
+        `${record.title} was uploaded to ${record.memberName ?? ownerName ?? "the member"}'s library. No email was sent.${viewerRole === "user" && analyzeMySwing ? " MAI swing analysis is queued." : " Use Notify Member when you want to send the email."}`,
+      );
       setShowUpload(false);
       resetUploadForm();
     } catch (error) {
@@ -19785,7 +19840,12 @@ function VideosView({
           >
             ⇄ Compare {comparisonIds.length}/2
           </button>
-          {viewerRole === "user" && <button className="primary-action" onClick={() => setShowUpload(true)}>＋ Upload video</button>}
+          {viewerRole === "user" && <button className="primary-action" onClick={openLibraryUpload}>＋ Upload video</button>}
+          {canUploadToMemberLibrary && (
+            <button className="primary-action" onClick={openLibraryUpload} type="button">
+              ＋ Upload for {ownerName?.split(/\s+/)[0] || "Member"}
+            </button>
+          )}
         </div>
       </section>
 
@@ -19846,7 +19906,9 @@ function VideosView({
                 key={video.id}
                 onAddSessionData={() => setSessionDataVideo(video)}
                 onCompare={() => toggleComparison(video.id)}
+                onNotifyMember={viewerRole === "admin" ? () => void notifyMemberAboutVideo(video) : undefined}
                 onOpen={() => openVideo(video)}
+                notifyDisabled={getVideoPublicationStatus(video) !== "Published"}
                 session={librarySessions.find((session) => session.id === video.sessionId)}
                 video={video}
               />
@@ -19864,7 +19926,9 @@ function VideosView({
                       key={video.id}
                       onAddSessionData={() => setSessionDataVideo(video)}
                       onCompare={() => toggleComparison(video.id)}
+                      onNotifyMember={viewerRole === "admin" ? () => void notifyMemberAboutVideo(video) : undefined}
                       onOpen={() => openVideo(video)}
+                      notifyDisabled={getVideoPublicationStatus(video) !== "Published"}
                       session={librarySessions.find((session) => session.id === video.sessionId)}
                       video={video}
                     />
@@ -19883,7 +19947,12 @@ function VideosView({
               ? "Adjust the search or filters to see more of your library."
               : "After your next session, your coach can upload your swing video here."}
           </p>
-          {viewerRole === "user" && <button className="primary-action" onClick={() => setShowUpload(true)}>＋ Upload Video</button>}
+          {viewerRole === "user" && <button className="primary-action" onClick={openLibraryUpload}>＋ Upload Video</button>}
+          {canUploadToMemberLibrary && (
+            <button className="primary-action" onClick={openLibraryUpload} type="button">
+              ＋ Upload for {ownerName?.split(/\s+/)[0] || "Member"}
+            </button>
+          )}
         </section>
       )}
 
@@ -19893,7 +19962,7 @@ function VideosView({
             <div className="video-modal-header">
               <div>
                 <p className="eyebrow">Add to library</p>
-                <h2>Upload video</h2>
+                <h2>{viewerRole === "user" ? "Upload video" : `Upload for ${ownerName ?? "Member"}`}</h2>
               </div>
               <button aria-label="Close upload dialog" className="icon-button" onClick={() => setShowUpload(false)} type="button">×</button>
             </div>
@@ -19920,7 +19989,7 @@ function VideosView({
               <label className="video-form-wide"><span>Title optional</span><input maxLength={120} onChange={(event) => setUploadTitle(event.target.value)} placeholder={videoFile ? videoDateTitleFromFile(videoFile) : "Jul 19, 2026"} value={uploadTitle} /></label>
               <label><span>Video type</span><select value={uploadType} onChange={(event) => setUploadType(event.target.value as VideoType)}>{VIDEO_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>
               <label><span>Visibility</span><select value={uploadVisibility} onChange={(event) => setUploadVisibility(event.target.value as VideoVisibility)}>{viewerRole === "user" ? <><option>User only</option><option>Coach + User</option></> : viewerRole === "coach" ? <><option>Coach + User</option><option>Admin only</option></> : <><option>User only</option><option>Coach + User</option><option>Admin only</option></>}</select></label>
-              <label><span>Related session</span><select value={uploadSessionId} onChange={(event) => setUploadSessionId(event.target.value)}><option value="">No session attached</option>{sessions.map((session) => <option key={session.id} value={session.id}>{formatDate(session.date)} · {session.title}</option>)}</select></label>
+              <label><span>Related session</span><select value={uploadSessionId} onChange={(event) => setUploadSessionId(event.target.value)}><option value="">No session attached</option>{librarySessions.map((session) => <option key={session.id} value={session.id}>{formatDate(session.date)} · {session.title}</option>)}</select></label>
               <ClubSelector compact label="Club" onChange={(value) => setUploadClub(value ? normalizeReviewClubInput(value) : "")} value={uploadClub} />
               <label><span>Swing type</span><select value={uploadSwingType} onChange={(event) => setUploadSwingType(event.target.value as VideoSwingType | "")}><option value="">Not specified</option>{VIDEO_SWING_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>
               <label><span>Tags</span><input onChange={(event) => setUploadTags(event.target.value)} placeholder="tempo, takeaway, lesson" value={uploadTags} /></label>
