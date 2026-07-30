@@ -13,35 +13,36 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "MAI Coach | Your AI Golf Coach",
-  description: "Turn your golf swing data into clear coaching, personalized drills and actionable feedback with MAI Coach.",
+  title: "MAI Coach | AI Golf Coaching",
+  description: "AI-powered golf coaching that connects Coach guidance, Student practice, and measurable progress.",
   applicationName: "MAI Coach",
   openGraph: {
-    title: "MAI Coach | Your AI Golf Coach",
-    description: "Turn your golf swing data into clear coaching, personalized drills and actionable feedback with MAI Coach.",
+    title: "MAI Coach | AI Golf Coaching",
+    description: "AI-powered golf coaching that connects Coach guidance, Student practice, and measurable progress.",
     siteName: "MAI Coach",
     images: [
       {
-        url: "/brand/mai-coach/mai-coach-og-v2.png",
+        url: "/brand/mai-coach/mai-coach-social-1200x630-v3.png",
         width: 1200,
         height: 630,
-        alt: "MAI Coach — My AI Golf Coach",
+        alt: "MAI Coach — AI Golf Coaching",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "MAI Coach | Your AI Golf Coach",
-    description: "Turn your golf swing data into clear coaching, personalized drills and actionable feedback with MAI Coach.",
-    images: ["/brand/mai-coach/mai-coach-og-v2.png"],
+    title: "MAI Coach | AI Golf Coaching",
+    description: "AI-powered golf coaching that connects Coach guidance, Student practice, and measurable progress.",
+    images: ["/brand/mai-coach/mai-coach-social-1200x630-v3.png"],
   },
   icons: {
-    apple: "/brand/mai-coach/mai-coach-apple-touch-icon-v2.png",
+    apple: "/brand/mai-coach/mai-coach-apple-touch-icon-v3.png",
     icon: [
-      { url: "/brand/mai-coach/mai-coach-icon-16-v2.png", sizes: "16x16", type: "image/png" },
-      { url: "/brand/mai-coach/mai-coach-icon-32-v2.png", sizes: "32x32", type: "image/png" },
+      { url: "/brand/mai-coach/mai-coach-favicon-16-v3.png", sizes: "16x16", type: "image/png" },
+      { url: "/brand/mai-coach/mai-coach-favicon-32-v3.png", sizes: "32x32", type: "image/png" },
+      { url: "/brand/mai-coach/mai-coach-favicon-48-v3.png", sizes: "48x48", type: "image/png" },
     ],
-    shortcut: "/brand/mai-coach/mai-coach-icon-32-v2.png",
+    shortcut: "/brand/mai-coach/mai-coach-favicon-32-v3.png",
   },
   manifest: "/manifest.webmanifest",
 };

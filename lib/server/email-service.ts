@@ -10,9 +10,9 @@ import {
 
 const ACCOUNT_SETUP_TTL_SECONDS = 60 * 60 * 72;
 const EMAIL_PROVIDER_URL = "https://api.resend.com/emails";
-const EMAIL_LOGO_PATH = "/brand/mai-coach/mai-coach-email-v2.png";
+const EMAIL_LOGO_PATH = "/brand/mai-coach/mai-coach-logo-email-v3.png";
 const EMAIL_LOGO_WIDTH = 300;
-const EMAIL_LOGO_HEIGHT = 84;
+const EMAIL_LOGO_HEIGHT = 63;
 
 export type EmailSendResult = {
   success: boolean;
@@ -76,15 +76,15 @@ function plainTextFromHtml(html: string) {
 
 function brandedPlainText(text: string) {
   const normalized = text.trim();
-  if (normalized.startsWith("MAI Coach\nMy AI Golf Coach")) return normalized;
-  return `MAI Coach\nMy AI Golf Coach${normalized ? `\n\n${normalized}` : ""}`;
+  if (normalized.startsWith("MAI Coach\nAI Golf Coaching")) return normalized;
+  return `MAI Coach\nAI Golf Coaching${normalized ? `\n\n${normalized}` : ""}`;
 }
 
 function brandedEmailHtml(bodyHtml: string) {
   const logoUrl = getMaiCoachEmailLogoUrl();
   const logoMarkup = logoUrl
-    ? `<img src="${escapeHtml(logoUrl)}" width="${EMAIL_LOGO_WIDTH}" height="${EMAIL_LOGO_HEIGHT}" alt="MAI Coach — My AI Golf Coach" style="display:block;width:${EMAIL_LOGO_WIDTH}px;max-width:100%;height:auto;border:0;outline:none;text-decoration:none;" />`
-    : `<div style="color:#ffffff;font-size:26px;font-weight:800;line-height:1.1;">MAI Coach</div><div style="margin-top:4px;color:#9bd032;font-size:12px;font-weight:800;letter-spacing:.22em;text-transform:uppercase;">My AI Golf Coach</div>`;
+    ? `<img src="${escapeHtml(logoUrl)}" width="${EMAIL_LOGO_WIDTH}" height="${EMAIL_LOGO_HEIGHT}" alt="MAI Coach" style="display:block;width:${EMAIL_LOGO_WIDTH}px;max-width:100%;height:auto;border:0;outline:none;text-decoration:none;" />`
+    : `<div style="color:#ffffff;font-size:26px;font-weight:800;line-height:1.1;">MAI Coach</div><div style="margin-top:4px;color:#96CB39;font-size:12px;font-weight:800;letter-spacing:.22em;text-transform:uppercase;">AI Golf Coaching</div>`;
 
   return `
     <div style="margin:0;padding:0;background:#07110d;color:#f7fbf8;font-family:Arial,Helvetica,sans-serif;">
@@ -97,7 +97,7 @@ function brandedEmailHtml(bodyHtml: string) {
             ${bodyHtml}
           </div>
         </div>
-        <p style="margin:16px 4px 0;color:#7f8c85;font-size:12px;line-height:1.5;">MAI Coach · My AI Golf Coach</p>
+        <p style="margin:16px 4px 0;color:#7f8c85;font-size:12px;line-height:1.5;">MAI Coach · AI Golf Coaching</p>
       </div>
     </div>
   `;

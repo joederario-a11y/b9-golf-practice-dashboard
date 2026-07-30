@@ -22,19 +22,21 @@ function pngSize(filePath) {
 }
 
 const brandAssets = {
-  "/brand/mai-coach/mai-coach-full-horizontal-v2.png": [1200, 401],
-  "/brand/mai-coach/mai-coach-compact-horizontal-v2.png": [760, 212],
-  "/brand/mai-coach/mai-coach-stacked-v2.png": [720, 354],
-  "/brand/mai-coach/mai-coach-mark-v2.png": [640, 551],
-  "/brand/mai-coach/mai-coach-mark-circle-v2.png": [512, 512],
-  "/brand/mai-coach/mai-coach-email-v2.png": [640, 179],
-  "/brand/mai-coach/mai-coach-og-v2.png": [1200, 630],
-  "/brand/mai-coach/mai-coach-icon-16-v2.png": [16, 16],
-  "/brand/mai-coach/mai-coach-icon-32-v2.png": [32, 32],
-  "/brand/mai-coach/mai-coach-apple-touch-icon-v2.png": [180, 180],
-  "/brand/mai-coach/mai-coach-pwa-192-v2.png": [192, 192],
-  "/brand/mai-coach/mai-coach-pwa-512-v2.png": [512, 512],
-  "/brand/mai-coach/mai-coach-maskable-512-v2.png": [512, 512],
+  "/brand/mai-coach/mai-coach-logo-horizontal-dark-v3.png": [1248, 339],
+  "/brand/mai-coach/mai-coach-logo-horizontal-light-v3.png": [1248, 339],
+  "/brand/mai-coach/mai-coach-logo-horizontal-no-tagline-dark-v3.png": [1140, 230],
+  "/brand/mai-coach/mai-coach-logo-horizontal-no-tagline-light-v3.png": [1140, 230],
+  "/brand/mai-coach/mai-coach-logo-compact-v3.png": [792, 164],
+  "/brand/mai-coach/mai-coach-logo-email-v3.png": [676, 142],
+  "/brand/mai-coach/mai-coach-mark-v3.png": [640, 640],
+  "/brand/mai-coach/mai-coach-social-1200x630-v3.png": [1200, 630],
+  "/brand/mai-coach/mai-coach-favicon-16-v3.png": [16, 16],
+  "/brand/mai-coach/mai-coach-favicon-32-v3.png": [32, 32],
+  "/brand/mai-coach/mai-coach-favicon-48-v3.png": [48, 48],
+  "/brand/mai-coach/mai-coach-apple-touch-icon-v3.png": [180, 180],
+  "/brand/mai-coach/mai-coach-pwa-192-v3.png": [192, 192],
+  "/brand/mai-coach/mai-coach-pwa-512-v3.png": [512, 512],
+  "/brand/mai-coach/mai-coach-maskable-512-v3.png": [512, 512],
 };
 
 test("new MAI Coach production logo assets exist with expected dimensions", () => {
@@ -49,10 +51,12 @@ test("central BrandLogo component owns every logo variant", () => {
   const source = readSource("components/brand/mai-coach-logo.tsx");
 
   assertIncludes(source, "export type BrandLogoVariant");
-  for (const publicPath of Object.keys(brandAssets).filter((value) => !value.includes("icon") && !value.includes("pwa") && !value.includes("apple") && !value.includes("maskable") && !value.includes("og"))) {
+  for (const publicPath of Object.keys(brandAssets).filter((value) => !value.includes("favicon") && !value.includes("pwa") && !value.includes("apple") && !value.includes("maskable") && !value.includes("social"))) {
     assertIncludes(source, publicPath);
   }
-  assertIncludes(source, "MAI Coach — My AI Golf Coach");
+  assertIncludes(source, "MAI Coach — AI Golf Coaching");
+  assertIncludes(source, "fullLight");
+  assertIncludes(source, "compactLight");
   assertIncludes(source, "objectFit: \"contain\"");
 });
 
@@ -80,13 +84,14 @@ test("metadata, favicon, PWA, and Open Graph references use versioned new assets
   const layoutSource = readSource("app/layout.tsx");
   const manifestSource = readSource("public/manifest.webmanifest");
 
-  assertIncludes(layoutSource, "/brand/mai-coach/mai-coach-og-v2.png");
-  assertIncludes(layoutSource, "/brand/mai-coach/mai-coach-icon-16-v2.png");
-  assertIncludes(layoutSource, "/brand/mai-coach/mai-coach-icon-32-v2.png");
-  assertIncludes(layoutSource, "/brand/mai-coach/mai-coach-apple-touch-icon-v2.png");
-  assertIncludes(manifestSource, "/brand/mai-coach/mai-coach-pwa-192-v2.png");
-  assertIncludes(manifestSource, "/brand/mai-coach/mai-coach-pwa-512-v2.png");
-  assertIncludes(manifestSource, "/brand/mai-coach/mai-coach-maskable-512-v2.png");
+  assertIncludes(layoutSource, "/brand/mai-coach/mai-coach-social-1200x630-v3.png");
+  assertIncludes(layoutSource, "/brand/mai-coach/mai-coach-favicon-16-v3.png");
+  assertIncludes(layoutSource, "/brand/mai-coach/mai-coach-favicon-32-v3.png");
+  assertIncludes(layoutSource, "/brand/mai-coach/mai-coach-favicon-48-v3.png");
+  assertIncludes(layoutSource, "/brand/mai-coach/mai-coach-apple-touch-icon-v3.png");
+  assertIncludes(manifestSource, "/brand/mai-coach/mai-coach-pwa-192-v3.png");
+  assertIncludes(manifestSource, "/brand/mai-coach/mai-coach-pwa-512-v3.png");
+  assertIncludes(manifestSource, "/brand/mai-coach/mai-coach-maskable-512-v3.png");
 });
 
 test("email templates use public logo URL, semantic text fallback, and branded wrapper", () => {
@@ -96,13 +101,15 @@ test("email templates use public logo URL, semantic text fallback, and branded w
   const authEmail = readSource("lib/server/auth-email.ts");
 
   for (const source of [cloudflareEmail, signupFunction]) {
-    assertIncludes(source, "/brand/mai-coach/mai-coach-email-v2.png");
+    assertIncludes(source, "/brand/mai-coach/mai-coach-logo-email-v3.png");
     assertIncludes(source, "APP_BASE_URL");
-    assertIncludes(source, "alt=\"MAI Coach — My AI Golf Coach\"");
+    assertIncludes(source, "alt=\"MAI Coach\"");
     assertIncludes(source, "MAI Coach");
-    assertIncludes(source, "My AI Golf Coach");
+    assertIncludes(source, "AI Golf Coaching");
   }
-  assertIncludes(cloudflareEmail, "MAI Coach\\nMy AI Golf Coach");
+  assertIncludes(cloudflareEmail, "MAI Coach\\nAI Golf Coaching");
+  assertIncludes(cloudflareEmail, "EMAIL_LOGO_WIDTH = 300");
+  assertIncludes(cloudflareEmail, "EMAIL_LOGO_HEIGHT = 63");
   assertIncludes(videoEmail, "sendEmailMessage");
   assertIncludes(authEmail, "sendPasswordResetEmail");
 });
@@ -119,6 +126,8 @@ test("old generated logos and composite source sheet are not referenced or retai
     "supabase/functions/send-signup-email/index.ts",
   ];
   const joinedSource = searchedFiles.map(readSource).join("\n");
+  assert.doesNotMatch(joinedSource, /mai-coach-[a-z0-9-]+-v2\.png/);
+  assert.doesNotMatch(joinedSource, new RegExp(["My", "AI", "Golf", "Coach"].join(" "), "i"));
   const staleLogoPrefix = "mai-coach-logo-";
   const staleExtension = ".svg";
   const staleFilenames = [

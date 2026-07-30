@@ -1,6 +1,6 @@
 import type { ImgHTMLAttributes } from "react";
 
-export type BrandLogoVariant = "full" | "compact" | "stacked" | "mark" | "circle" | "email";
+export type BrandLogoVariant = "full" | "fullLight" | "noTagline" | "noTaglineLight" | "compact" | "compactLight" | "stacked" | "mark" | "circle" | "email";
 
 type BrandAsset = {
   alt: string;
@@ -11,40 +11,64 @@ type BrandAsset = {
 
 export const BRAND_LOGO_ASSETS: Record<BrandLogoVariant, BrandAsset> = {
   full: {
-    alt: "MAI Coach — My AI Golf Coach",
-    height: 401,
-    src: "/brand/mai-coach/mai-coach-full-horizontal-v2.png",
-    width: 1200,
+    alt: "MAI Coach — AI Golf Coaching",
+    height: 339,
+    src: "/brand/mai-coach/mai-coach-logo-horizontal-dark-v3.png",
+    width: 1248,
+  },
+  fullLight: {
+    alt: "MAI Coach — AI Golf Coaching",
+    height: 339,
+    src: "/brand/mai-coach/mai-coach-logo-horizontal-light-v3.png",
+    width: 1248,
+  },
+  noTagline: {
+    alt: "MAI Coach",
+    height: 230,
+    src: "/brand/mai-coach/mai-coach-logo-horizontal-no-tagline-dark-v3.png",
+    width: 1140,
+  },
+  noTaglineLight: {
+    alt: "MAI Coach",
+    height: 230,
+    src: "/brand/mai-coach/mai-coach-logo-horizontal-no-tagline-light-v3.png",
+    width: 1140,
   },
   compact: {
-    alt: "MAI Coach — My AI Golf Coach",
-    height: 212,
-    src: "/brand/mai-coach/mai-coach-compact-horizontal-v2.png",
-    width: 760,
+    alt: "MAI Coach",
+    height: 164,
+    src: "/brand/mai-coach/mai-coach-logo-compact-v3.png",
+    width: 792,
+  },
+  compactLight: {
+    alt: "MAI Coach",
+    height: 230,
+    src: "/brand/mai-coach/mai-coach-logo-horizontal-no-tagline-light-v3.png",
+    width: 1140,
   },
   stacked: {
-    alt: "MAI Coach — My AI Golf Coach",
-    height: 354,
-    src: "/brand/mai-coach/mai-coach-stacked-v2.png",
-    width: 720,
+    alt: "MAI Coach — AI Golf Coaching",
+    height: 339,
+    src: "/brand/mai-coach/mai-coach-logo-horizontal-dark-v3.png",
+    width: 1248,
   },
   mark: {
     alt: "MAI Coach",
-    height: 551,
-    src: "/brand/mai-coach/mai-coach-mark-v2.png",
+    height: 640,
+    src: "/brand/mai-coach/mai-coach-mark-v3.png",
     width: 640,
   },
   circle: {
     alt: "MAI Coach",
     height: 512,
-    src: "/brand/mai-coach/mai-coach-mark-circle-v2.png",
+    src: "/brand/mai-coach/mai-coach-pwa-512-v3.png",
     width: 512,
   },
   email: {
-    alt: "MAI Coach — My AI Golf Coach",
-    height: 179,
-    src: "/brand/mai-coach/mai-coach-email-v2.png",
-    width: 640,
+    alt: "MAI Coach — AI Golf Coaching",
+    height: 142,
+    src: "/brand/mai-coach/mai-coach-logo-email-v3.png",
+    width: 676,
   },
 };
 

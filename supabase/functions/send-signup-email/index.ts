@@ -25,7 +25,7 @@ type ResendMessage = {
 const jsonHeaders = { "Content-Type": "application/json" };
 const defaultFrom = "notifications@n3xconsulting.com";
 const resendEndpoint = "https://api.resend.com/emails";
-const emailLogoPath = "/brand/mai-coach/mai-coach-email-v2.png";
+const emailLogoPath = "/brand/mai-coach/mai-coach-logo-email-v3.png";
 
 function jsonResponse(body: Record<string, unknown>, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: jsonHeaders });
@@ -107,14 +107,14 @@ function getEmailLogoUrl() {
 }
 
 function brandPlainText(lines: string[]) {
-  return ["MAI Coach", "My AI Golf Coach", "", ...lines].join("\n");
+  return ["MAI Coach", "AI Golf Coaching", "", ...lines].join("\n");
 }
 
 function brandedEmailHtml(bodyHtml: string) {
   const logoUrl = getEmailLogoUrl();
   const logoMarkup = logoUrl
-    ? `<img src="${escapeHtml(logoUrl)}" width="300" height="84" alt="MAI Coach — My AI Golf Coach" style="display:block;width:300px;max-width:100%;height:auto;border:0;outline:none;text-decoration:none;" />`
-    : `<div style="color:#ffffff;font-size:26px;font-weight:800;line-height:1.1;">MAI Coach</div><div style="margin-top:4px;color:#9bd032;font-size:12px;font-weight:800;letter-spacing:.22em;text-transform:uppercase;">My AI Golf Coach</div>`;
+    ? `<img src="${escapeHtml(logoUrl)}" width="300" height="63" alt="MAI Coach" style="display:block;width:300px;max-width:100%;height:auto;border:0;outline:none;text-decoration:none;" />`
+    : `<div style="color:#ffffff;font-size:26px;font-weight:800;line-height:1.1;">MAI Coach</div><div style="margin-top:4px;color:#96CB39;font-size:12px;font-weight:800;letter-spacing:.22em;text-transform:uppercase;">AI Golf Coaching</div>`;
 
   return `
     <div style="margin:0;padding:0;background:#07110d;font-family:Arial,Helvetica,sans-serif;color:#10171F;">
