@@ -56,6 +56,8 @@ test("coach-uploaded visual analysis remains private until coach approval", () =
   const video = {
     coachId: "coach-1",
     memberId: "member-1",
+    publicationStatus: "Published",
+    uploadStatus: "ready",
     uploadedByRole: "coach",
   };
   const analysis = { status: "ready_for_coach_review" };
@@ -64,6 +66,22 @@ test("coach-uploaded visual analysis remains private until coach approval", () =
   assert.equal(canReviewVisualAnalysis({ id: "coach-1", role: "coach" }, video, ["member-1"]), true);
   assert.equal(canReadVisualAnalysis({ id: "member-1", role: "member" }, video, analysis, []), false);
   assert.equal(canReadVisualAnalysis({ id: "member-1", role: "member" }, video, { status: "ready_for_member" }, []), true);
+});
+
+test("member visual access requires a published ready parent lesson", () => {
+  const baseVideo = {
+    coachId: "coach-1",
+    memberId: "member-1",
+    publicationStatus: "Published",
+    uploadStatus: "ready",
+    uploadedByRole: "coach",
+  };
+  const analysis = { status: "ready_for_member" };
+
+  assert.equal(canReadVisualAnalysis({ id: "member-1", role: "member" }, baseVideo, analysis, []), true);
+  assert.equal(canReadVisualAnalysis({ id: "member-1", role: "member" }, { ...baseVideo, publicationStatus: "Archived" }, analysis, []), false);
+  assert.equal(canReadVisualAnalysis({ id: "member-1", role: "member" }, { ...baseVideo, publicationStatus: "Draft" }, analysis, []), false);
+  assert.equal(canReadVisualAnalysis({ id: "member-1", role: "member" }, { ...baseVideo, uploadStatus: "pending" }, analysis, []), false);
 });
 
 test("self-guided member analysis is member-visible and defaults to included findings", () => {
@@ -155,4 +173,16 @@ test("server pipeline preserves video upload while retrying visual analysis only
   assert.match(source, /representative_frame_unavailable/);
   assert.match(source, /media_hash = \?/);
   assert.match(source, /action === "retry"/);
+});
+
+test("visual publication requires a valid published parent lesson and archive retires member delivery", async () => {
+  const visualSource = await readFile(new URL("../lib/server/video-visual-analysis.ts", import.meta.url), "utf8");
+  const videoRouteSource = await readFile(new URL("../app/api/videos/route.ts", import.meta.url), "utf8");
+
+  assert.match(visualSource, /video\.upload_status !== "ready" \|\| video\.publication_status !== "Published"/);
+  assert.match(visualSource, /retireMemberVisibleVisualAnalysisForLesson/);
+  assert.match(visualSource, /status = 'ready_for_coach_review'/);
+  assert.match(visualSource, /published_to_member_at = NULL/);
+  assert.match(videoRouteSource, /retireMemberVisibleVisualAnalysisForLesson/);
+  assert.match(videoRouteSource, /publicationStatus !== "Published"/);
 });

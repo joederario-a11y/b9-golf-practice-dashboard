@@ -129,6 +129,30 @@ test("failed transcription can be retried without changing upload visibility", (
   assert.equal(canShowVideoInLibrary({ ownerId, publicationStatus: "Draft", uploadStatus: "ready", visibility: "Admin only" }, ownerId, "coach"), true);
 });
 
+test("reviewable draft outranks stale failed processing attempts", () => {
+  const status = lessonProcessingStatus({
+    draft: {
+      status: "ready_for_review",
+      updatedAt: "2026-07-29T23:51:39Z",
+    },
+    job: {
+      errorCode: "transcription_failed",
+      status: "failed",
+      currentStep: "failed",
+      updatedAt: "2026-07-29T23:27:36Z",
+    },
+    transcript: {
+      createdAt: "2026-07-29T23:51:35Z",
+      text: "Coach reviewed the student's motion and gave clear next steps for head stability through impact.",
+    },
+    video: { ownerId, uploadStatus: "ready" },
+  });
+
+  assert.equal(status.code, "ready_for_review");
+  assert.equal(status.title, "Lesson recap ready");
+  assert.equal(status.safeFailureCode, null);
+});
+
 test("audio-stage failures explain retry without another upload", () => {
   const status = lessonProcessingStatus({
     job: {

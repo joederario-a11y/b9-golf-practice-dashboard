@@ -221,6 +221,42 @@ async function loadLatestVisualAnalysis(database: D1Database, videoId: string) {
     .first<VideoVisualAnalysisRow>();
 }
 
+export async function retireMemberVisibleVisualAnalysisForLesson(
+  database: D1Database,
+  identity: AuthIdentity,
+  video: { id: string; member_id: string; coach_id: string | null },
+  reason: string,
+) {
+  await ensureVideoVisualAnalysisSchema(database);
+  const result = await database
+    .prepare(
+      `UPDATE video_visual_analyses
+       SET status = 'ready_for_coach_review',
+           published_to_member_at = NULL,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE video_id = ?
+         AND member_id = ?
+         AND status = 'ready_for_member'`,
+    )
+    .bind(video.id, video.member_id)
+    .run();
+  const changed = Number(result.meta?.changes ?? 0);
+  if (changed > 0) {
+    await recordActivity({
+      action: "video_visual_analysis_retired_from_member",
+      actor: identity,
+      database,
+      entityId: video.id,
+      entityType: "video",
+      memberId: video.member_id,
+      metadata: { reason, videoId: video.id },
+      summary: "MAI visual observations were removed from Student delivery because the parent lesson is no longer published.",
+      targetUserId: video.member_id,
+    });
+  }
+  return changed;
+}
+
 async function loadVisualFrames(database: D1Database, analysisId: string) {
   const result = await database
     .prepare("SELECT * FROM video_visual_analysis_frames WHERE analysis_id = ? ORDER BY timestamp_seconds, created_at")
@@ -890,6 +926,9 @@ export async function updateVideoVisualAnalysisState(identity: AuthIdentity, pay
 
   if (action === "publishApproved") {
     if (!reviewAllowed) throw new Response("Only the assigned coach or admin can publish visual observations.", { status: 403 });
+    if (video.upload_status !== "ready" || video.publication_status !== "Published") {
+      throw new Response("Publish the lesson video before sharing visual observations with the Student.", { status: 409 });
+    }
     const latest = await loadLatestVisualAnalysis(database, videoId);
     if (!latest) throw new Response("Visual analysis not found.", { status: 404 });
     await database

@@ -25,6 +25,7 @@ import {
 import {
   processPendingVideoVisualAnalysisAfterUpload,
   queueVideoVisualAnalysisRequest,
+  retireMemberVisibleVisualAnalysisForLesson,
 } from "@/lib/server/video-visual-analysis";
 import {
   loadLessonSessionLinksForVideos,
@@ -1210,6 +1211,10 @@ export async function PATCH(request: Request) {
           video.id,
         )
         .run();
+
+      if (publicationStatus !== "Published") {
+        await retireMemberVisibleVisualAnalysisForLesson(database, identity, video, `lesson_${publicationStatus.toLowerCase()}`);
+      }
 
       const nextSessionId = payload.sessionId === null ? "" : optionalText(payload.sessionId, 120) ?? "";
       if (nextSessionId) {
