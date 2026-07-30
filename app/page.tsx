@@ -18252,6 +18252,7 @@ function VideoDetailView({
   const [aidSearch, setAidSearch] = useState("");
   const [cueSearch, setCueSearch] = useState("");
   const [showPreview, setShowPreview] = useState(false);
+  const studentPreviewRef = useRef<HTMLElement | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [publishPrompt, setPublishPrompt] = useState<"withFeedback" | "withoutFeedback" | null>(null);
@@ -18373,6 +18374,11 @@ function VideoDetailView({
       active = false;
     };
   }, [video.id]);
+
+  useEffect(() => {
+    if (!showPreview) return;
+    studentPreviewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [showPreview]);
 
   async function removePublishedMarkups() {
     if (!window.confirm("Remove all published Coach markups from this lesson? The original video, recap, and coach notes will stay saved.")) return;
@@ -18637,8 +18643,14 @@ function VideoDetailView({
             <button className="secondary-action" disabled={savingDraft} onClick={() => void saveCoachFeedbackDraft()} type="button">
               {savingDraft ? "Saving..." : "Save Draft"}
             </button>
-            <button className="secondary-action" onClick={() => setShowPreview((current) => !current)} type="button">
-              Preview Student View
+            <button
+              aria-controls="coach-student-preview"
+              aria-expanded={showPreview}
+              className="secondary-action"
+              onClick={() => setShowPreview((current) => !current)}
+              type="button"
+            >
+              {showPreview ? "Return to Editing" : "Preview Student View"}
             </button>
             <button className="primary-action" disabled={publishDisabled} onClick={requestPublish} type="button">
               {publishing ? "Publishing..." : `Publish to ${memberFirstName}`}
@@ -19108,7 +19120,7 @@ function VideoDetailView({
               meta={`Check exactly what ${memberFirstName} will see before sending.`}
             />
             {showPreview ? (
-              <section className="coach-student-preview" aria-live="polite">
+              <section className="coach-student-preview" id="coach-student-preview" ref={studentPreviewRef} aria-live="polite">
                 <p className="eyebrow">Preview Student View</p>
                 <h3>{coachFeedbackFields.mainFocus === "Other" ? coachFeedbackFields.customFocus || "Custom focus" : coachFeedbackFields.mainFocus}</h3>
                 <dl>

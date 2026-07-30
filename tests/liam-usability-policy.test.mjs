@@ -77,6 +77,9 @@ test("coach lesson review uses sticky publish and full-width feedback workflow",
   assert.match(pageSource, /Coach library persistence is deferred/);
   assert.match(pageSource, /Private Coach Context/);
   assert.match(pageSource, /Preview Student View/);
+  assert.match(pageSource, /Return to Editing/);
+  assert.match(pageSource, /aria-controls="coach-student-preview"/);
+  assert.match(pageSource, /scrollIntoView\(\{ behavior: "smooth", block: "start" \}\)/);
   assert.match(pageSource, /onIncludeFinding=\{includeVisualFindingInFeedback\}/);
   assert.match(pageSource, /Open Full Practice Plan Builder/);
   assert.match(cssSource, /\.coach-lesson-sticky-header\s*\{[\s\S]*position: sticky/);
