@@ -1799,6 +1799,15 @@ function pathForTab(tab: Tab) {
   return tab === "dashboard" ? "/" : `/${tab}`;
 }
 
+function routeTabFromLocation(location: Pick<Location, "pathname" | "search">): Tab | null {
+  const query = new URLSearchParams(location.search);
+  return tabFromValue(query.get("tab")) ?? tabFromPathname(location.pathname);
+}
+
+function isProtectedRouteTab(tab: Tab | null) {
+  return tab === "sessions" || tab === "clubs" || tab === "videos" || tab === "coach" || tab === "admin" || tab === "practice";
+}
+
 function navItemsForAccount(accountMode: AccountMode, accountUser: AccountUser | null): NavItem[] {
   const item = (id: Tab, label?: string) => {
     const base = NAV_ITEMS.find((navItem) => navItem.id === id)!;
@@ -7464,10 +7473,28 @@ export default function Home() {
     writeSessionUrl(session.id, resolved, "push");
   }
 
+  function replaceActiveRoute(tab: Tab, params: Record<string, string | null | undefined> = {}) {
+    setActiveTab(tab);
+    if (tab === "videos") {
+      setVideoLibraryResetKey((key) => key + 1);
+    } else {
+      setRequestedVideoId(null);
+    }
+    if (typeof window === "undefined") return;
+
+    const url = new URL(window.location.href);
+    url.pathname = pathForTab(tab);
+    url.search = "";
+    Object.entries(params).forEach(([key, value]) => {
+      if (value) url.searchParams.set(key, value);
+    });
+    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  }
+
   function openNextBestAction(action: NextBestAction) {
     if (action.type === "complete_profile") {
       setShowOnboarding(true);
-      setActiveTab("dashboard");
+      replaceActiveRoute("dashboard");
       return;
     }
     if (typeof window === "undefined") {
@@ -7500,12 +7527,11 @@ export default function Home() {
   }
 
   useEffect(() => {
-    const query = new URLSearchParams(window.location.search);
-    const requestedTab = tabFromValue(query.get("tab")) ?? tabFromPathname(window.location.pathname);
+    const requestedTab = routeTabFromLocation(window.location);
     if (requestedTab) {
       queueMicrotask(() => {
         setActiveTab(requestedTab);
-        if (requestedTab === "videos") setRequestedVideoId(query.get("video"));
+        if (requestedTab === "videos") setRequestedVideoId(new URLSearchParams(window.location.search).get("video"));
       });
     }
   }, []);
@@ -7591,10 +7617,10 @@ export default function Home() {
   useEffect(() => {
     if (accountMode !== "user") return;
     if (accountUser?.role === "member" && (activeTab === "coach" || activeTab === "admin")) {
-      setActiveTab(sessions.length ? "videos" : "dashboard");
+      replaceActiveRoute(sessions.length ? "videos" : "dashboard");
     }
     if (accountUser?.role === "coach" && activeTab === "admin") {
-      setActiveTab("coach");
+      replaceActiveRoute("coach");
     }
   }, [accountMode, accountUser?.role, activeTab, sessions.length]);
 
@@ -8036,6 +8062,7 @@ export default function Home() {
       }
 
       if (!accountPayloadConfirmsUser(accountPayload)) {
+        const requestedTab = typeof window === "undefined" ? null : routeTabFromLocation(window.location);
         setAccountMode("guest");
         setAccountUser(null);
         setUserName(null);
@@ -8048,10 +8075,22 @@ export default function Home() {
         setSessionViewSelection({ club: ALL_SESSION_CLUBS, shotId: null, metric: null });
         setPracticeProfile(null);
         setForcePasswordReset(false);
-        setSyncStatus("Sign in or create an account to open your private workspace.");
-        if (options.promptForEmail) {
+        if (isProtectedRouteTab(requestedTab)) {
+          setShowOnboarding(false);
+          setShowAccountGate(false);
           setLoginModalMode("login");
           setShowLoginModal(true);
+          setSyncStatus(
+            requestedTab === "admin"
+              ? "Sign in with an admin account to continue."
+              : "Sign in to open that private MAI Coach page.",
+          );
+        } else {
+          setSyncStatus("Sign in or create an account to open your private workspace.");
+          if (options.promptForEmail) {
+            setLoginModalMode("login");
+            setShowLoginModal(true);
+          }
         }
         return false;
       }
@@ -8080,9 +8119,7 @@ export default function Home() {
       setForcePasswordReset(requiresPasswordReset);
       setPasswordModalMode(consumedLoginMode === "setup" ? "setup" : requiresPasswordReset ? "temporary" : "reset");
       if (requiresPasswordReset) setShowPasswordResetModal(true);
-      const requestedTab =
-        tabFromValue(new URLSearchParams(window.location.search).get("tab")) ??
-        tabFromPathname(window.location.pathname);
+      const requestedTab = routeTabFromLocation(window.location);
       const hasRequestedVideo = requestedTab === "videos" && new URLSearchParams(window.location.search).has("video");
       const nextTab = requestedTab ?? (signedInRole === "user" ? "dashboard" : "coach");
       setActiveTab(nextTab);
@@ -8120,7 +8157,12 @@ export default function Home() {
             : { club: ALL_SESSION_CLUBS, shotId: null, metric: null },
         );
         setLastImport(makeLastImportFromSession(getLastImportSession(savedSessions)));
-        setActiveTab(sessionsTab);
+        replaceActiveRoute(
+          sessionsTab,
+          sessionsTab === "videos" && hasRequestedVideo
+            ? { video: new URLSearchParams(window.location.search).get("video") }
+            : {},
+        );
         setSyncStatus(
           requiresPasswordReset
             ? "Signed in with a temporary password. Choose a new password to continue."
@@ -8194,14 +8236,14 @@ export default function Home() {
     setImportConfirmation(null);
     setPendingImportReview(null);
     clearStoredImportState();
-    setActiveTab("videos");
+    replaceActiveRoute("dashboard");
     setShowOnboarding(false);
     setShowAccountGate(false);
     setShowPasswordResetModal(false);
     setForcePasswordReset(false);
-    setLoginModalMode("register");
+    setLoginModalMode("login");
     setShowLoginModal(true);
-    setSyncStatus("Signed out. Create a new account or sign in.");
+    setSyncStatus("Signed out. Sign in or create an account to continue.");
   }
 
   async function handleOwnProfilePhoto(file: File | null) {
@@ -8248,7 +8290,7 @@ export default function Home() {
     setShowAccountGate(false);
     setAccountMode((current) => current === "pending" ? "guest" : current);
     setRegistrationDraft(draft ?? null);
-    setActiveTab(profile.role === "coach" ? "coach" : "import");
+    replaceActiveRoute(profile.role === "coach" ? "coach" : "import");
     setLoginModalMode("register");
     setShowLoginModal(true);
     setSyncStatus(profile.role === "coach" ? "Create your coach account to manage players." : "Create your account to save your practice profile.");
@@ -8280,7 +8322,7 @@ export default function Home() {
     }
     const review = buildImportReview(shots, submissionType, simulator, metadata, notes);
     setPendingImportReview(review);
-    setActiveTab("import");
+    replaceActiveRoute("import");
     setImportMessage(
       `${review.shots.length} ${review.shots.length === 1 ? "shot is" : "shots are"} ready for review. ` +
       `${review.missingMetrics.length ? "Unavailable values will show as NA." : "All core values were detected."}`,
@@ -8446,7 +8488,7 @@ export default function Home() {
     setSelectedSessionId(nextSession.id);
     setSelectedClub(nextSelectedClub);
     setSessionViewSelection(resolveSessionViewSelection(nextSession, {}, { clubOrder: CLUB_ORDER }) as SessionViewSelection);
-    setActiveTab("dashboard");
+    replaceActiveRoute("dashboard");
     setLastImport(nextLastImport);
     setPendingImportReview(null);
     if (accountMode !== "user") {
@@ -8610,7 +8652,7 @@ export default function Home() {
             <button className="icon-button" title="Refresh analysis" onClick={() => setSessions([...sessions])}>
               ↻
             </button>
-            <button className="primary-action" onClick={() => setActiveTab("import")}>
+            <button className="primary-action" onClick={() => navigateToTab("import")}>
               <span>⇧</span>
               Import
             </button>
@@ -8712,7 +8754,7 @@ export default function Home() {
               setVideoLibraryMemberName(memberName);
               setRequestedVideoId(videoId ?? null);
               setVideoLibraryResetKey((key) => key + 1);
-              setActiveTab("videos");
+              replaceActiveRoute("videos", videoId ? { video: videoId } : {});
             }}
             onRequestCoachAccess={() => changeWorkspaceRole("coach")}
           />
@@ -8726,13 +8768,13 @@ export default function Home() {
               setVideoLibraryMemberId(memberId);
               setVideoLibraryMemberName(memberName);
               setWorkspaceRole("admin");
-              setActiveTab("videos");
+              replaceActiveRoute("videos");
             }}
             onOpenCoachTools={(memberId, memberName) => {
               setVideoLibraryMemberId(memberId);
               setVideoLibraryMemberName(memberName);
               setWorkspaceRole("admin");
-              setActiveTab("coach");
+              replaceActiveRoute("coach");
             }}
           />
         )}
@@ -9911,9 +9953,8 @@ function dashboardSessionGrade(score: number) {
   if (score >= 80) return "B-";
   if (score >= 77) return "C+";
   if (score >= 73) return "C";
-  if (score >= 70) return "C-";
-  if (score >= 60) return "D";
-  return "D";
+  if (score >= 70) return "Baseline";
+  return "Baseline";
 }
 
 function biggestWinCopy(summary: DashboardSummary, selectedClubLabel: string) {
@@ -10473,6 +10514,7 @@ function SessionsView({
   const selectedAnalysis = analysisBySessionId[analysisKey] ?? { status: "idle", message: "" };
   const structuredAnalysis = selectedAnalysis.result?.analysis ?? null;
   const [isEditingSession, setIsEditingSession] = useState(false);
+  const [showSessionNotes, setShowSessionNotes] = useState(false);
   const [editSessionClub, setEditSessionClub] = useState("");
   const [editSessionNotes, setEditSessionNotes] = useState("");
   const [editShotClubs, setEditShotClubs] = useState<Record<string, string>>({});
@@ -10739,7 +10781,13 @@ function SessionsView({
               {selectedSession.id !== EMPTY_SESSION.id && (
                 <button className="text-button" onClick={openSessionEditor} type="button">Edit session</button>
               )}
-              <button className="text-button" onClick={() => setActiveTab("coach")} type="button">Coach notes</button>
+              <button
+                className="text-button"
+                onClick={() => setShowSessionNotes((current) => !current)}
+                type="button"
+              >
+                Session notes
+              </button>
               {selectedSession.id !== EMPTY_SESSION.id && (
                 <button className="text-button danger-text-button" onClick={() => onDeleteSession(selectedSession.id)} type="button">
                   Delete session
@@ -10781,6 +10829,27 @@ function SessionsView({
             </button>
           )}
         </div>
+        {showSessionNotes && (
+          <section className="session-edit-panel" aria-label="Session notes">
+            <div className="session-edit-heading">
+              <div>
+                <p className="eyebrow">Session notes</p>
+                <h3>{selectedSession.id === EMPTY_SESSION.id ? "No saved session selected" : selectedSession.title}</h3>
+              </div>
+              <button className="text-button" onClick={() => setShowSessionNotes(false)} type="button">Close</button>
+            </div>
+            <p>
+              {selectedSession.importNotes?.trim()
+                ? selectedSession.importNotes
+                : "No notes are saved for this session yet. Use Edit session to add setup details, coach context, or what you were working on."}
+            </p>
+            {selectedSession.id !== EMPTY_SESSION.id && (
+              <button className="secondary-action" onClick={openSessionEditor} type="button">
+                Edit session notes
+              </button>
+            )}
+          </section>
+        )}
         {isEditingSession && selectedSession.id !== EMPTY_SESSION.id && (
           <div className="session-edit-panel">
             <div className="session-edit-heading">
@@ -14093,7 +14162,15 @@ function CoachVideoWorkspace({
         {hasDashboardHeaderActions && (
           <div className="button-row">
             {coachDashboardActions.showCompactAddMember && (
-              <button className="secondary-action" disabled={!coachDashboardActions.canAddMember} onClick={() => openAddMemberDialog("manual")}>＋ Add Member</button>
+              <button
+                className="secondary-action"
+                disabled={!coachDashboardActions.canAddMember}
+                onClick={() => openAddMemberDialog("manual")}
+                title={coachDashboardActions.canAddMember ? "Add a member to your roster" : "Sign in as a coach or admin to add members"}
+                type="button"
+              >
+                ＋ Add Member
+              </button>
             )}
             {coachDashboardActions.showMemberTools && (
               <>
@@ -14105,11 +14182,29 @@ function CoachVideoWorkspace({
                     if (selectedMemberId) params.set("memberId", selectedMemberId);
                     window.location.href = `/coach/practice-builder${params.toString() ? `?${params.toString()}` : ""}`;
                   }}
+                  title={coachDashboardActions.canUseMemberTools ? "Create a practice plan for the selected member" : "Select a member before using coach tools"}
+                  type="button"
                 >
                   Create Practice Plan
                 </button>
-                <button className="secondary-action" disabled={!coachDashboardActions.canUseMemberTools} onClick={() => setCoachQuickMode("session")}>Add Session</button>
-                <button className="secondary-action" disabled={!coachDashboardActions.canUseMemberTools} onClick={() => setCoachQuickMode("content")}>Assign Drill/Note</button>
+                <button
+                  className="secondary-action"
+                  disabled={!coachDashboardActions.canUseMemberTools}
+                  onClick={() => setCoachQuickMode("session")}
+                  title={coachDashboardActions.canUseMemberTools ? "Add a session for the selected member" : "Select a member before adding a session"}
+                  type="button"
+                >
+                  Add Session
+                </button>
+                <button
+                  className="secondary-action"
+                  disabled={!coachDashboardActions.canUseMemberTools}
+                  onClick={() => setCoachQuickMode("content")}
+                  title={coachDashboardActions.canUseMemberTools ? "Assign a drill or note to the selected member" : "Select a member before assigning drills or notes"}
+                  type="button"
+                >
+                  Assign Drill/Note
+                </button>
               </>
             )}
             {coachDashboardActions.showUploadLessonVideo && (
@@ -14117,6 +14212,8 @@ function CoachVideoWorkspace({
                 className="primary-action"
                 disabled={!coachDashboardActions.canOpenUpload}
                 onClick={() => openLessonUpload()}
+                title={coachDashboardActions.canOpenUpload ? "Upload a lesson video for the selected member" : "Select a member before uploading a lesson video"}
+                type="button"
               >
                 Upload Lesson Video
               </button>
@@ -17090,6 +17187,7 @@ function LessonAudioAnalysisPanel({
     transcript: state?.transcript,
     video,
   });
+  const showAudioProgress = audioStatus.code !== "not_requested";
   const proof = transcriptProof(state?.transcript);
   const hasDraft = Boolean(state?.draft);
   const canRetry = audioStatus.action === "Retry Audio Analysis" || audioStatus.action === "Analyze Coach Audio";
@@ -17231,11 +17329,13 @@ function LessonAudioAnalysisPanel({
         <span>Audio analysis</span>
         <strong>{audioStatus.title}</strong>
         <p>{audioStatus.copy}</p>
-        <div className="lesson-processing-progress compact" aria-label={`Audio analysis ${audioProgress.percent}% complete`}>
-          <span style={{ width: `${audioProgress.percent}%` }} />
-          <strong>{audioProgress.percent}%</strong>
-          <small>Step {audioProgress.stepNumber} of {audioProgress.totalSteps}: {audioProgress.currentLabel}</small>
-        </div>
+        {showAudioProgress && (
+          <div className="lesson-processing-progress compact" aria-label={`Audio analysis ${audioProgress.percent}% complete`}>
+            <span style={{ width: `${audioProgress.percent}%` }} />
+            <strong>{audioProgress.percent}%</strong>
+            <small>Step {audioProgress.stepNumber} of {audioProgress.totalSteps}: {audioProgress.currentLabel}</small>
+          </div>
+        )}
         {proof && <small>{proof}</small>}
         {message && <small>{message}</small>}
         {retryProgress !== null && <small>Audio retry progress: {retryProgress}%</small>}
@@ -17787,49 +17887,6 @@ function AiLessonRecapReviewModal({
         </div>
       </section>
     </div>
-  );
-}
-
-function ApprovedTranscriptDisclosure({ videoId }: { videoId: string }) {
-  const [state, setState] = useState<VideoRecapState | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    readVideoRecap(videoId)
-      .then((payload) => {
-        if (!cancelled) setState(payload);
-      })
-      .catch(() => {
-        if (!cancelled) setState(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [videoId]);
-
-  if (!state?.draft || state.draft.status !== "published" || !state.transcript?.text) return null;
-
-  const transcriptText = state.transcript.text.trim();
-  const wordCount = transcriptText.split(/\s+/).filter(Boolean).length;
-  const durationSeconds = typeof state.transcript.durationSeconds === "number" ? state.transcript.durationSeconds : null;
-  const lowSpeechDetected = wordCount > 0 && (wordCount < 25 || (durationSeconds !== null && durationSeconds >= 90 && wordCount < 60));
-
-  return (
-    <details className="approved-transcript">
-      <summary>View Lesson Transcript</summary>
-      <div className="approved-transcript-body">
-        <div>
-          <h3>Lesson Transcript</h3>
-          <span>Generated from lesson audio{durationSeconds ? ` · ${formatVideoDuration(durationSeconds)}` : ""}.</span>
-        </div>
-        {lowSpeechDetected && (
-          <p className="transcript-quality-warning">
-            Only a small amount of speech was detected. Review the transcript or retry audio processing.
-          </p>
-        )}
-        <p>{transcriptText}</p>
-      </div>
-    </details>
   );
 }
 
@@ -19183,8 +19240,6 @@ function VideoDetailView({
             {followUpMessage && <p className="coach-tool-status" role="status">{followUpMessage}</p>}
           </section>
         )}
-
-        {viewerRole === "user" && <ApprovedTranscriptDisclosure videoId={video.id} />}
 
         {canEditUserNotes && (
           <section className="panel video-note-panel">

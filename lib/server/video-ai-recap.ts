@@ -1629,7 +1629,7 @@ export async function readVideoRecapState(identity: AuthIdentity, videoId: strin
     canReview,
     draft: serializeDraft(draft ?? null),
     job: serializeJob(job ?? null),
-    transcript: serializeTranscript(transcript ?? null, canReview || draft?.status === "published"),
+    transcript: serializeTranscript(transcript ?? null, canReview),
     video: {
       coachId: video.coach_id,
       coachName: displayName({ first_name: video.coach_first_name, last_name: video.coach_last_name, email: video.coach_email }),

@@ -114,6 +114,16 @@ test("video recap source uses uploaded audio sidecar before Cloudflare media ext
   assert.match(source, /if \(preparedAudio\) return preparedAudio/);
 });
 
+test("member recap reads do not include raw transcript text", async () => {
+  const source = await readFile(new URL("../lib/server/video-ai-recap.ts", import.meta.url), "utf8");
+  assert.match(source, /const canReview = canReviewVideoRecap/);
+  assert.match(source, /transcript: serializeTranscript\(transcript \?\? null, canReview\)/);
+  assert.doesNotMatch(
+    source,
+    /serializeTranscript\(transcript \?\? null,\s*canReview\s*\|\|\s*draft\?\.status === "published"\)/,
+  );
+});
+
 test("draft normalization never invents missing coach feedback", () => {
   const draft = normalizeLessonRecapDraft({
     confidence: 1.4,

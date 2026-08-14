@@ -78,6 +78,21 @@ test("stored queued video shows uploaded then waits for processing", () => {
   });
 });
 
+test("unrequested audio analysis does not look stuck on extraction", () => {
+  const status = lessonProcessingStatus({
+    video: { ownerId, uploadStatus: "ready", updatedAt: "2026-08-09T16:12:00Z" },
+  });
+  const progress = lessonProcessingProgress({
+    video: { ownerId, uploadStatus: "ready", updatedAt: "2026-08-09T16:12:00Z" },
+  });
+
+  assert.equal(status.code, "stored");
+  assert.equal(status.title, "Video uploaded");
+  assert.equal(progress.percent, 0);
+  assert.equal(progress.currentLabel, "Audio analysis not started");
+  assert.equal(progress.state, "pending");
+});
+
 test("transcript proof appears before recap draft completion", () => {
   const status = lessonProcessingStatus({
     job: { status: "transcribing", currentStep: "transcription_completed", updatedAt: "2026-07-24T10:52:00Z" },

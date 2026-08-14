@@ -34,13 +34,52 @@ test("lesson upload keeps optional details collapsed and avoids club-like swing 
   assert.doesNotMatch(swingTypesLine, /Driver|Iron|Wedge|Putting|Chipping|Bunker/);
 });
 
-test("lesson transcripts are collapsed and styled for the dark interface", () => {
-  assert.match(pageSource, /View Lesson Transcript/);
-  assert.match(pageSource, /Lesson Transcript/);
-  assert.match(pageSource, /Only a small amount of speech was detected/);
+test("lesson transcripts stay private to coach review and are styled for the dark interface", () => {
+  assert.doesNotMatch(pageSource, /View Lesson Transcript/);
+  assert.doesNotMatch(pageSource, /function ApprovedTranscriptDisclosure/);
+  assert.match(pageSource, /View Transcript/);
   assert.match(cssSource, /\.approved-transcript\s*\{[\s\S]*background: linear-gradient/);
   assert.match(cssSource, /\.approved-transcript-body p\s*\{[\s\S]*color: rgba\(255, 255, 255, 0\.88\)/);
   assert.match(cssSource, /\.transcript-quality-warning/);
+});
+
+test("unrequested coach audio analysis does not show an extraction progress bar", () => {
+  assert.match(pageSource, /const showAudioProgress = audioStatus\.code !== "not_requested"/);
+  assert.match(pageSource, /\{showAudioProgress && \(/);
+});
+
+test("route and auth source of truth stay aligned for protected screens", () => {
+  assert.match(pageSource, /function routeTabFromLocation/);
+  assert.match(pageSource, /function isProtectedRouteTab/);
+  assert.match(pageSource, /const requestedTab = routeTabFromLocation\(window\.location\)/);
+  assert.match(pageSource, /isProtectedRouteTab\(requestedTab\)/);
+  assert.match(pageSource, /Sign in with an admin account to continue/);
+  assert.match(pageSource, /Sign in to open that private MAI Coach page/);
+  assert.match(pageSource, /function replaceActiveRoute/);
+  assert.match(pageSource, /window\.history\.replaceState/);
+});
+
+test("logout returns to sign-in instead of restoring a stale tab", () => {
+  assert.match(pageSource, /replaceActiveRoute\("dashboard"\)/);
+  assert.match(pageSource, /setLoginModalMode\("login"\)/);
+  assert.match(pageSource, /Signed out\. Sign in or create an account to continue\./);
+  assert.doesNotMatch(pageSource, /setActiveTab\("videos"\);\n\s*setShowOnboarding\(false\)/);
+});
+
+test("session notes control does not route players into coach workspace", () => {
+  assert.match(pageSource, /const \[showSessionNotes, setShowSessionNotes\]/);
+  assert.match(pageSource, /aria-label="Session notes"/);
+  assert.match(pageSource, /Edit session notes/);
+  assert.doesNotMatch(pageSource, /Coach notes<\/button>/);
+  assert.doesNotMatch(pageSource, /onClick=\{\(\) => setActiveTab\("coach"\)\} type="button">Coach notes/);
+});
+
+test("disabled coach actions explain why they are unavailable", () => {
+  assert.match(pageSource, /Select a member before using coach tools/);
+  assert.match(pageSource, /Select a member before adding a session/);
+  assert.match(pageSource, /Select a member before assigning drills or notes/);
+  assert.match(pageSource, /Select a member before uploading a lesson video/);
+  assert.match(pageSource, /Sign in as a coach or admin to add members/);
 });
 
 test("coach lesson review uses sticky publish and full-width feedback workflow", () => {
@@ -138,6 +177,8 @@ test("dashboard reduces repeated flags and explains session score", () => {
   assert.match(pageSource, /Why this result\?/);
   assert.match(pageSource, /Missing metrics stay out of the score instead of being counted as zero/);
   assert.match(cssSource, /\.session-score-popover/);
+  assert.match(pageSource, /return "Baseline"/);
+  assert.doesNotMatch(pageSource, /return "D"/);
 });
 
 test("session summary cards use flexible overflow-safe layout", () => {
