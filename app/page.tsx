@@ -57,6 +57,8 @@ import {
   LESSON_VIDEO_COMPRESSION_TIMEOUT_MS,
   LESSON_VIDEO_AUDIO_PRESERVATION_ERROR,
   LESSON_VIDEO_WEBM_AUDIO_COMPATIBILITY_ERROR,
+  libraryPublishEmailConfirmation,
+  libraryPublishEmailOutcome,
   shouldPrepareLessonVideoAudioSidecar,
   shouldPrepareLessonVideoCompression,
   shouldAutoNotifyOnLibraryPublish,
@@ -1326,6 +1328,7 @@ type VideoLibraryRecord = {
   emailStatus?: VideoEmailStatus;
   emailSentAt?: string;
   emailFailureReason?: string;
+  emailNotificationOutcome?: "sent" | "failed" | "already_sent" | "not_sent";
   lessonSummary?: string;
   workedOn?: string;
   keyIssue?: string;
@@ -1536,6 +1539,7 @@ type LessonPublishConfirmation = {
   body: string;
   emailFailureReason?: string | null;
   emailStatus?: VideoEmailStatus;
+  emailNotificationOutcome?: "sent" | "failed" | "already_sent" | "not_sent";
   includedLabel: string;
   includedRecap: boolean;
   includedSessionData: boolean;
@@ -17453,6 +17457,12 @@ function LessonPublishConfirmationModal({
   const emailWarning = confirmation.emailStatus === "Failed"
     ? "The lesson was published, but the email notification could not be sent."
     : "";
+  const emailConfirmation = libraryPublishEmailConfirmation({
+    memberName: confirmation.memberName,
+    outcome: confirmation.emailNotificationOutcome ?? libraryPublishEmailOutcome({
+      afterEmailStatus: confirmation.emailStatus,
+    }),
+  });
 
   return (
     <div className="video-modal-overlay">
@@ -17478,6 +17488,7 @@ function LessonPublishConfirmationModal({
             <div><dt>Published</dt><dd>{formatLessonPublishedTimestamp(confirmation.publishedAt)}</dd></div>
             <div><dt>Included</dt><dd>{confirmation.includedLabel}</dd></div>
             <div><dt>Session data</dt><dd>{confirmation.sessionIncludedLabel}</dd></div>
+            <div><dt>Email</dt><dd>{emailConfirmation}</dd></div>
           </dl>
           {emailWarning && (
             <p className="coach-inline-warning">
@@ -18591,7 +18602,10 @@ function VideoDetailView({
   function requestPublish() {
     if (!canEditCoachNotes || publishDisabled) return;
     if (getVideoPublicationStatus(video) === "Published" && video.emailStatus === "Sent") {
-      setLessonWorkspaceMessage(`${memberFirstName} already has this published lesson.`);
+      setLessonWorkspaceMessage(libraryPublishEmailConfirmation({
+        memberName: video.memberName ?? memberFirstName,
+        outcome: "already_sent",
+      }));
       return;
     }
     setPublishPrompt(feedbackExists ? "withFeedback" : "withoutFeedback");
@@ -18617,6 +18631,7 @@ function VideoDetailView({
       setPublishConfirmation({
         ...confirmation,
         emailFailureReason: (publishedVideo as VideoLibraryRecord).emailFailureReason ?? null,
+        emailNotificationOutcome: (publishedVideo as VideoLibraryRecord).emailNotificationOutcome,
         emailStatus: (publishedVideo as VideoLibraryRecord).emailStatus,
         includedRecap: feedbackExists,
         includedSessionData: Boolean((publishedVideo as VideoLibraryRecord).sessionId ?? video.sessionId),
@@ -18624,7 +18639,12 @@ function VideoDetailView({
         videoId: video.id,
       });
       setPublishPrompt(null);
-      setLessonWorkspaceMessage(`Lesson sent to ${memberFirstName}.`);
+      setLessonWorkspaceMessage(libraryPublishEmailConfirmation({
+        memberName: (publishedVideo as VideoLibraryRecord).memberName ?? memberFirstName,
+        outcome: (publishedVideo as VideoLibraryRecord).emailNotificationOutcome ?? libraryPublishEmailOutcome({
+          afterEmailStatus: (publishedVideo as VideoLibraryRecord).emailStatus,
+        }),
+      }));
     } catch (error) {
       setLessonWorkspaceMessage(error instanceof Error ? error.message : "This lesson could not be published.");
     } finally {
@@ -19639,10 +19659,20 @@ function VideosView({
         ...videoPatchPayload(stripVideoObjectUrl(updated)),
         notifyMember,
       });
-      const item = createVideoLibraryItem(record);
+      const publishedRecord: VideoLibraryRecord = {
+        ...record,
+        emailNotificationOutcome: libraryPublishEmailOutcome({
+          afterEmailStatus: record.emailStatus,
+          beforeEmailStatus: current.emailStatus,
+        }),
+      };
+      const item = createVideoLibraryItem(publishedRecord);
       setVideos((items) => items.map((video) => video.id === videoId ? item : video));
-      setLibraryMessage(`${record.title} was published to ${record.memberName ?? "the member"}.`);
-      return record;
+      setLibraryMessage(libraryPublishEmailConfirmation({
+        memberName: publishedRecord.memberName ?? "the member",
+        outcome: publishedRecord.emailNotificationOutcome,
+      }));
+      return publishedRecord;
     } catch (error) {
       setVideos((items) => items.map((item) => item.id === videoId ? current : item));
       setLibraryMessage(error instanceof Error ? error.message : "The lesson could not be published.");

@@ -15,6 +15,8 @@ import {
   filterCoachUploadMembers,
   formatLessonUploadFileSize,
   getCoachDashboardActionState,
+  libraryPublishEmailConfirmation,
+  libraryPublishEmailOutcome,
   LESSON_VIDEO_AUDIO_PRESERVATION_ERROR,
   LESSON_VIDEO_WEBM_AUDIO_COMPATIBILITY_ERROR,
   shouldPrepareLessonVideoAudioSidecar,
@@ -110,7 +112,7 @@ test("student follow-up requires the assigned Student, a published lesson, and c
   assert.equal(studentFollowUpCanSubmit({ isStudent: true, isPublished: true, note: "" }), false);
 });
 
-test("admin member video libraries upload quietly until Admin manually notifies", () => {
+test("admin and coach member-library uploads stay quiet until the first explicit publish", () => {
   assert.equal(canUploadFromMemberVideoLibrary({ authenticated: true, viewerRole: "admin" }), true);
   assert.equal(canUploadFromMemberVideoLibrary({ authenticated: true, viewerRole: "coach" }), true);
   assert.equal(canUploadFromMemberVideoLibrary({ authenticated: true, viewerRole: "user" }), false);
@@ -119,7 +121,7 @@ test("admin member video libraries upload quietly until Admin manually notifies"
     currentPublicationStatus: "Draft",
     emailStatus: "Not sent",
     viewerRole: "admin",
-  }), false);
+  }), true);
   assert.equal(shouldAutoNotifyOnLibraryPublish({
     currentPublicationStatus: "Draft",
     emailStatus: "Not sent",
@@ -130,6 +132,45 @@ test("admin member video libraries upload quietly until Admin manually notifies"
     emailStatus: "Sent",
     viewerRole: "coach",
   }), false);
+  assert.equal(shouldAutoNotifyOnLibraryPublish({
+    currentPublicationStatus: "Published",
+    emailStatus: "Failed",
+    viewerRole: "admin",
+  }), false);
+  assert.equal(shouldAutoNotifyOnLibraryPublish({
+    currentPublicationStatus: "Draft",
+    emailStatus: "Not sent",
+    viewerRole: "member",
+  }), false);
+});
+
+test("lesson publish confirmation distinguishes sent, failed, and already-sent email outcomes", () => {
+  const sent = libraryPublishEmailOutcome({ beforeEmailStatus: "Not sent", afterEmailStatus: "Sent" });
+  const failed = libraryPublishEmailOutcome({ beforeEmailStatus: "Not sent", afterEmailStatus: "Failed" });
+  const alreadySent = libraryPublishEmailOutcome({ beforeEmailStatus: "Sent", afterEmailStatus: "Sent" });
+
+  assert.equal(sent, "sent");
+  assert.equal(failed, "failed");
+  assert.equal(alreadySent, "already_sent");
+  assert.match(libraryPublishEmailConfirmation({ memberName: "Joon", outcome: sent }), /email notification was sent/);
+  assert.match(libraryPublishEmailConfirmation({ memberName: "Joon", outcome: failed }), /published to Joon, but the email notification could not be sent/);
+  assert.match(libraryPublishEmailConfirmation({ memberName: "Joon", outcome: alreadySent }), /No duplicate email was sent/);
+});
+
+test("lesson publication survives delivery failure and sent notifications are deduplicated", async () => {
+  const routeSource = await readFile(new URL("../app/api/videos/route.ts", import.meta.url), "utf8");
+  const emailSource = await readFile(new URL("../lib/server/video-email.ts", import.meta.url), "utf8");
+  const publishUpdateIndex = routeSource.indexOf("publication_status = ?");
+  const notificationIndex = routeSource.indexOf("await sendVideoNotification", publishUpdateIndex);
+
+  assert.ok(publishUpdateIndex >= 0);
+  assert.ok(notificationIndex > publishUpdateIndex);
+  assert.match(routeSource, /catch \{\s*notification = \{ status: "Failed", failureReason: "notification_failed" \};/);
+  assert.match(routeSource, /email_status = \?, email_sent_at = \?, email_failure_reason = \?/);
+  assert.match(emailSource, /status = 'sent'/);
+  assert.match(emailSource, /alreadySent: true/);
+  assert.match(emailSource, /video_email_notifications/);
+  assert.match(emailSource, /\?tab=videos&video=/);
 });
 
 test("member-dependent coach tools stay visible but disabled until a member is selected", () => {

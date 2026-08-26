@@ -1249,23 +1249,28 @@ export async function PATCH(request: Request) {
         if (!notificationVideo) {
           return Response.json({ error: "The video could not be reloaded for notification." }, { status: 500 });
         }
-        const notification = await sendVideoNotification(
-          request,
-          identity,
-          {
-            email: notificationVideo.member_email,
-            firstName: notificationVideo.member_first_name,
-            lastName: notificationVideo.member_last_name,
-          },
-          {
-            id: notificationVideo.id,
-            memberId: notificationVideo.member_id,
-            title: notificationVideo.title,
-            memberFacingNotes: notificationVideo.member_facing_notes,
-            practiceAssignment: notificationVideo.practice_assignment,
-            lessonSummary: notificationVideo.lesson_summary,
-          },
-        );
+        let notification: Awaited<ReturnType<typeof sendVideoNotification>>;
+        try {
+          notification = await sendVideoNotification(
+            request,
+            identity,
+            {
+              email: notificationVideo.member_email,
+              firstName: notificationVideo.member_first_name,
+              lastName: notificationVideo.member_last_name,
+            },
+            {
+              id: notificationVideo.id,
+              memberId: notificationVideo.member_id,
+              title: notificationVideo.title,
+              memberFacingNotes: notificationVideo.member_facing_notes,
+              practiceAssignment: notificationVideo.practice_assignment,
+              lessonSummary: notificationVideo.lesson_summary,
+            },
+          );
+        } catch {
+          notification = { status: "Failed", failureReason: "notification_failed" };
+        }
         await database
           .prepare(
             `UPDATE lesson_videos SET
