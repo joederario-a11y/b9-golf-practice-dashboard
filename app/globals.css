@@ -276,6 +276,26 @@ button {
   color: #fff;
 }
 
+.rail-more-nav {
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.rail-more-nav > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+  padding: 8px 10px;
+}
+
+.rail-more-nav > div {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+}
+
 .rail-footer {
   display: grid;
   gap: 4px;
@@ -5684,6 +5704,40 @@ button:disabled {
 
 .coach-structured-card-wide {
   grid-column: 1 / -1;
+}
+
+.coach-practice-next-compact {
+  border-color: rgba(151, 210, 46, 0.4);
+  background: rgba(151, 210, 46, 0.07);
+}
+
+.coach-advanced-feedback-group {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.coach-advanced-feedback-group:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.coach-practice-builder-disclosure {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.coached-student-empty {
+  display: grid;
+  gap: 10px;
+  max-width: 820px;
+}
+
+.coached-student-empty h2,
+.coached-student-empty p {
+  margin: 0;
 }
 
 .coach-structured-card label,

@@ -1812,29 +1812,64 @@ function isProtectedRouteTab(tab: Tab | null) {
   return tab === "sessions" || tab === "clubs" || tab === "videos" || tab === "coach" || tab === "admin" || tab === "practice";
 }
 
-function navItemsForAccount(accountMode: AccountMode, accountUser: AccountUser | null): NavItem[] {
+function navItemsForAccount(
+  accountMode: AccountMode,
+  accountUser: AccountUser | null,
+  memberExperienceMode: MemberExperienceMode,
+): NavItem[] {
   const item = (id: Tab, label?: string) => {
     const base = NAV_ITEMS.find((navItem) => navItem.id === id)!;
     return label ? { ...base, label } : base;
   };
 
   if (accountMode === "user" && accountUser?.role === "member") {
+    if (memberExperienceMode !== "independent") {
+      return [
+        item("dashboard", "Home"),
+        item("videos", "Lessons"),
+      ];
+    }
     return NAV_ITEMS.filter((item) => item.id !== "coach" && item.id !== "admin");
   }
   if (accountMode === "user" && accountUser?.role === "coach") {
     return [
-      item("coach", "Coach Dashboard"),
-      item("videos", "Videos"),
-      item("import", "Session Imports"),
-      item("practice", "Practice Plans"),
-      item("sessions", "Player Sessions"),
-      item("dashboard", "Player Data"),
+      item("coach", "Home"),
+      item("videos", "Lessons"),
     ];
   }
   if (accountMode === "user" && accountUser?.role === "admin") {
     return NAV_ITEMS;
   }
   return NAV_ITEMS.filter((item) => item.id !== "admin");
+}
+
+function secondaryNavItemsForAccount(
+  accountMode: AccountMode,
+  accountUser: AccountUser | null,
+  memberExperienceMode: MemberExperienceMode,
+): NavItem[] {
+  const item = (id: Tab, label?: string) => {
+    const base = NAV_ITEMS.find((navItem) => navItem.id === id)!;
+    return label ? { ...base, label } : base;
+  };
+
+  if (accountMode === "user" && accountUser?.role === "coach") {
+    return [
+      item("import", "Session Imports"),
+      item("practice", "Practice Plans"),
+      item("sessions", "Player Sessions"),
+      item("dashboard", "Player Data"),
+    ];
+  }
+  if (accountMode === "user" && accountUser?.role === "member" && memberExperienceMode !== "independent") {
+    return [
+      item("practice", "Practice"),
+      item("sessions", "Sessions"),
+      item("clubs", "Clubs"),
+      item("import", "Import"),
+    ];
+  }
+  return [];
 }
 
 const VIDEO_TYPES: VideoType[] = [
@@ -5160,7 +5195,8 @@ function lessonPracticeText(fields: CoachLessonFeedbackFields) {
   const drillTitle = drillTitleForLesson(fields);
   const trainingAid = fields.trainingAid === "Other" ? fields.customTrainingAid : fields.trainingAid;
   return [
-    drillTitle,
+    fields.practiceNext.trim() || drillTitle,
+    fields.practiceNext.trim() && drillTitle && fields.practiceNext.trim() !== drillTitle ? `Drill: ${drillTitle}` : "",
     fields.customDrillDescription,
     fields.club && fields.club !== "No specific club" ? `Club: ${fields.club}` : "",
     trainingAid && trainingAid !== "No training aid" ? `Training aid: ${trainingAid}` : "",
@@ -7379,8 +7415,6 @@ export default function Home() {
     performanceSessions.length,
     sessions.length,
   );
-  const visibleNavItems = navItemsForAccount(accountMode, accountUser);
-  const activeNavItem = visibleNavItems.find((item) => item.id === activeTab) ?? NAV_ITEMS.find((item) => item.id === activeTab);
   const memberExperienceMode = useMemo(() => getMemberExperienceMode({
     activeCoachRelationships: accountMode === "user" && accountUser?.role === "member" ? dashboardCoaches : [],
     activeMemberActivity: dashboardPracticeActivity,
@@ -7399,6 +7433,9 @@ export default function Home() {
     practiceProfile,
     sessions,
   ]);
+  const visibleNavItems = navItemsForAccount(accountMode, accountUser, memberExperienceMode);
+  const secondaryNavItems = secondaryNavItemsForAccount(accountMode, accountUser, memberExperienceMode);
+  const activeNavItem = [...visibleNavItems, ...secondaryNavItems].find((item) => item.id === activeTab) ?? NAV_ITEMS.find((item) => item.id === activeTab);
   const memberNextBestAction = useMemo(() => {
     if (accountMode === "user" && accountUser?.role !== "member") return null;
     return getMemberNextBestAction({
@@ -8619,6 +8656,24 @@ export default function Home() {
               <span>{item.label}</span>
             </button>
           ))}
+          {secondaryNavItems.length > 0 && (
+            <details className="rail-more-nav">
+              <summary>More</summary>
+              <div>
+                {secondaryNavItems.map((item) => (
+                  <button
+                    className={cls("rail-button", activeTab === item.id && "active")}
+                    key={item.id}
+                    onClick={() => navigateToTab(item.id)}
+                    title={item.label}
+                  >
+                    <span aria-hidden="true">{item.icon}</span>
+                    <span>{item.label}</span>
+                  </button>
+                ))}
+              </div>
+            </details>
+          )}
         </nav>
         <div className="rail-footer">
           <span>Total Balls Struck</span>
@@ -8656,10 +8711,15 @@ export default function Home() {
             <button className="icon-button" title="Refresh analysis" onClick={() => setSessions([...sessions])}>
               ↻
             </button>
-            <button className="primary-action" onClick={() => navigateToTab("import")}>
-              <span>⇧</span>
-              Import
-            </button>
+            {!(accountMode === "user" && (
+              accountUser?.role === "coach" ||
+              (accountUser?.role === "member" && memberExperienceMode !== "independent")
+            )) && (
+              <button className="primary-action" onClick={() => navigateToTab("import")}>
+                <span>⇧</span>
+                Import
+              </button>
+            )}
           </div>
         </header>
 
@@ -8936,7 +8996,16 @@ function CoachedStudentDashboardPriority({
           }
         : null;
   const videoFeedbackReady = Boolean(lessonSummary || mainFocus || nextGoal || latestLesson?.improvement);
-  if (!latestLesson && !hasProcessingOnlyLesson) return null;
+  if (!latestLesson && !hasProcessingOnlyLesson) {
+    return (
+      <section className="panel coached-student-empty" aria-label="Coach guidance">
+        <p className="eyebrow">Your Coach</p>
+        <h2>Your first lesson will appear here</h2>
+        <p>{coachName} is connected to your account. Published lesson videos and approved feedback will be kept together in Lessons.</p>
+        <button className="secondary-action" onClick={onOpenVideos} type="button">View Lessons</button>
+      </section>
+    );
+  }
 
   return (
     <section className="coached-student-dashboard" aria-label="Coach guidance">
@@ -9484,7 +9553,16 @@ function DashboardView({
   if (!sessions.length) {
     return (
       <div className="view-stack">
-        {showMemberMission && (
+        {showMemberMission && showCoachSupport && (
+          <CoachedStudentDashboardPriority
+            coaches={coaches}
+            onOpenLatestLesson={onOpenLatestLesson}
+            onOpenPractice={() => setActiveTab("practice")}
+            onOpenVideos={() => setActiveTab("videos")}
+            videos={videos}
+          />
+        )}
+        {showMemberMission && !showCoachSupport && (
           <MemberDashboardMission
             accountUser={accountUser}
             action={nextBestAction}
@@ -9497,16 +9575,7 @@ function DashboardView({
             onOpen={onNextBestAction}
           />
         )}
-        {showMemberMission && <DashboardChallengeCard accountUser={accountUser} />}
-        {showMemberMission && showCoachSupport && (
-          <CoachedStudentDashboardPriority
-            coaches={coaches}
-            onOpenLatestLesson={onOpenLatestLesson}
-            onOpenPractice={() => setActiveTab("practice")}
-            onOpenVideos={() => setActiveTab("videos")}
-            videos={videos}
-          />
-        )}
+        {showMemberMission && !showCoachSupport && <DashboardChallengeCard accountUser={accountUser} />}
         <PerformanceReviewControls
           clubs={clubs}
           onTimeframeChange={onTimeframeChange}
@@ -9531,7 +9600,16 @@ function DashboardView({
 
   return (
     <div className="view-stack">
-      {showMemberMission && (
+      {showMemberMission && showCoachSupport && (
+        <CoachedStudentDashboardPriority
+          coaches={coaches}
+          onOpenLatestLesson={onOpenLatestLesson}
+          onOpenPractice={() => setActiveTab("practice")}
+          onOpenVideos={() => setActiveTab("videos")}
+          videos={videos}
+        />
+      )}
+      {showMemberMission && !showCoachSupport && (
         <MemberDashboardMission
           accountUser={accountUser}
           action={nextBestAction}
@@ -9544,16 +9622,7 @@ function DashboardView({
           onOpen={onNextBestAction}
         />
       )}
-      {showMemberMission && <DashboardChallengeCard accountUser={accountUser} />}
-      {showMemberMission && showCoachSupport && (
-        <CoachedStudentDashboardPriority
-          coaches={coaches}
-          onOpenLatestLesson={onOpenLatestLesson}
-          onOpenPractice={() => setActiveTab("practice")}
-          onOpenVideos={() => setActiveTab("videos")}
-          videos={videos}
-        />
-      )}
+      {showMemberMission && !showCoachSupport && <DashboardChallengeCard accountUser={accountUser} />}
       <PerformanceReviewControls
         clubs={clubs}
         onTimeframeChange={onTimeframeChange}
@@ -18927,43 +18996,60 @@ function VideoDetailView({
                   }} /></label>
                 </section>
 
-                <section className="coach-structured-card">
-                  <p className="eyebrow">What I Noticed</p>
-                  <label><span>Search observations</span><input value={observationSearch} onChange={(event) => setObservationSearch(event.target.value)} placeholder="Start line, contact, setup..." type="search" /></label>
-                  <div className="coach-selected-chip-row" aria-label="Selected observations">
-                    {coachFeedbackFields.whatINoticed.map((observation) => (
-                      <button key={observation} onClick={() => toggleLessonObservation(observation)} type="button">{observation} <span aria-hidden="true">×</span></button>
-                    ))}
-                    {!coachFeedbackFields.whatINoticed.length && <span>No observations selected yet</span>}
-                  </div>
-                  <div className="coach-observation-groups">
-                    {filteredObservationGroups.map((group) => (
-                      <fieldset key={group.label}>
-                        <legend>{group.label}</legend>
-                        <div className="coach-builder-chip-grid">
-                          {group.options.map((option) => (
-                            <button aria-pressed={coachFeedbackFields.whatINoticed.includes(option)} className={coachFeedbackFields.whatINoticed.includes(option) ? "selected" : ""} key={option} onClick={() => toggleLessonObservation(option)} type="button">{option}</button>
-                          ))}
-                        </div>
-                      </fieldset>
-                    ))}
-                  </div>
-                  <div className="coach-structured-two">
-                    <label><span>Add Custom Observation</span><input value={coachFeedbackFields.customObservation} onChange={(event) => updateFeedbackField("customObservation", event.target.value)} /></label>
-                    <button className="secondary-action compact-action" disabled={!coachFeedbackFields.customObservation.trim()} onClick={addCustomObservation} type="button">+ Add Custom Observation</button>
-                  </div>
-                  <label><span>Additional note</span><textarea value={coachFeedbackFields.whatINoticedNote} onChange={(event) => updateFeedbackField("whatINoticedNote", event.target.value)} placeholder="Short Coach note, optional." /></label>
+                <section className="coach-structured-card coach-structured-card-wide coach-practice-next-compact">
+                  <p className="eyebrow">What to Work On</p>
+                  <label>
+                    <span>Next practice assignment</span>
+                    <textarea
+                      value={coachFeedbackFields.practiceNext}
+                      onChange={(event) => updateFeedbackField("practiceNext", event.target.value)}
+                      placeholder="Give the Student one clear next step, drill, or practice target."
+                    />
+                  </label>
                 </section>
 
-                <section className="coach-structured-card">
-                  <p className="eyebrow">Progress</p>
-                  <div className="coach-progress-choice-group" role="group" aria-label="Progress">
-                    {COACH_LESSON_PROGRESS_OPTIONS.map((option) => (
-                      <button className={coachFeedbackFields.progressStatus === option ? "selected" : ""} onClick={() => updateFeedbackField("progressStatus", option)} type="button" key={option}>{option}</button>
-                    ))}
+                <details className="coach-structured-card coach-structured-card-wide lesson-secondary-disclosure">
+                  <summary>Advanced lesson options</summary>
+                  <div className="lesson-secondary-body">
+                    <section className="coach-advanced-feedback-group">
+                      <p className="eyebrow">What I Noticed</p>
+                      <label><span>Search observations</span><input value={observationSearch} onChange={(event) => setObservationSearch(event.target.value)} placeholder="Start line, contact, setup..." type="search" /></label>
+                      <div className="coach-selected-chip-row" aria-label="Selected observations">
+                        {coachFeedbackFields.whatINoticed.map((observation) => (
+                          <button key={observation} onClick={() => toggleLessonObservation(observation)} type="button">{observation} <span aria-hidden="true">×</span></button>
+                        ))}
+                        {!coachFeedbackFields.whatINoticed.length && <span>No observations selected yet</span>}
+                      </div>
+                      <div className="coach-observation-groups">
+                        {filteredObservationGroups.map((group) => (
+                          <fieldset key={group.label}>
+                            <legend>{group.label}</legend>
+                            <div className="coach-builder-chip-grid">
+                              {group.options.map((option) => (
+                                <button aria-pressed={coachFeedbackFields.whatINoticed.includes(option)} className={coachFeedbackFields.whatINoticed.includes(option) ? "selected" : ""} key={option} onClick={() => toggleLessonObservation(option)} type="button">{option}</button>
+                              ))}
+                            </div>
+                          </fieldset>
+                        ))}
+                      </div>
+                      <div className="coach-structured-two">
+                        <label><span>Add Custom Observation</span><input value={coachFeedbackFields.customObservation} onChange={(event) => updateFeedbackField("customObservation", event.target.value)} /></label>
+                        <button className="secondary-action compact-action" disabled={!coachFeedbackFields.customObservation.trim()} onClick={addCustomObservation} type="button">+ Add Custom Observation</button>
+                      </div>
+                      <label><span>Additional note</span><textarea value={coachFeedbackFields.whatINoticedNote} onChange={(event) => updateFeedbackField("whatINoticedNote", event.target.value)} placeholder="Short Coach note, optional." /></label>
+                    </section>
+
+                    <section className="coach-advanced-feedback-group">
+                      <p className="eyebrow">Progress</p>
+                      <div className="coach-progress-choice-group" role="group" aria-label="Progress">
+                        {COACH_LESSON_PROGRESS_OPTIONS.map((option) => (
+                          <button className={coachFeedbackFields.progressStatus === option ? "selected" : ""} onClick={() => updateFeedbackField("progressStatus", option)} type="button" key={option}>{option}</button>
+                        ))}
+                      </div>
+                      <label><span>Progress note</span><input value={coachFeedbackFields.progressNote} onChange={(event) => updateFeedbackField("progressNote", event.target.value)} placeholder="Optional, keep it short." /></label>
+                    </section>
                   </div>
-                  <label><span>Progress note</span><input value={coachFeedbackFields.progressNote} onChange={(event) => updateFeedbackField("progressNote", event.target.value)} placeholder="Optional, keep it short." /></label>
-                </section>
+                </details>
 
                 <section className="coach-structured-card">
                   <p className="eyebrow">Student Message</p>
@@ -19010,7 +19096,10 @@ function VideoDetailView({
               action={canEditCoachNotes ? <button className="secondary-action compact-action" onClick={openPracticeBuilderFromLesson} type="button">Open Full Practice Plan Builder</button> : undefined}
             />
             {canEditCoachNotes ? (
-              <div className="coach-structured-flow">
+              <details className="lesson-secondary-disclosure coach-practice-builder-disclosure">
+                <summary>Open advanced practice builder</summary>
+                <div className="lesson-secondary-body">
+                  <div className="coach-structured-flow">
                 <section className="coach-structured-card">
                   <p className="eyebrow">Focus</p>
                   <label><span>Practice focus</span><select value={coachFeedbackFields.mainFocus} onChange={(event) => setLessonFocus(event.target.value)}>
@@ -19087,7 +19176,9 @@ function VideoDetailView({
                     <button className="secondary-action compact-action" disabled={!coachFeedbackFields.customCue.trim() || coachFeedbackFields.cues.length >= 3} onClick={addCustomLessonCue} type="button">+ Add Cue</button>
                   </div>
                 </section>
-              </div>
+                  </div>
+                </div>
+              </details>
             ) : (
               <div className="practice-focus-callout coach-practice-next-section">
                 <span>Practice Next</span>
