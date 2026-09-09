@@ -21,20 +21,13 @@ test("coached students see coach guidance before independent missions and challe
   assert.match(pageSource, /Your first lesson will appear here/);
 });
 
-test("coach feedback keeps the primary lesson flow compact without removing advanced controls", () => {
-  assert.match(pageSource, /Coach Lesson Summary/);
-  assert.match(pageSource, /Main Focus/);
-  assert.match(pageSource, /What to Work On/);
-  assert.match(pageSource, /Next practice assignment/);
-  assert.match(pageSource, /Student Message/);
-  assert.match(pageSource, /<summary>Advanced lesson options<\/summary>/);
-  assert.match(pageSource, /<summary>Open advanced practice builder<\/summary>/);
-  assert.match(pageSource, /Private Coach Context/);
-  assert.match(pageSource, /LessonAudioAnalysisPanel/);
-  assert.match(pageSource, /Preview and Publish/);
-});
-
-test("explicit next-practice guidance is persisted before advanced drill details", () => {
-  assert.match(pageSource, /fields\.practiceNext\.trim\(\) \|\| drillTitle/);
-  assert.match(pageSource, /practiceAssignment: lessonPracticeText\(coachFeedbackFields\)/);
+test("lesson review has one summary and preserves legacy systems outside this flow", () => {
+  const detail = pageSource.slice(pageSource.indexOf("function VideoDetailView"), pageSource.indexOf("function VideoComparisonView"));
+  assert.match(detail, /Coach Lesson Summary/);
+  assert.match(detail, /Coach Notes/);
+  assert.match(detail, /Preview Student View/);
+  assert.match(detail, /<summary>More<\/summary>/);
+  for (const removed of ["What to Work On", "Advanced lesson options", "Practice Intelligence", "Student Message"]) assert.ok(!detail.includes(removed), removed);
+  assert.match(pageSource, /function lessonPracticeText/);
+  assert.match(pageSource, /function VideoAnnotationWorkspace/);
 });

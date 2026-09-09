@@ -8,7 +8,7 @@ export async function GET(request: Request) {
     if (!videoId) {
       return Response.json({ error: "videoId is required." }, { status: 400 });
     }
-    return readVideoRecapState(identity, videoId);
+    return await readVideoRecapState(identity, videoId);
   } catch (error) {
     return responseFromError(error);
   }
@@ -18,7 +18,7 @@ export async function PATCH(request: Request) {
   try {
     const identity = await requireIdentity();
     const payload = await request.json() as Record<string, unknown>;
-    return updateVideoRecapState(identity, payload, request);
+    return await updateVideoRecapState(identity, payload, request);
   } catch (error) {
     return responseFromError(error);
   }

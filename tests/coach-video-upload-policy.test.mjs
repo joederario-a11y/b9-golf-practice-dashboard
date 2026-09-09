@@ -204,25 +204,20 @@ test("coach lesson upload source includes guided first upload and returning quic
   assert.match(pageSource, /Send your first lesson/);
   assert.match(pageSource, /Who is this lesson for\?/);
   assert.match(pageSource, /Add the lesson video/);
-  assert.match(pageSource, /Would you like MAI Coach to help prepare the lesson\?/);
-  assert.match(pageSource, /Yes — Prepare a Draft for Me/);
-  assert.match(pageSource, /No — I’ll Add the Feedback Myself/);
-  assert.match(pageSource, /You remain in control of everything the Student sees\./);
-  assert.match(pageSource, /Customize MAI Assistance/);
   assert.match(pageSource, /Use Guided Upload/);
-  assert.match(pageSource, /MAI Assistance: On/);
+  assert.match(pageSource, /<span>Coach Notes<\/span>/);
+  assert.match(pageSource, /Link Session Data \(optional\)/);
   assert.match(pageSource, /Upload Lesson/);
   assert.match(pageSource, /Review Lesson/);
   assert.match(pageSource, /Upload Another Lesson/);
   assert.match(pageSource, /Return to Coach Dashboard/);
 });
 
-test("student lesson follow-up is member-only and connected to the lesson activity stream", async () => {
+test("deferred student follow-up backend remains member-only and connected to lesson activity", async () => {
   const pageSource = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const videoApiSource = await readFile(new URL("../app/api/videos/route.ts", import.meta.url), "utf8");
-  assert.match(pageSource, /Send Follow-Up to Coach/);
-  assert.match(pageSource, /Send an update to \$\{coachName\}/);
   assert.match(pageSource, /sendStudentLessonFollowUp/);
+  assert.doesNotMatch(pageSource, /Send Follow-Up to Coach/);
   assert.match(videoApiSource, /studentFollowUp/);
   assert.match(videoApiSource, /identity\.role !== "member"/);
   assert.match(videoApiSource, /video\.publication_status !== "Published"/);
@@ -340,7 +335,8 @@ test("admin member-library uploads preserve the selected coach for audio analysi
   assert.match(pageSource, /Coach for feedback/);
   assert.match(pageSource, /setUploadCoachId\(nextAssignedCoaches\[0\]\?\.id \?\? ""\)/);
   assert.match(pageSource, /coachId: viewerRole === "admin" \? uploadCoachId \|\| undefined : undefined/);
-  assert.match(pageSource, /generateAiRecap: viewerRole === "admin" \? Boolean\(uploadCoachId\) : viewerRole !== "user"/);
+  assert.match(pageSource, /generateAiRecap: viewerRole !== "user"/);
+  assert.match(pageSource, /publicationStatus: viewerRole === "user" \? "Published" : "Draft"/);
   assert.match(pageSource, /No email is sent until you choose Notify Member/);
 });
 

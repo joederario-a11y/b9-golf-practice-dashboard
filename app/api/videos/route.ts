@@ -1,3 +1,5 @@
+import { studentLessonVideo } from "@/lib/lesson-summary-policy.mjs";
+import { getStoredSession } from "@/lib/server/lesson-session-links";
 import {
   canAccessVideo,
   canManageVideo,
@@ -644,7 +646,7 @@ type SerializedLessonSessionLink = {
 function serializeVideo(row: VideoRow, viewerRole?: string, sessionLinks: SerializedLessonSessionLink[] = []) {
   const primarySessionLink = sessionLinks.find((link) => link.isPrimary) ?? sessionLinks[0];
   const primarySessionId = primarySessionLink?.sessionId ?? row.session_data_id ?? undefined;
-  return {
+  const serialized = {
     id: row.id,
     ownerId: row.member_id,
     memberName: [row.member_first_name, row.member_last_name].filter(Boolean).join(" "),
@@ -700,6 +702,7 @@ function serializeVideo(row: VideoRow, viewerRole?: string, sessionLinks: Serial
       ? `/api/videos/media?videoId=${encodeURIComponent(row.id)}&asset=thumbnail`
       : undefined,
   };
+  return viewerRole === "member" ? studentLessonVideo(serialized) : serialized;
 }
 
 async function getVideo(database: D1Database, videoId: string) {
@@ -865,6 +868,9 @@ export async function POST(request: Request) {
     if (identity.role === "coach" && !(await coachAssignedToMember(database, identity.id, memberId))) {
       return Response.json({ error: "You must be assigned to this member before uploading a coach video." }, { status: 403 });
     }
+    if (payload.sessionId && !await getStoredSession(database, memberId, text(payload.sessionId, 120))) {
+      return Response.json({ error: "Session must belong to this Student." }, { status: 403 });
+    }
     const publicationStatus = text(payload.publicationStatus, 20) === "Published" ? "Published" : "Draft";
     await database
       .prepare(
@@ -891,7 +897,7 @@ export async function POST(request: Request) {
         identity.role,
         title,
         text(payload.description, 4000),
-        text(payload.coachPrivateNotes, 4000),
+        text(payload.coachPrivateNotes, 32000),
         text(payload.videoType, 80) || (identity.role === "member" ? "User Upload" : "Lesson Recap"),
         text(payload.focusArea, 80) || null,
         text(payload.swingType, 80) || null,
@@ -1167,12 +1173,19 @@ export async function PATCH(request: Request) {
       if (publicationStatus === "Published" && video.upload_status !== "ready") {
         return Response.json({ error: "Finish uploading the video file before publishing." }, { status: 409 });
       }
+      // Metadata saves on a published lesson never approve draft text.
+      if (video.publication_status === "Published" && payload.approveSummary !== true) {
+        payload.lessonSummary = video.lesson_summary;
+      }
       const requestedMemberId = optionalText(payload.memberId, 80);
       const ownershipError = videoOwnershipChangeError(video.member_id, requestedMemberId);
       if (ownershipError) {
         return Response.json({
           error: ownershipError,
         }, { status: 409 });
+      }
+      if (payload.sessionId && !await getStoredSession(database, video.member_id, text(payload.sessionId, 120))) {
+        return Response.json({ error: "Session must belong to this Student." }, { status: 403 });
       }
       await database
         .prepare(
@@ -1189,7 +1202,7 @@ export async function PATCH(request: Request) {
           optionalText(payload.title, 120) ?? video.title,
           optionalText(payload.description, 4000) ?? video.description,
           optionalText(payload.coachNotes, 4000) ?? video.coach_notes,
-          optionalText(payload.coachPrivateNotes, 4000) ?? video.coach_private_notes,
+          optionalText(payload.coachPrivateNotes, 32000) ?? video.coach_private_notes,
           optionalText(payload.videoType, 80) ?? video.video_type,
           payload.focusArea === null ? null : optionalText(payload.focusArea, 80) ?? video.focus_area,
           payload.swingType === null ? null : optionalText(payload.swingType, 80) ?? video.swing_type,

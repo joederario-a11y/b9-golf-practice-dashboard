@@ -64,9 +64,9 @@ test("successful recap publish confirmation names the member and included lesson
     lessonTitle: "Jul 23, 2026",
     memberName: "Liam Gerdis",
   });
-  assert.equal(confirmation.title, "Lesson sent to Liam");
-  assert.match(confirmation.body, /view the video, your feedback, and the assigned practice/);
-  assert.equal(confirmation.includedLabel, "Video, Coach feedback, approved MAI observations, and assigned practice");
+  assert.equal(confirmation.title, "Lesson published to Liam");
+  assert.match(confirmation.body, /view the video, the approved Coach Lesson Summary/);
+  assert.equal(confirmation.includedLabel, "Video and Coach Lesson Summary");
   assert.equal(confirmation.lessonTitle, "Jul 23, 2026");
   assert.equal(confirmation.statusLabel, "Published to Liam Gerdis");
 });
@@ -78,7 +78,7 @@ test("publish without recap confirmation does not imply feedback was included", 
     lessonTitle: "Short Game Tuneup",
     memberName: "Aubryn Taylor",
   });
-  assert.equal(confirmation.title, "Video sent to Aubryn");
+  assert.equal(confirmation.title, "Video published to Aubryn");
   assert.match(confirmation.body, /without Coach feedback/);
   assert.equal(confirmation.includedLabel, "Video only");
   assert.equal(confirmation.sessionIncludedLabel, "Session data included");
@@ -138,15 +138,7 @@ test("draft normalization never invents missing coach feedback", () => {
 
 test("structured recap schema requires only the simplified member-facing lesson fields", () => {
   assert.equal(lessonRecapJsonSchema.additionalProperties, false);
-  assert.deepEqual(lessonRecapJsonSchema.required, [
-    "lessonSummary",
-    "mainFocus",
-    "progressObserved",
-    "practiceNext",
-    "nextSessionGoal",
-    "confidence",
-    "needsCoachInput",
-  ]);
+  assert.deepEqual(lessonRecapJsonSchema.required, ["lessonSummary", "needsCoachInput"]);
   assert.equal(lessonRecapJsonSchema.properties.workedOn, undefined);
   assert.equal(lessonRecapJsonSchema.properties.keyIssue, undefined);
   assert.equal(lessonRecapJsonSchema.properties.memberFacingNotes, undefined);

@@ -77,7 +77,7 @@ export async function sendVideoNotification(
   }
 
   const runtime = getPlatformEnvironment();
-  const notePreview = video.memberFacingNotes || video.practiceAssignment || video.lessonSummary || "";
+  const notePreview = video.lessonSummary || "";
   const appBaseUrl = runtime.APP_BASE_URL?.replace(/\/$/, "") || new URL(request.url).origin;
   const loginToken = await createLoginToken({
     email: member.email,
@@ -95,7 +95,7 @@ export async function sendVideoNotification(
     <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;color:#10171F;line-height:1.6;">
       <p>Hi ${escapeHtml(member.firstName)},</p>
       <p>${coachName} uploaded a new lesson video for you: <strong>${escapeHtml(video.title)}</strong>.</p>
-      <p>Log in to watch it and review your coach notes.</p>
+      <p>Log in to watch it and read your approved Coach Lesson Summary.</p>
       ${noteBlock}
       <p style="margin:28px 0;">
         <a href="${escapeHtml(videoLink)}" style="display:inline-block;background:#10171F;color:#96cb39;text-decoration:none;padding:12px 18px;border-radius:6px;font-weight:700;">View your lesson video</a>

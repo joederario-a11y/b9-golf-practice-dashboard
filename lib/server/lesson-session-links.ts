@@ -244,6 +244,7 @@ export async function loadLessonSessionLinksForVideos(database: D1Database, vide
         attached.last_name AS attached_last_name,
         attached.email AS attached_email
        FROM lesson_session_links AS links
+       JOIN lesson_videos AS video ON video.id = links.video_id AND video.member_id = links.member_id
        LEFT JOIN users AS attached ON attached.id = links.attached_by_user_id
        WHERE links.video_id IN (${placeholders})
        ORDER BY links.is_primary DESC, links.created_at DESC`,

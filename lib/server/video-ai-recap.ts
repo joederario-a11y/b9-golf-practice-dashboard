@@ -1,3 +1,4 @@
+import { PRIVATE_LESSON_PREFIX, readPrivateLesson, studentRecap, lessonSessionMetrics } from "@/lib/lesson-summary-policy.mjs";
 import OpenAI from "openai";
 
 import {
@@ -31,6 +32,7 @@ import {
   ensurePlatformSchema,
   ensureUserDataOwnershipSchema,
   ensureVideoAiProcessingSchema,
+  ensureVideoVisualAnalysisSchema,
   getAssignedMemberIds,
   getOpenAIConfigurationIssue,
   getPlatformEnvironment,
@@ -87,6 +89,7 @@ type VideoRecapRow = {
   email_status: string;
   email_sent_at: string | null;
   email_failure_reason: string | null;
+  coach_private_notes: string;
   lesson_summary: string;
   worked_on: string;
   key_issue: string;
@@ -1389,24 +1392,22 @@ async function buildRecapContext(database: D1Database, video: VideoRecapRow, tra
         nextSessionGoal: video.next_session_goal,
       },
     },
-    linkedSession,
+    coachNotes: readPrivateLesson(video.coach_private_notes).privateCoachNote || "",
+    approvedVisualObservations: await loadApprovedVisualContext(database, video),
+    linkedSession: lessonSessionMetrics(linkedSession, video.club),
     transcript: transcriptText,
   };
 }
 
-async function generateRecapDraft(env: RecapEnv, database: D1Database, job: ProcessingJobRow, video: VideoRecapRow, transcript: { transcriptId: string; text: string }) {
-  await assertWorkflowCanContinue(database, job.id, video);
-  await markJob(database, job.id, { status: "generating_recap", step: "creating_mai_caddy_recap" });
-  await recordProcessingEvent(database, "recap_generation_started", job, "MAI Coach started generating a coach-review lesson recap.");
+async function generateSummaryFromInputs(env: RecapEnv, database: D1Database, video: VideoRecapRow, transcriptText: string) {
   const model = env.OPENAI_ANALYSIS_MODEL || env.OPENAI_MODEL || DEFAULT_VIDEO_RECAP_MODEL;
-  const normalizedDraft = transcriptLooksUsable(transcript.text)
-    ? await (async () => {
+  const context = await buildRecapContext(database, video, transcriptText);
+  if (!transcriptLooksUsable(transcriptText) && !context.coachNotes.trim() && !context.approvedVisualObservations.length) return emptyCoachInputDraft();
       const configurationIssue = getOpenAIConfigurationIssue(env);
       if (configurationIssue) {
         throw new RecapProcessingError(configurationIssue.code, configurationIssue.publicMessage);
       }
       const client = new OpenAI({ apiKey: env.OPENAI_API_KEY?.trim(), timeout: 45000 });
-      const context = await buildRecapContext(database, video, transcript.text);
       const response = await client.responses.create({
         input: buildLessonRecapInput(context),
         instructions: MAI_CADDY_CORE_INSTRUCTIONS,
@@ -1427,13 +1428,35 @@ async function generateRecapDraft(env: RecapEnv, database: D1Database, job: Proc
       const outputText = response.output_text?.trim();
       if (!outputText) throw new RecapProcessingError("empty_recap_response", "MAI Coach did not return a recap draft.");
       return normalizeLessonRecapDraft(JSON.parse(outputText) as unknown);
-    })()
-    : emptyCoachInputDraft();
+}
 
+async function loadApprovedVisualContext(database: D1Database, video: VideoRecapRow) {
+  // Reuse Coach-approved observations; never feed unreviewed visual guesses into guidance.
+  await ensureVideoVisualAnalysisSchema(database);
+  const row = await database.prepare("SELECT structured_result_json, id FROM video_visual_analyses WHERE video_id = ? AND member_id = ? ORDER BY created_at DESC LIMIT 1").bind(video.id, video.member_id).first<{ structured_result_json: string; id: string }>();
+  if (!row) return [];
+  const reviews = await database.prepare("SELECT observation_id FROM video_visual_observation_reviews WHERE analysis_id = ? AND review_status = 'include_in_recap'").bind(row.id).all<{ observation_id: string }>();
+  const ids = new Set(reviews.results.map(row => row.observation_id));
+  const result = safeJson(row.structured_result_json, {}) as { strengths?: Array<{ title?: string; explanation?: string }>; observations?: Array<{ title?: string; explanation?: string }>; priority?: { title?: string; explanation?: string } };
+  return [...(result.strengths || []).map((v,i) => ({...v,id: `strength-${i+1}`})), ...(result.observations || []).map((v,i) => ({...v,id: `observation-${i+1}`})), ...(result.priority ? [{...result.priority,id:"priority"}] : [])].filter(v => ids.has(v.id)).map(v => ({ title: v.title, explanation: v.explanation }));
+}
+
+async function generateRecapDraft(env: RecapEnv, database: D1Database, job: ProcessingJobRow, video: VideoRecapRow, transcript: { transcriptId: string; text: string }) {
+  await assertWorkflowCanContinue(database, job.id, video);
+  await markJob(database, job.id, { status: "generating_recap", step: "creating_mai_caddy_recap" });
+  await recordProcessingEvent(database, "recap_generation_started", job, "MAI Coach started generating a coach-review lesson recap.");
+  const model = env.OPENAI_ANALYSIS_MODEL || env.OPENAI_MODEL || DEFAULT_VIDEO_RECAP_MODEL;
+  const normalizedDraft = await generateSummaryFromInputs(env, database, video, transcript.text);
+
+  const ownedDraft = await database.prepare("SELECT id FROM video_lesson_recap_drafts WHERE video_id = ? AND is_current = 1 AND reviewed_by IS NOT NULL ORDER BY created_at DESC LIMIT 1").bind(video.id).first<{ id: string }>();
+  if (ownedDraft) {
+    await markJob(database, job.id, { status: "ready_for_review", step: "coach_edits_preserved" });
+    return ownedDraft.id;
+  }
   const status = normalizedDraft.needsCoachInput ? "needs_coach_input" : "ready_for_review";
   const draftId = crypto.randomUUID();
   await assertWorkflowCanContinue(database, job.id, video);
-  await database.prepare("UPDATE video_lesson_recap_drafts SET is_current = 0, status = 'superseded', updated_at = CURRENT_TIMESTAMP WHERE video_id = ? AND status NOT IN ('approved', 'published')")
+  await database.prepare("UPDATE video_lesson_recap_drafts SET is_current = 0, status = 'superseded', updated_at = CURRENT_TIMESTAMP WHERE video_id = ? AND reviewed_by IS NULL AND status NOT IN ('approved', 'published')")
     .bind(video.id)
     .run();
   await database
@@ -1444,7 +1467,7 @@ async function generateRecapDraft(env: RecapEnv, database: D1Database, job: Proc
         practice_assignment, recommended_drill, member_facing_notes, next_session_goal,
         progress_observed_json, metrics_mentioned_json, transcript_evidence_json,
         confidence, model, prompt_version, status, is_current, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN EXISTS (SELECT 1 FROM video_lesson_recap_drafts WHERE video_id = ? AND is_current = 1 AND reviewed_by IS NOT NULL) THEN 0 ELSE 1 END, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
     )
     .bind(
       draftId,
@@ -1469,6 +1492,7 @@ async function generateRecapDraft(env: RecapEnv, database: D1Database, job: Proc
       model,
       VIDEO_RECAP_PROMPT_VERSION,
       status,
+      video.id,
     )
     .run();
   await markJob(database, job.id, {
@@ -1557,7 +1581,7 @@ function serializeDraft(row: DraftRow | null) {
 }
 
 function serializeTranscript(row: TranscriptRow | null, includeText: boolean) {
-  if (!row) return null;
+  if (!row || !includeText) return null;
   return {
     createdAt: row.created_at,
     durationSeconds: row.duration_seconds,
@@ -1604,6 +1628,7 @@ export async function readVideoRecapState(identity: AuthIdentity, videoId: strin
     publicationStatus: video.publication_status,
   }, assignedMemberIds);
   if (!canReadApproved) throw new Response("You do not have access to this lesson recap.", { status: 403 });
+  if (!canReview) return Response.json(studentRecap(video));
   const job = await database
     .prepare("SELECT * FROM video_ai_processing_jobs WHERE video_id = ? ORDER BY created_at DESC LIMIT 1")
     .bind(video.id)
@@ -1658,6 +1683,16 @@ export async function updateVideoRecapState(identity: AuthIdentity, payload: Rec
   if (!canReviewVideoRecap(identity, { coachId: video.coach_id, memberId: video.member_id }, assignedMemberIds)) {
     throw new Response("You cannot edit this lesson recap.", { status: 403 });
   }
+  if (action === "generateSummary") {
+    const transcript = await loadCurrentTranscript(database, video);
+    const generated = await generateSummaryFromInputs(getPlatformEnvironment() as RecapEnv, database, video, transcript?.transcript_text || "");
+    const stored = PRIVATE_LESSON_PREFIX + JSON.stringify({ ...readPrivateLesson(video.coach_private_notes), lessonSummary: generated.lessonSummary, summarySource: "ai_draft" });
+    // Compare-and-swap: a concurrent Coach edit wins over a slow model response.
+    const saved = await database.prepare("UPDATE lesson_videos SET coach_private_notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND member_id = ? AND coach_private_notes = ?")
+      .bind(stored, video.id, video.member_id, video.coach_private_notes).run();
+    if (!saved.meta.changes) throw new Response("Coach edits changed while MAI was generating. Your edits were kept. Retry when ready.", { status: 409 });
+    return Response.json({ summary: generated.lessonSummary });
+  }
   const draft = await database
     .prepare("SELECT * FROM video_lesson_recap_drafts WHERE video_id = ? AND is_current = 1 ORDER BY created_at DESC LIMIT 1")
     .bind(video.id)
@@ -1678,7 +1713,7 @@ export async function updateVideoRecapState(identity: AuthIdentity, payload: Rec
         `UPDATE video_lesson_recap_drafts SET
           lesson_summary = ?, worked_on = ?, key_issue = ?, improvement = ?,
           practice_assignment = ?, recommended_drill = ?, member_facing_notes = ?,
-          next_session_goal = ?, status = 'ready_for_review', updated_at = CURRENT_TIMESTAMP
+          next_session_goal = ?, status = 'ready_for_review', reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
          WHERE id = ?`,
       )
       .bind(
@@ -1690,6 +1725,7 @@ export async function updateVideoRecapState(identity: AuthIdentity, payload: Rec
         text(payload.recommendedDrill),
         text(payload.memberFacingNotes),
         text(payload.nextSessionGoal),
+        identity.id,
         draft.id,
       )
       .run();

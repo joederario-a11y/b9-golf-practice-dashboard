@@ -800,6 +800,10 @@ export async function readVideoVisualAnalysisState(identity: AuthIdentity, video
   if (!video) throw new Response("Video not found.", { status: 404 });
   const assignedMemberIds = await getAssignedMemberIds(identity, database);
   const coachLed = await loadCoachRelationshipCount(database, text(video.member_id, 120)) > 0;
+  if (identity.role === "member") {
+    if (identity.id !== video.member_id || video.publication_status !== "Published") throw new Response("You do not have access to this lesson.", { status: 403 });
+    if (coachLed || video.uploaded_by_role !== "member") return Response.json({ analysis: null, canRequest: false, canReview: false, coachLed: true });
+  }
   let latest = await loadLatestVisualAnalysis(database, videoId);
   if (latest && !canReadVisualAnalysis(identity, {
     coachId: video.coach_id,

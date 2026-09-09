@@ -8,11 +8,11 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
-    "build:worker": "rm -rf dist && vinext build",
+    "build:worker": "node scripts/clean-build.mjs && vinext build",
     "preview:worker": "npm run build:worker && cd dist/server && wrangler dev --config wrangler.json --port 8787",
     "deploy:dry-run": "npm run build:worker && cd dist/server && wrangler deploy --config wrangler.json --dry-run --outdir ../../.wrangler/dry-run",
     "assert:deploy:dev": "node scripts/assert-deploy-source.mjs --environment dev",
-    "deploy:dev": "npm run assert:deploy:dev && rm -rf dist && vinext build && wrangler deploy --config wrangler.dev.jsonc",
+    "deploy:dev": "npm run assert:deploy:dev && node scripts/clean-build.mjs && vinext build && wrangler deploy --config wrangler.dev.jsonc",
     "migrate:dev": "wrangler d1 migrations apply DB --remote --config wrangler.dev.jsonc",
     "reset:dev-data": "node scripts/reset-dev-data.mjs",
     "deploy": "npm run build:worker && cd dist/server && wrangler deploy --config wrangler.json",
