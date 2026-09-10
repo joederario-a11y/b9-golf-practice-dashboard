@@ -15784,6 +15784,7 @@ function VideoAnnotationOverlay({
   onPointerDown,
   onPointerMove,
   onPointerUp,
+  onPointerCancel,
   selectedId,
 }: {
   annotations: VideoAnnotationObject[];
@@ -15791,6 +15792,7 @@ function VideoAnnotationOverlay({
   onPointerDown?: (event: React.PointerEvent<SVGSVGElement>) => void;
   onPointerMove?: (event: React.PointerEvent<SVGSVGElement>) => void;
   onPointerUp?: (event: React.PointerEvent<SVGSVGElement>) => void;
+  onPointerCancel?: (event: React.PointerEvent<SVGSVGElement>) => void;
   selectedId?: string | null;
 }) {
   const width = Math.max(1, frameSize.width);
@@ -15802,6 +15804,7 @@ function VideoAnnotationOverlay({
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
       role={onPointerDown ? "img" : undefined}
       viewBox={`0 0 ${width} ${height}`}
     >
@@ -16028,6 +16031,7 @@ function VideoAnnotationWorkspace({
   const [frameStyle, setFrameStyle] = useState<CSSProperties>({ inset: 0 });
   const [frameSize, setFrameSize] = useState({ height: 1, width: 1 });
   const [dragStart, setDragStart] = useState<VideoAnnotationPoint | null>(null);
+  const [dragEnd, setDragEnd] = useState<VideoAnnotationPoint | null>(null);
   const [freehandPoints, setFreehandPoints] = useState<VideoAnnotationPoint[]>([]);
   const [anglePoints, setAnglePoints] = useState<VideoAnnotationPoint[]>([]);
   const [savingState, setSavingState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
@@ -16150,6 +16154,8 @@ function VideoAnnotationWorkspace({
 
   function onPointerDown(event: React.PointerEvent<SVGSVGElement>) {
     if (previewMode) return;
+    if (event.button !== 0) return;
+    videoRef.current?.pause();
     const point = normalizeVideoPoint(event);
     event.currentTarget.setPointerCapture(event.pointerId);
     if (tool === "select") {
@@ -16188,12 +16194,15 @@ function VideoAnnotationWorkspace({
       return;
     }
     setDragStart(point);
+    setDragEnd(point);
     if (tool === "freehand") setFreehandPoints([point]);
   }
 
   function onPointerMove(event: React.PointerEvent<SVGSVGElement>) {
-    if (!dragStart || tool !== "freehand" || previewMode) return;
+    if (!dragStart || previewMode) return;
     const point = normalizeVideoPoint(event);
+    setDragEnd(point);
+    if (tool !== "freehand") return;
     setFreehandPoints((current) => {
       const last = current[current.length - 1];
       if (last && Math.hypot(last.x - point.x, last.y - point.y) < 0.008) return current;
@@ -16224,6 +16233,13 @@ function VideoAnnotationWorkspace({
       ]);
     }
     setDragStart(null);
+    setDragEnd(null);
+    setFreehandPoints([]);
+  }
+
+  function cancelDrawing() {
+    setDragStart(null);
+    setDragEnd(null);
     setFreehandPoints([]);
   }
 
@@ -16247,6 +16263,7 @@ function VideoAnnotationWorkspace({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.target instanceof HTMLElement && (event.target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName))) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z" && event.shiftKey) {
         event.preventDefault();
         redo();
@@ -16258,6 +16275,7 @@ function VideoAnnotationWorkspace({
         applyAnnotations(annotations.filter((annotation) => annotation.id !== selectedId));
         setSelectedId(null);
       } else if (event.key === "Escape") {
+        cancelDrawing();
         setSelectedId(null);
         setAnglePoints([]);
       }
@@ -16268,9 +16286,13 @@ function VideoAnnotationWorkspace({
 
   const selected = annotations.find((annotation) => annotation.id === selectedId) ?? null;
   const visibleAnnotations = previewMode && !showAll ? [] : (showAll ? annotations : visibleVideoAnnotationsAt(annotations, currentTimeMs) as VideoAnnotationObject[]);
+  const drawingPreview = !previewMode && dragStart && dragEnd
+    ? { ...makeAnnotation(tool, dragStart, dragEnd, { color, currentTimeMs, labelText, strokeWidth }), id: "drawing-preview",
+        ...(tool === "freehand" ? { geometry: { points: freehandPoints } } : {}) }
+    : null;
 
   return (
-    <div className="video-modal-overlay annotation-modal-overlay">
+    <div className="annotation-inline-editor">
       <section className="video-annotation-workspace">
         <header className="video-annotation-header">
           <div>
@@ -16281,7 +16303,7 @@ function VideoAnnotationWorkspace({
           <div className="button-row">
             <button className="secondary-action" onClick={() => setPreviewMode((current) => !current)} type="button">{previewMode ? "Return to Editing" : "Preview as Student"}</button>
             <button className="primary-action" onClick={() => void saveDraft()} type="button">Save Markups</button>
-            <button className="secondary-action" onClick={onClose} type="button">Done</button>
+            <button className="secondary-action" onClick={() => { if (!dirty) onClose(); else void saveDraft(false).then((saved) => { if (saved) onClose(); }); }} type="button">Done</button>
           </div>
         </header>
         <div className="video-annotation-layout">
@@ -16304,11 +16326,12 @@ function VideoAnnotationWorkspace({
               />
               <div className="video-annotation-frame editable-frame" style={frameStyle}>
                 <VideoAnnotationOverlay
-                  annotations={visibleAnnotations}
+                  annotations={drawingPreview ? [...visibleAnnotations, drawingPreview] : visibleAnnotations}
                   frameSize={frameSize}
                   onPointerDown={onPointerDown}
                   onPointerMove={onPointerMove}
                   onPointerUp={onPointerUp}
+                  onPointerCancel={cancelDrawing}
                   selectedId={selectedId}
                 />
               </div>
@@ -18749,6 +18772,13 @@ function VideoDetailView({
           />
           {playbackMessage ? (
             <VideoPlaybackUnavailable message={playbackMessage} />
+          ) : showAnnotationWorkspace && canManageMarkups ? (
+            <VideoAnnotationWorkspace
+              annotationState={annotationState}
+              onClose={() => setShowAnnotationWorkspace(false)}
+              onStateChange={setAnnotationState}
+              video={video}
+            />
           ) : (
             <AnnotatedLessonVideoPlayer
               annotations={publishedAnnotations}
@@ -18876,14 +18906,6 @@ function VideoDetailView({
             ))}
           </div>
         </section>
-      )}
-      {showAnnotationWorkspace && canManageMarkups && (
-        <VideoAnnotationWorkspace
-          annotationState={annotationState}
-          onClose={() => setShowAnnotationWorkspace(false)}
-          onStateChange={setAnnotationState}
-          video={video}
-        />
       )}
     </section>
   );

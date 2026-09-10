@@ -13457,6 +13457,29 @@ input::file-selector-button {
   box-shadow: 0 30px 90px rgba(0, 0, 0, 0.52);
 }
 
+.annotation-inline-editor {
+  min-width: 0;
+}
+
+.annotation-inline-editor .video-annotation-workspace {
+  width: 100%;
+  margin: 0;
+  box-shadow: none;
+}
+
+.annotation-inline-editor .video-annotation-header {
+  flex-wrap: wrap;
+}
+
+.annotation-inline-editor .video-annotation-header h2 {
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.annotation-inline-editor .video-annotation-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .video-annotation-header,
 .annotation-timeline-row,
 .annotation-list-heading {
