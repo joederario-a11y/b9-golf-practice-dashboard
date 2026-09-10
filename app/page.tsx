@@ -1,6 +1,7 @@
 "use client";
 
 import { lessonSessionMetrics, privateLessonSummary } from "@/lib/lesson-summary-policy.mjs";
+import { startCoachWalkthrough, walkthroughDraftMetadata, canFillWalkthroughSummary } from "@/lib/coach-walkthrough.mjs";
 
 import { type CSSProperties, type FormEvent, type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { MaiCoachLogoCompact, MaiCoachLogoFull, MaiCoachLogoMark } from "@/components/brand/mai-coach-logo";
@@ -16009,14 +16010,18 @@ function makeAnnotation(tool: VideoAnnotationTool, start: VideoAnnotationPoint, 
   };
 }
 
+type CoachWalkthroughRecording = { video: File; audio: File; duration: number };
+
 function VideoAnnotationWorkspace({
   annotationState,
   onClose,
+  onNarrationReady,
   onStateChange,
   video,
 }: {
   annotationState: VideoAnnotationState | null;
   onClose: () => void;
+  onNarrationReady?: (recording: CoachWalkthroughRecording) => Promise<void>;
   onStateChange: (state: VideoAnnotationState) => void;
   video: VideoLibraryItem;
 }) {
@@ -16041,6 +16046,48 @@ function VideoAnnotationWorkspace({
   const [undoStack, setUndoStack] = useState<VideoAnnotationObject[][]>([]);
   const [redoStack, setRedoStack] = useState<VideoAnnotationObject[][]>([]);
   const [dirty, setDirty] = useState(false);
+  const [recordingStatus, setRecordingStatus] = useState<"idle" | "requesting" | "recording" | "ready" | "uploading">("idle");
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [recording, setRecording] = useState<CoachWalkthroughRecording | null>(null);
+  const [recordingUrl, setRecordingUrl] = useState("");
+  const recorderRef = useRef<{ stop: () => void; cancel: () => void } | null>(null);
+  const captureAnnotations = useRef<VideoAnnotationObject[]>([]);
+  const captureWidth = useRef(1);
+  const mountedRef = useRef(true);
+
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; recorderRef.current?.cancel(); }; }, []);
+  useEffect(() => {
+    if (!recording) { setRecordingUrl(""); return; }
+    const url = URL.createObjectURL(recording.video);
+    setRecordingUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [recording]);
+
+  async function recordWalkthrough() {
+    if (recordingStatus !== "idle") return;
+    setRecordingStatus("requesting"); setMessage(""); setRecordingSeconds(0);
+    try {
+      const session = await startCoachWalkthrough({
+        video: videoRef.current,
+        getAnnotations: () => captureAnnotations.current,
+        getDisplayWidth: () => captureWidth.current,
+        onTick: (seconds: number) => { if (mountedRef.current) setRecordingSeconds(seconds); },
+        onStopped: (result: CoachWalkthroughRecording) => { if (mountedRef.current) { setRecording(result); setRecordingStatus("ready"); setMessage("Preview your narration, then save it as a private lesson draft for MAI and Coach review."); } },
+        onFailure: (reason: string) => { if (mountedRef.current) { setRecordingStatus("idle"); setMessage(reason); } },
+      });
+      if (!mountedRef.current) { session.cancel(); return; }
+      recorderRef.current = session;
+      setRecordingStatus("recording");
+      setMessage("Recording your microphone and walkthrough. Play, pause, scrub, and draw. Original audio is muted. Recording stops after 10 minutes or if you leave this tab.");
+    } catch (error) { if (mountedRef.current) { setRecordingStatus("idle"); setMessage(error instanceof Error ? error.message : "Recording could not start."); } }
+  }
+
+  async function useWalkthrough() {
+    if (!recording || !onNarrationReady || recordingStatus !== "ready") return;
+    setRecordingStatus("uploading"); setMessage("Saving narrated lesson privately and preparing MAI audio analysis…");
+    try { await onNarrationReady(recording); }
+    catch (error) { if (mountedRef.current) { setRecordingStatus("ready"); setMessage(error instanceof Error ? error.message : "Upload failed. Your recording is still available to retry."); } }
+  }
 
   useEffect(() => {
     if (dirty) return;
@@ -16079,13 +16126,13 @@ function VideoAnnotationWorkspace({
 
   useEffect(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!dirty) return;
+      if (!dirty && recordingStatus === "idle") return;
       event.preventDefault();
       event.returnValue = "";
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [dirty]);
+  }, [dirty, recordingStatus]);
 
   function applyAnnotations(next: VideoAnnotationObject[]) {
     setUndoStack((current) => [...current.slice(-20), annotations]);
@@ -16290,6 +16337,8 @@ function VideoAnnotationWorkspace({
     ? { ...makeAnnotation(tool, dragStart, dragEnd, { color, currentTimeMs, labelText, strokeWidth }), id: "drawing-preview",
         ...(tool === "freehand" ? { geometry: { points: freehandPoints } } : {}) }
     : null;
+  captureAnnotations.current = drawingPreview ? [...visibleAnnotations, drawingPreview] : visibleAnnotations;
+  captureWidth.current = frameSize.width;
 
   return (
     <div className="annotation-inline-editor">
@@ -16303,9 +16352,24 @@ function VideoAnnotationWorkspace({
           <div className="button-row">
             <button className="secondary-action" onClick={() => setPreviewMode((current) => !current)} type="button">{previewMode ? "Return to Editing" : "Preview as Student"}</button>
             <button className="primary-action" onClick={() => void saveDraft()} type="button">Save Markups</button>
-            <button className="secondary-action" onClick={() => { if (!dirty) onClose(); else void saveDraft(false).then((saved) => { if (saved) onClose(); }); }} type="button">Done</button>
+            <button className="secondary-action" disabled={recordingStatus !== "idle"} onClick={() => { if (!dirty) onClose(); else void saveDraft(false).then((saved) => { if (saved) onClose(); }); }} type="button">Done</button>
           </div>
         </header>
+        {onNarrationReady && <section className="walkthrough-controls" aria-label="Coach narration">
+          <strong>Record Coach Walkthrough</strong>
+          <p>Talk while you play, pause, scrub, and draw. Your microphone replaces the original audio in the narrated version. The original lesson stays unchanged; the new version is private until you publish.</p>
+          <div className="button-row">
+            {recordingStatus === "idle" && <button className="primary-action" onClick={() => void recordWalkthrough()} type="button">Start Recording</button>}
+            {recordingStatus === "requesting" && <span role="status">Waiting for microphone permission…</span>}
+            {recordingStatus === "recording" && <><strong role="status">Recording · {formatVideoDuration(recordingSeconds)}</strong><button className="primary-action" onClick={() => recorderRef.current?.stop()} type="button">Stop Recording</button></>}
+            {(recordingStatus === "ready" || recordingStatus === "uploading") && <>
+              <button className="primary-action" disabled={recordingStatus === "uploading"} onClick={() => void useWalkthrough()} type="button">{recordingStatus === "uploading" ? "Saving narrated draft…" : "Use Recording & Draft Feedback"}</button>
+              <button className="secondary-action" disabled={recordingStatus === "uploading"} onClick={() => { setRecording(null); setRecordingStatus("idle"); setMessage(""); }} type="button">Discard Recording</button>
+              {recordingUrl && <a className="secondary-action" href={recordingUrl} download={recording?.video.name}>Download Recording</a>}
+            </>}
+          </div>
+          {recordingUrl && <video aria-label="Preview recorded walkthrough" className="video-player" controls playsInline src={recordingUrl} />}
+        </section>}
         <div className="video-annotation-layout">
           <main className="video-annotation-stage">
             <div className="annotation-video-shell">
@@ -18229,6 +18293,7 @@ function VideoVisualAnalysisPanel({
 }
 
 function VideoDetailView({
+  onNarrationReady,
   onBack,
   onDelete,
   onAddSessionData,
@@ -18244,6 +18309,7 @@ function VideoDetailView({
   video,
   viewerRole,
 }: {
+  onNarrationReady: (recording: CoachWalkthroughRecording, privateNotes: string) => Promise<void>;
   onBack: () => void;
   onDelete: () => void;
   onAddSessionData: () => void;
@@ -18494,11 +18560,13 @@ function VideoDetailView({
   }
 
   const applyAudioDraftToFeedback = useCallback((draft: VideoRecapDraft) => {
-    if (!window.confirm("Use this audio draft in the summary editor? This replaces the current text. Nothing will be published.")) return;
+    const emptyNarratedDraft = canFillWalkthroughSummary(video, coachFeedbackTouched, coachFeedbackFields.lessonSummary);
+    if (!emptyNarratedDraft && !window.confirm("Use this audio draft in the summary editor? This replaces the current text. Nothing will be published.")) return;
+    summaryEditVersion.current += 1;
     setCoachFeedbackTouched(true);
     setCoachFeedbackFields((current) => ({ ...current, lessonSummary: draft.lessonSummary }));
     setLessonWorkspaceMessage("Audio draft added. Review and Save Draft to keep it.");
-  }, []);
+  }, [video.tags, video.publicationStatus, coachFeedbackTouched, coachFeedbackFields.lessonSummary]);
 
   function coachFeedbackPatch(extra: Partial<VideoLibraryRecord> = {}): Partial<VideoLibraryRecord> {
     return {
@@ -18776,6 +18844,7 @@ function VideoDetailView({
             <VideoAnnotationWorkspace
               annotationState={annotationState}
               onClose={() => setShowAnnotationWorkspace(false)}
+              onNarrationReady={(recording) => onNarrationReady(recording, coachFeedbackFields.privateCoachNote)}
               onStateChange={setAnnotationState}
               video={video}
             />
@@ -18788,7 +18857,7 @@ function VideoDetailView({
           )}
           {canEditCoachNotes && (
             <LessonAudioAnalysisPanel
-              autoApplyDraft={false}
+              autoApplyDraft={canFillWalkthroughSummary(video, coachFeedbackTouched, coachFeedbackFields.lessonSummary)}
               onApplyDraft={applyAudioDraftToFeedback}
               video={video}
             />
@@ -19011,6 +19080,7 @@ function VideosView({
   );
   const [analyzeMySwing, setAnalyzeMySwing] = useState(true);
   const [uploadState, setUploadState] = useState<"idle" | "saving">("idle");
+  const walkthroughUploadRef = useRef<{ recording: CoachWalkthroughRecording; id: string } | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [sessionDataVideo, setSessionDataVideo] = useState<VideoLibraryItem | null>(null);
   const canUploadToMemberLibrary = canUploadFromMemberVideoLibrary({ authenticated, viewerRole });
@@ -19160,6 +19230,26 @@ function VideosView({
     groups[key] = [...(groups[key] ?? []), video];
     return groups;
   }, {});
+
+  async function saveNarratedWalkthrough(source: VideoLibraryItem, recording: CoachWalkthroughRecording, privateNotes: string) {
+    if (viewerRole !== "coach" && viewerRole !== "admin") throw new Error("Only a Coach or Admin can record a lesson walkthrough.");
+    const metadata = walkthroughDraftMetadata(source, privateNotes, recording.duration);
+    let upload = walkthroughUploadRef.current;
+    if (!upload || upload.recording !== recording) {
+      const created = await createVideoRecord(metadata, recording.video);
+      upload = { recording, id: created.id };
+      walkthroughUploadRef.current = upload;
+    }
+    // Attach microphone-only audio before video finalization starts the existing workflow.
+    await uploadVideoAsset(upload.id, recording.audio, "transcription-audio", () => undefined);
+    await uploadVideoAsset(upload.id, recording.video, "video", () => undefined);
+    const record = await finalizeVideoRecord(upload.id, metadata);
+    const item = createVideoLibraryItem(record);
+    setVideos((items) => [item, ...items.filter(existing => existing.id !== item.id)]);
+    walkthroughUploadRef.current = null;
+    setSelectedVideoId(item.id);
+    setLibraryMessage("Narrated lesson saved privately. MAI is preparing Coach Feedback. Review and publish when ready.");
+  }
 
   async function updateVideo(videoId: string, patch: Partial<VideoLibraryRecord>) {
     const current = videos.find((video) => video.id === videoId);
@@ -19444,6 +19534,7 @@ function VideosView({
       <>
         <VideoDetailView
           key={selectedVideo.id}
+          onNarrationReady={(recording, privateNotes) => saveNarratedWalkthrough(selectedVideo, recording, privateNotes)}
           onBack={() => setSelectedVideoId(null)}
           onAddSessionData={() => setSessionDataVideo(selectedVideo)}
           onDelete={() => void removeVideo(selectedVideo)}

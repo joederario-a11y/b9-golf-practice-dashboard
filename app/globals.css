@@ -13461,6 +13461,18 @@ input::file-selector-button {
   min-width: 0;
 }
 
+.walkthrough-controls {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+}
+
+.walkthrough-controls p { margin: 0; }
+.walkthrough-controls .button-row { flex-wrap: wrap; }
+.walkthrough-controls video { max-height: 420px; }
+
 .annotation-inline-editor .video-annotation-workspace {
   width: 100%;
   margin: 0;
