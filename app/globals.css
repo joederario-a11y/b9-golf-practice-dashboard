@@ -13604,8 +13604,8 @@ input::file-selector-button {
 }
 
 .annotation-action-row button[aria-pressed="true"] {
-  border-color: var(--accent);
-  background: var(--accent);
+  border-color: var(--green);
+  background: var(--green);
   color: #10170a;
 }
 
