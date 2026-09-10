@@ -16033,6 +16033,7 @@ function VideoAnnotationWorkspace({
   const [strokeWidth, setStrokeWidth] = useState(VIDEO_ANNOTATION_STROKES.medium);
   const [labelText, setLabelText] = useState("Pressure forward");
   const [currentTimeMs, setCurrentTimeMs] = useState(0);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [frameStyle, setFrameStyle] = useState<CSSProperties>({ inset: 0 });
   const [frameSize, setFrameSize] = useState({ height: 1, width: 1 });
   const [dragStart, setDragStart] = useState<VideoAnnotationPoint | null>(null);
@@ -16379,8 +16380,10 @@ function VideoAnnotationWorkspace({
                 controls
                 onLoadedMetadata={(event) => {
                   updateFrame();
+                  event.currentTarget.playbackRate = playbackSpeed;
                   setCurrentTimeMs(event.currentTarget.currentTime * 1000);
                 }}
+                onRateChange={(event) => setPlaybackSpeed(event.currentTarget.playbackRate)}
                 onSeeked={(event) => setCurrentTimeMs(event.currentTarget.currentTime * 1000)}
                 onTimeUpdate={(event) => setCurrentTimeMs(event.currentTarget.currentTime * 1000)}
                 playsInline
@@ -16403,6 +16406,21 @@ function VideoAnnotationWorkspace({
             <div className="annotation-timeline-row">
               <span>{formatAnnotationTime(currentTimeMs)}</span>
               <span>{savingState === "saving" ? "Saving..." : savingState === "saved" ? "Saved" : savingState === "failed" ? "Unable to save" : dirty ? "Unsaved changes" : "Ready"}</span>
+            </div>
+            <div className="annotation-action-row" role="group" aria-label="Swing playback speed">
+              <span>Playback speed</span>
+              {[0.25, 0.5, 0.75, 1].map((speed) => (
+                <button
+                  className="secondary-action compact-action"
+                  aria-pressed={playbackSpeed === speed}
+                  key={speed}
+                  onClick={() => {
+                    if (videoRef.current) videoRef.current.playbackRate = speed;
+                    setPlaybackSpeed(speed);
+                  }}
+                  type="button"
+                >{speed === 1 ? "1× Normal" : `${speed}×`}</button>
+              ))}
             </div>
             {message && <p className="annotation-status-message">{message}</p>}
           </main>

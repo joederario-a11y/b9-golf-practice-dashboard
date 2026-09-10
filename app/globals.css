@@ -13598,6 +13598,17 @@ input::file-selector-button {
   gap: 8px;
 }
 
+.annotation-action-row[aria-label="Swing playback speed"] {
+  align-items: center;
+  margin-top: 10px;
+}
+
+.annotation-action-row button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #10170a;
+}
+
 .annotation-list {
   display: grid;
   max-height: 320px;
