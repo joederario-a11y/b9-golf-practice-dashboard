@@ -11,6 +11,7 @@ import * as recapPolicy from "../lib/video-ai-recap-policy.mjs";
 import * as mediaPolicy from "../lib/video-media-processing-policy.mjs";
 import * as videoPolicy from "../lib/video-policy.mjs";
 import * as uploadPolicy from "../lib/video-upload-safety.mjs";
+import * as feedbackFormat from "../lib/lesson-feedback-format.mjs";
 
 const source = await readFile(new URL("../lib/server/video-ai-recap.ts", import.meta.url), "utf8");
 const platform = await readFile(new URL("../lib/server/platform.ts", import.meta.url), "utf8");
@@ -209,14 +210,15 @@ test("Student video boundary strips private, legacy, processing and newly-added 
 });
 
 const componentSource = page.slice(page.indexOf("function StudentLessonContent("), page.indexOf("function VideoComparisonView("));
-const renderCode = ts.transpileModule(componentSource + "\nexports.Component = StudentLessonContent;", { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+const feedbackSource = await readFile(new URL("../components/lesson-feedback.tsx", import.meta.url), "utf8");
+const renderCode = ts.transpileModule(feedbackSource + "\n" + componentSource + "\nexports.Component = StudentLessonContent;", { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
 const componentExports = {};
-new Function("require", "exports", "lessonSessionMetrics", "AnnotatedLessonVideoPlayer", renderCode)(() => jsx, componentExports, summary.lessonSessionMetrics, props => React.createElement("video", { controls: true, playsInline: true, src: props.src, "data-overlays": props.annotations.length }));
+new Function("require", "exports", "lessonSessionMetrics", "AnnotatedLessonVideoPlayer", renderCode)(name => name.includes("lesson-feedback-format") ? feedbackFormat : jsx, componentExports, summary.lessonSessionMetrics, props => React.createElement("video", { controls: true, playsInline: true, src: props.src, "data-overlays": props.annotations.length }));
 const render = (video, text = "", session) => renderToStaticMarkup(React.createElement(componentExports.Component, { video, summary: text, session, annotations: [{ id: "saved-markup" }] }));
 
 test("Student and preview shared renderer shows video, summary, mobile controls and saved overlays", () => {
   const html = render({ objectUrl: "/api/videos/media?videoId=lesson" }, "Coach-approved wording");
-  assert.match(html, /Lesson Video/); assert.match(html, /Coach Lesson Summary/); assert.match(html, /Coach-approved wording/);
+  assert.match(html, /Lesson Video/); assert.match(html, /Lesson Feedback/); assert.match(html, /Coach-approved wording/);
   assert.match(html, /controls/); assert.match(html, /playsInline/); assert.match(html, /data-overlays="1"/);
   for (const forbidden of ["Session Data", "What to Work On", "Progress", "Student Message", "Private Coach", "Practice Intelligence", "confidence", "transcript"]) assert.ok(!html.includes(forbidden), forbidden);
   assert.match(render({ objectUrl: "video" }), /Coach feedback is not available yet\./);

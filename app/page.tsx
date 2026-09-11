@@ -1,5 +1,6 @@
 "use client";
 
+import { LessonFeedback } from "@/components/lesson-feedback";
 import { lessonSessionMetrics, privateLessonSummary } from "@/lib/lesson-summary-policy.mjs";
 import { startCoachWalkthrough, walkthroughDraftMetadata, canFillWalkthroughSummary } from "@/lib/coach-walkthrough.mjs";
 
@@ -9038,7 +9039,7 @@ function CoachedStudentDashboardPriority({
               {mainFocus && <div><span>Main Focus</span><strong>{mainFocus}</strong></div>}
               <div>
                 <span>What {coachName} noticed</span>
-                <p className="coach-feedback-preview">{lessonSummary || latestLesson.improvement || "Coach feedback is being prepared."}</p>
+                <LessonFeedback text={lessonSummary || latestLesson.improvement || "Coach feedback is being prepared."} visibleBullets={3} />
               </div>
               {nextGoal && <div><span>Next Goal</span><p className="coach-feedback-preview">{nextGoal}</p></div>}
               <button className="secondary-action" onClick={() => onOpenLatestLesson(latestLesson.id)} type="button">View Full Feedback</button>
@@ -18821,7 +18822,7 @@ function VideoDetailView({
                   ? "This publishes the video and the Coach Lesson Summary you approved."
                   : "You have not added Coach feedback yet."}
               </p>
-              {publishPrompt === "withFeedback" && <p>{coachFeedbackFields.lessonSummary}</p>}
+              {publishPrompt === "withFeedback" && <LessonFeedback text={coachFeedbackFields.lessonSummary} />}
             </div>
             <div className="video-modal-actions">
               <span>{publishing ? `Publishing to ${memberFirstName}...` : "Ready when you are."}</span>
@@ -18949,9 +18950,14 @@ function VideoDetailView({
                       value={coachFeedbackFields.lessonSummary}
                       maxLength={4000}
                       onChange={(event) => updateFeedbackField("lessonSummary", event.target.value)}
-                      placeholder="Summarize what you told the Student and what changed during the lesson."
+                      placeholder={"What We Worked On\n- **Main focus:** What you practiced.\n\nKey Takeaways\n- One clear coaching cue.\n\nWhat to Remember\n- The cue to take into your next session."}
                     />
                   </label>
+                  <p className="lesson-feedback-editor-help">Aim for 3–6 bullets, with 1–2 short sentences each. Use **bold** for a key cue. Your wording stays authoritative.</p>
+                  {coachFeedbackFields.lessonSummary.trim() && <div className="lesson-feedback-editor-preview">
+                    <p className="eyebrow">Student note preview</p>
+                    <LessonFeedback text={coachFeedbackFields.lessonSummary} />
+                  </div>}
                 </section>
 
                 <label><span>Coach Notes</span><textarea maxLength={4000} value={coachFeedbackFields.privateCoachNote} onChange={(event) => updateFeedbackField("privateCoachNote", event.target.value)} placeholder="Private source notes for MAI" /></label>
@@ -19007,7 +19013,7 @@ function StudentLessonContent({ video, summary, session, annotations }: { video:
   const metrics = linked ? lessonSessionMetrics(session, video.club) : [];
   return <div className="student-lesson-content">
     <section className="panel"><h2>Lesson Video</h2><AnnotatedLessonVideoPlayer src={video.objectUrl} annotations={annotations} markupsVisible={true} /></section>
-    <section className="panel"><h2>Coach Lesson Summary</h2><p style={{ whiteSpace: "pre-wrap" }}>{summary || "Coach feedback is not available yet."}</p></section>
+    <section className="panel"><h2>Lesson Feedback</h2><LessonFeedback text={summary} /></section>
     {metrics.length > 0 && <section className="panel"><h2>Session Data</h2><dl>{metrics.map(([label, value]: string[]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></section>}
   </div>;
 }

@@ -1,0 +1,55 @@
+.lesson-feedback-notes.lesson-feedback-notes {
+  display: grid;
+  gap: 1.4rem;
+  max-width: 68ch;
+  min-width: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.lesson-feedback-group h3 {
+  margin: 0 0 .65rem;
+  color: var(--green);
+  font-size: .875rem;
+  font-weight: 750;
+  line-height: 1.4;
+}
+
+.lesson-feedback-group ul {
+  display: grid;
+  gap: .8rem;
+  margin: 0;
+  padding: 0 0 0 1.25rem;
+  list-style: disc outside;
+}
+
+.lesson-feedback-group li {
+  padding-left: .25rem;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.lesson-feedback-group li::marker { color: var(--green); }
+.lesson-feedback-notes .lesson-feedback-group strong { color: var(--ink); font-size: inherit; font-weight: 750; }
+.lesson-feedback-more { border-top: 1px solid var(--line); }
+.lesson-feedback-more summary {
+  min-height: 48px;
+  padding: .85rem 0;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: .9rem;
+  font-weight: 650;
+}
+.lesson-feedback-notes .lesson-feedback-more summary span { color: var(--muted); font: inherit; font-weight: 400; text-transform: none; }
+.lesson-feedback-more summary:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
+.lesson-feedback-more .lesson-feedback-group + .lesson-feedback-group { margin-top: 1.4rem; }
+.lesson-feedback-empty, .lesson-feedback-editor-help { color: var(--muted); line-height: 1.6; }
+.lesson-feedback-editor-help { margin: .75rem 0; font-size: .875rem; }
+.lesson-feedback-editor-preview { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+.lesson-feedback-editor-preview > .eyebrow { margin-bottom: 1rem; }
+
+@media (max-width: 600px) {
+  .lesson-feedback-notes { gap: 1.25rem; max-width: 100%; }
+  .lesson-feedback-group ul { gap: .9rem; }
+}
