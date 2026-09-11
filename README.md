@@ -38,6 +38,19 @@ Production deployment is configured through `wrangler.jsonc`.
 
 ## Lesson Video Delivery
 
+### Optional AI Swing Review
+
+In the coach's video detail view, **AI Swing Review** lets the coach select a
+1–6 second swing segment and choose **Analyze Swing Video**. The browser captures
+12 ordered frames, and the existing OpenAI integration returns strengths to
+reinforce, possible faults, a suggested priority, and any visibility limitations.
+This is sampled-frame feedback, not a measurement of swing mechanics.
+
+Visual review does not run automatically on upload. Students cannot request it.
+Suggestions remain private until the coach chooses to include them in lesson
+feedback. It uses the existing `OPENAI_API_KEY` and optional `OPENAI_VISION_MODEL`
+configuration. Failed reviews can be retried without uploading the video again.
+
 The coach-to-member loop uses the existing Cloudflare stack:
 
 - Email/password login, magic links, and invitation tokens identify the signed-in account.
@@ -278,6 +291,40 @@ npx wrangler secret put OPENAI_API_KEY
 npm run deploy:dry-run
 npm run deploy
 ```
+
+## Coach swing comparison
+
+Open a lesson on the Coach workspace, choose **Compare Swing**, and select an
+earlier playable lesson for the same Student. The comparison reuses the lesson
+player and annotation workspace. Each video has a precise timeline and estimated
+frame stepping; linked playback responds to either player's controls.
+In the annotation and comparison workspaces, click either frame button once for one step, or hold it to repeat
+slowly until release. Frame requests wait for decoding before continuing; a
+stalled or failed video offers **Reload video** without discarding markups.
+Slow motion is available at quarter, half, and three-quarter speed. Unlink the timelines to
+choose matching positions, then use **Align These Positions** and one-frame offset
+adjustments. On narrow screens the swings stack so the controls remain readable.
+
+**Auto Sync investigation:** stored video metadata includes duration, but no source
+frame-rate or per-frame presentation timestamp index. Browser frame extraction
+already supplies ordered JPEG samples and requested timestamps (up to 12 per
+1–6 second segment). The existing MAI comparison pipeline attempts to identify
+the top of the backswing in both sequences. This is the recommended initial
+alignment anchor for this sampling approach: impact and club-movement onset can
+fall between samples, and address/finish can be held for multiple frames. The
+result remains approximate, not a measured synchronization of every swing phase.
+The existing confidence and compatible-view checks reject uncertain alignment;
+the Coach can always align manually. Longer lessons require positioning both
+players near the intended swings before Auto Sync. Actual video frame indices
+cannot be promised without additional source timing metadata.
+
+Notes and AI suggestions remain private until the Coach approves and publishes
+them. Save a comparison draft and select **Include this saved comparison when I
+publish the lesson**, or publish the comparison directly after both lessons are
+published. Student rendering uses the published comparison snapshot and only the
+selected published markups. The existing annotation editor controls whether
+markups remain Coach-only drafts or are published for the Student. Onion-skin
+overlay is deferred.
 
 ## Learn More
 

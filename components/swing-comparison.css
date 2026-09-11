@@ -18,15 +18,22 @@
 .comparison-transport input[type=range], .review-controls input[type=range] { width: 100%; min-height: 36px; accent-color: #a3d52e; }
 .comparison-notes { display: grid; gap: 14px; border: 1px solid #34424e; border-radius: 12px; padding: 16px; min-width: 0; }
 .comparison-suggestion { display: grid; gap: 8px; padding: 10px 0; }
-.comparison-hint, .review-controls small, .comparison-transport small { font-size: 12px; color: #b4c4d0; }
+.comparison-hint, .review-controls small, .comparison-transport small { font-size: 0.875rem; color: #b4c4d0; }
+.swing-comparison details { display: grid; gap: 12px; border-top: 1px solid #34424e; padding-top: 16px; }
+.swing-comparison summary { cursor: pointer; font-weight: 600; min-height: 36px; }
+.comparison-transport { border-top: 1px solid #34424e; border-bottom: 1px solid #34424e; }
+.comparison-transport > label { justify-self: start; }
+.swing-comparison button[aria-pressed=true] { border-color: #a3d52e; box-shadow: inset 0 -2px #a3d52e; }
 .swing-comparison button, .review-controls button { min-height: 40px; }
+.frame-step-button { touch-action: none; user-select: none; -webkit-user-select: none; }
+.frame-step-button:active { border-color: #a3d52e; background: #29402b; }
 @media (max-width: 700px) {
-  .swing-pair { gap: 8px; }
+  .swing-pair { gap: 20px; grid-template-columns: minmax(0, 1fr); }
   .swing-pair h3 { font-size: 14px; }
-  .swing-pair p { font-size: 11px; overflow-wrap: anywhere; }
+  .swing-pair p { font-size: 0.875rem; overflow-wrap: anywhere; }
   .swing-pair .review-controls .button-row { display: grid; }
-  .swing-pair .review-controls button { padding: 6px; font-size: 11px; }
-  .swing-pair .review-controls output { font-size: 11px; }
+  .swing-pair .review-controls button { padding: 8px; font-size: 0.875rem; }
+  .swing-pair .review-controls output { font-size: 0.875rem; }
   .swing-pair .review-controls small { display: none; }
   .swing-comparison .button-row > button { flex: 1 1 auto; }
 }

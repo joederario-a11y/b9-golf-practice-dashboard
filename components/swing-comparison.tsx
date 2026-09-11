@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { captureSwingFrames } from "../lib/capture-swing-frames";
 import { comparisonRange } from "../lib/swing-comparison-policy.mjs";
+import { connectComparisonPlayback } from "../lib/comparison-playback.mjs";
+import { videoFrameSeeker } from "../lib/video-frame-seek.mjs";
+import { FrameStepButton } from "./frame-step-button";
 import { LessonFeedback } from "./lesson-feedback";
 import "./swing-comparison.css";
 
@@ -41,6 +44,7 @@ export function SwingComparison<T extends ComparisonVideo>({ video, student = fa
   const [layout, setLayout] = useState("both");
   const [linked, setLinked] = useState(true);
   const [fps, setFps] = useState(30);
+  const [speed, setSpeed] = useState(1);
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [readyCount, setReadyCount] = useState(0);
@@ -53,6 +57,7 @@ export function SwingComparison<T extends ComparisonVideo>({ video, student = fa
   const registerPlayer = useCallback((index: 0 | 1, element: HTMLVideoElement | null) => {
     players.current[index] = element; setReadyCount(n => n + 1);
     if (!element) return;
+    element.muted = true;
     const position = () => {
       const initial = positions.current[index] ?? Math.max(0, index ? offsetRef.current : -offsetRef.current);
       element.currentTime = Math.max(0, Math.min(element.duration || 0, initial));
@@ -93,33 +98,34 @@ export function SwingComparison<T extends ComparisonVideo>({ video, student = fa
   useEffect(() => {
     const [a, b] = players.current;
     if (!a || !b) return;
-    let animation = 0;
-    const stop = () => { if (!a.paused) a.pause(); if (!b.paused) b.pause(); setPlaying(false); cancelAnimationFrame(animation); };
-    const sync = () => {
-      setTime(a.currentTime);
-      if (linkedRef.current) {
-        const bounds = comparisonRange(a.duration, b.duration, offsetRef.current);
-        if (a.currentTime >= bounds.end - 0.01) { stop(); return; }
-        const target = a.currentTime + offsetRef.current;
-        if (Math.abs(b.currentTime - target) > 0.08) b.currentTime = Math.max(0, Math.min(b.duration, target));
-        b.playbackRate = a.playbackRate;
-      }
-      if (!a.paused) animation = requestAnimationFrame(sync);
-    };
-    const start = () => { cancelAnimationFrame(animation); setPlaying(true); animation = requestAnimationFrame(sync); };
-    const seek = () => setTime(a.currentTime);
-    a.addEventListener("play", start); a.addEventListener("pause", stop); a.addEventListener("ended", stop); b.addEventListener("ended", stop); a.addEventListener("seeked", seek);
-    return () => { cancelAnimationFrame(animation); a.removeEventListener("play", start); a.removeEventListener("pause", stop); a.removeEventListener("ended", stop); b.removeEventListener("ended", stop); a.removeEventListener("seeked", seek); };
+    return connectComparisonPlayback([a, b], {
+      isLinked: () => linkedRef.current, getOffset: () => offsetRef.current,
+      onTime: setTime, onPlaying: setPlaying, onError: setMessage,
+    });
   }, [readyCount]);
+  useEffect(() => {
+    players.current.forEach(element => { if (element && element.playbackRate !== speed) element.playbackRate = speed; });
+    const current = players.current[0];
+    const update = () => { if (current) setSpeed(current.playbackRate); };
+    current?.addEventListener("ratechange", update);
+    return () => current?.removeEventListener("ratechange", update);
+  }, [speed, readyCount]);
 
   function change(patch: Partial<Comparison>) { setDraft(current => ({ ...current, ...patch })); setDirty(true); }
+  function adjustOffset(offset: number) {
+    const bounds = comparisonRange(video.duration, previous?.duration || 0, offset);
+    if (bounds.end - bounds.start < 0.1) { setMessage("These positions do not overlap. Move closer to the swing or reset alignment."); return false; }
+    pause(); offsetRef.current = offset; linkedRef.current = true; setLinked(true);
+    change({ offset }); seek(players.current[0]?.currentTime ?? time, offset);
+    return true;
+  }
   function seek(value: number, offset = draft.offset) {
     pause();
     const [a, b] = players.current;
     const bounds = comparisonRange(video.duration, previous?.duration || 0, offset);
     const next = Math.max(bounds.start, Math.min(bounds.end, value));
     if (a) a.currentTime = next;
-    if (b && linked) b.currentTime = Math.max(0, next + offset);
+    if (b && linkedRef.current) b.currentTime = Math.max(0, next + offset);
     setTime(next);
   }
   async function play() {
@@ -131,6 +137,17 @@ export function SwingComparison<T extends ComparisonVideo>({ video, student = fa
     a.muted = true; b.muted = true;
     try { await Promise.all([a.play(), b.play()]); setPlaying(true); }
     catch { pause(); setMessage("Playback could not start. Check that both videos have loaded."); }
+  }
+  async function stepFrames(direction: number) {
+    const [a, b] = players.current;
+    if (!a || !b || busy) return false;
+    pause();
+    const next = Math.max(range.start, Math.min(range.end, a.currentTime + direction / fps));
+    if (Math.abs(next - a.currentTime) < 0.0001) return false;
+    try {
+      const results = await Promise.all([videoFrameSeeker(a).seek(next), linked ? videoFrameSeeker(b).seek(next + draft.offset) : Promise.resolve(true)]);
+      return results.every(Boolean);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "The next frame could not be loaded."); return false; }
   }
   async function save(action: string) {
     if (operationBusy.current) return;
@@ -156,7 +173,7 @@ export function SwingComparison<T extends ComparisonVideo>({ video, student = fa
       const result = await comparisonRequest(video.id, "analyze", { previousVideoId: previous.id, currentFrames, previousFrames }, controller.signal);
       if (controller.signal.aborted) return;
       setSuggestions(result.observations || []);
-      if (align && result.alignment) { change({ offset: result.alignment.offset }); setLinked(true); linkedRef.current = true; seek(result.alignment.currentTime, result.alignment.offset); if (players.current[1]) players.current[1].currentTime = result.alignment.currentTime + result.alignment.offset; setMessage("Aligned near the top of the backswing. Check both positions and fine-tune if needed."); }
+      if (align && result.alignment) { if (adjustOffset(result.alignment.offset)) { seek(result.alignment.currentTime, result.alignment.offset); setMessage("Aligned near the top of the backswing. Check both positions and fine-tune if needed."); } }
       else setMessage(align ? "Auto Sync wasn't confident. Pause each video at the same swing position, then choose Align These Positions." : result.observations?.length ? "Private suggestions are ready. Edit, accept, or ignore each one." : "There wasn't enough visible evidence to suggest a change.");
     } catch (error) { setMessage(controller.signal.aborted ? "Comparison review cancelled." : error instanceof Error ? error.message : "Swing review failed. Manual alignment is available."); }
     finally { operationBusy.current = false; setBusy(false); }
@@ -169,10 +186,10 @@ export function SwingComparison<T extends ComparisonVideo>({ video, student = fa
   if (student && !previous) return null;
   const notes = [draft.notes ? "What Changed\n" + draft.notes : "", draft.approvedObservations.length ? "Approved MAI observations\n" + draft.approvedObservations.map(item => "• " + item).join("\n") : ""].filter(Boolean).join("\n\n");
   return <section className="panel swing-comparison" aria-label="Swing comparison">
-    <div className="button-row"><h2>Swing Comparison</h2>{!student && <button className="text-button" type="button" onClick={() => { pause(); rememberPositions(); setOpen(false); }}>Close comparison</button>}</div>
+    <div className="button-row"><h2>Swing Comparison</h2>{!student && <button disabled={busy} className="text-button" type="button" onClick={() => { pause(); rememberPositions(); setOpen(false); }}>Close comparison</button>}</div>
     {!student && <label>Compare with a previous lesson<select disabled={busy || Boolean(editor)} value={draft.previousVideoId} onChange={event => {
       if (dirty && !window.confirm("Discard unsaved comparison edits and choose another lesson?")) return;
-      pause(); positions.current = [null, null]; if (players.current[0]) players.current[0].currentTime = 0; setDraft(empty(event.target.value)); setDirty(true); setSuggestions([]); setMessage("");
+      pause(); positions.current = [null, null]; offsetRef.current = 0; setTime(0); setLinked(true); linkedRef.current = true; if (players.current[0]) players.current[0].currentTime = 0; setDraft(empty(event.target.value)); setDirty(true); setSuggestions([]); setMessage("");
     }}><option value="">Choose a lesson</option>{lessons.map(item => <option value={item.id} key={item.id}>{new Date(item.uploadedAt).toLocaleDateString()} · {item.title}</option>)}</select></label>}
     {!student && !lessons.length && <p>No earlier playable lessons are available for this Student yet.</p>}
     {previous && <>
@@ -186,18 +203,30 @@ export function SwingComparison<T extends ComparisonVideo>({ video, student = fa
           </article>)}
         </div>
         <div className="comparison-transport" tabIndex={0} aria-label="Linked swing playback" onKeyDown={event => {
+          if (busy) return;
           if ((event.target as HTMLElement).matches("input,select,textarea,button")) return;
-          if (["ArrowLeft", "ArrowRight"].includes(event.key)) { event.preventDefault(); seek(time + (event.key === "ArrowLeft" ? -1 : 1) / fps); }
+          if (["ArrowLeft", "ArrowRight"].includes(event.key)) { event.preventDefault(); void stepFrames(event.key === "ArrowLeft" ? -1 : 1); }
           if (event.code === "Space") { event.preventDefault(); void play(); }
         }}>
           <input aria-label="Linked swing timeline" type="range" min={range.start} max={range.end || 0.01} step={1 / fps} value={Math.max(range.start, Math.min(time, range.end))} disabled={busy} onChange={event => seek(Number(event.target.value))} />
-          <div className="button-row"><button type="button" className="primary-action" disabled={busy || range.end <= range.start} onClick={() => void play()}>{playing ? "Pause both" : "Play both"}</button><button type="button" disabled={busy} onClick={() => seek(time - 1 / fps)}>← Previous frame</button><button type="button" disabled={busy} onClick={() => seek(time + 1 / fps)}>Next frame →</button><output>{time.toFixed(3)}s · Frame ≈ {Math.round(time * fps) + 1}</output><label>Step rate<select value={fps} onChange={event => setFps(Number(event.target.value))}>{[24, 25, 30, 50, 60, 120, 240].map(rate => <option key={rate} value={rate}>{rate} fps</option>)}</select></label></div>
-          <small>Frame count is approximate. Focus this control to use ← / → and Space. Comparison playback is muted.</small>
+          <div className="button-row"><button type="button" className="primary-action" disabled={busy || range.end <= range.start} onClick={() => void play()}>{playing ? "Pause both" : "Play both"}</button><FrameStepButton disabled={busy} onStep={() => stepFrames(-1)}>← Previous frame</FrameStepButton><FrameStepButton disabled={busy} onStep={() => stepFrames(1)}>Next frame →</FrameStepButton><output>{time.toFixed(3)}s · Frame ≈ {Math.round(time * fps) + 1}</output><label>Step rate<select value={fps} onChange={event => setFps(Number(event.target.value))}>{[24, 25, 30, 50, 60, 120, 240].map(rate => <option key={rate} value={rate}>{rate} fps</option>)}</select></label></div>
+          <small>Hold a frame button to move slowly; release to stop. Frame count is approximate. Focus this control to use ← / → and Space. Comparison playback is muted.</small>
+          <label>Playback speed<select aria-label="Both swings playback speed" value={speed} onChange={event => setSpeed(Number(event.target.value))}>{[0.25, 0.5, 0.75, 1].map(rate => <option key={rate} value={rate}>{rate}×</option>)}</select></label>
         </div>
         {!student && <>
           <div className="button-row"><button className="primary-action" type="button" disabled={busy} onClick={() => void analyze(true)}>Auto Sync Swings</button><button className="secondary-action" type="button" disabled={busy} onClick={() => void analyze(false)}>Suggest What Changed</button>{busy && <button type="button" onClick={() => operation.current?.abort()}>Cancel AI review</button>}</div>
           <p className="comparison-hint">For longer lessons, pause each video near the swing first. MAI checks a short sequence around those positions.</p>
-          <details><summary>Adjust alignment</summary><label><input type="checkbox" checked={linked} onChange={event => { pause(); setLinked(event.target.checked); }} />Link timelines</label><p>Pause at the same position in each video, then align them.</p><div className="button-row"><button type="button" disabled={busy} onClick={() => { const [a, b] = players.current; if (a && b) { pause(); change({ offset: b.currentTime - a.currentTime }); setLinked(true); } }}>Align These Positions</button><button type="button" disabled={busy} onClick={() => { change({ offset: draft.offset - 1 / fps }); seek(time, draft.offset - 1 / fps); }}>Previous earlier</button><button type="button" disabled={busy} onClick={() => { change({ offset: draft.offset + 1 / fps }); seek(time, draft.offset + 1 / fps); }}>Previous later</button><button type="button" disabled={busy} onClick={() => { change({ offset: 0 }); seek(0, 0); }}>Reset alignment</button><output>Offset {draft.offset.toFixed(3)}s</output></div></details>
+          <details><summary>Adjust alignment</summary>
+            <label><input disabled={busy} type="checkbox" checked={linked} onChange={event => { pause(); linkedRef.current = event.target.checked; setLinked(event.target.checked); if (event.target.checked) seek(time); }} />Link timelines</label>
+            <p>Unlink to pause each swing at the same position, such as the top of the backswing. Then align and fine-tune.</p>
+            <div className="button-row">
+              <button type="button" disabled={busy} onClick={() => { const [a, b] = players.current; if (a && b) adjustOffset(b.currentTime - a.currentTime); }}>Align These Positions</button>
+              <button type="button" disabled={busy} onClick={() => adjustOffset(draft.offset - 1 / fps)}>← Previous one frame earlier</button>
+              <button type="button" disabled={busy} onClick={() => adjustOffset(draft.offset + 1 / fps)}>Previous one frame later →</button>
+              <button type="button" disabled={busy} onClick={() => { adjustOffset(0); seek(0, 0); }}>Reset alignment</button>
+              <output>Offset {draft.offset.toFixed(3)}s</output>
+            </div>
+          </details>
         </>}
       </>}
       {!student && <fieldset disabled={busy} className="comparison-notes">
@@ -209,7 +238,8 @@ export function SwingComparison<T extends ComparisonVideo>({ video, student = fa
         <p>Draft edits stay private. Students see only published lessons, published markups you selected, and approved notes.</p>
         <div className="button-row"><button type="button" className="secondary-action" onClick={() => void save("save")}>Save Comparison Draft</button><button type="button" className="primary-action" disabled={video.publicationStatus !== "Published" || previous.publicationStatus !== "Published"} onClick={() => void save("publish")}>{published ? "Update Published Comparison" : "Publish Comparison"}</button>{published && <button type="button" onClick={() => void save("unpublish")}>Make comparison private</button>}</div>
         {video.publicationStatus !== "Published" && <small>Save the comparison with the checkbox above, then publish the lesson.</small>}
-        <small>{dirty ? "Unsaved comparison edits" : "Comparison saved"}</small>
+        {previous.publicationStatus !== "Published" && <small>Publish the previous lesson before sharing this comparison with the Student.</small>}
+        <small>{dirty ? "Unsaved comparison edits" : exists ? "Comparison saved" : "No comparison saved yet"}</small>
       </fieldset>}
       {student && notes && <LessonFeedback text={notes} />}
     </>}

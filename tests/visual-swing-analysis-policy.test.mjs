@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  visualSwingFrameTimes,
+  validateVisualSwingFrames,
   canReadVisualAnalysis,
   canRequestVisualAnalysis,
   canReviewVisualAnalysis,
@@ -84,15 +86,15 @@ test("member visual access requires a published ready parent lesson", () => {
   assert.equal(canReadVisualAnalysis({ id: "member-1", role: "member" }, { ...baseVideo, uploadStatus: "pending" }, analysis, []), false);
 });
 
-test("self-guided member analysis is member-visible and defaults to included findings", () => {
+test("students cannot request analysis and all new analyses require coach review", () => {
   const video = {
     memberId: "member-1",
     uploadedByRole: "member",
   };
 
-  assert.equal(shouldRequestVisualAnalysisProcessing({ role: "member" }, undefined), true);
-  assert.equal(canRequestVisualAnalysis({ id: "member-1", role: "member" }, video, []), true);
-  assert.equal(visualAnalysisInitialVisibility({ role: "member" }, false), "ready_for_member");
+  assert.equal(shouldRequestVisualAnalysisProcessing({ role: "member" }, undefined), false);
+  assert.equal(canRequestVisualAnalysis({ id: "member-1", role: "member" }, video, []), false);
+  assert.equal(visualAnalysisInitialVisibility({ role: "member" }, false), "ready_for_coach_review");
   assert.equal(defaultReviewStatusForObservation({}, false), "include_in_recap");
 });
 
@@ -169,8 +171,8 @@ test("server pipeline preserves video upload while retrying visual analysis only
   const source = await readFile(new URL("../lib/server/video-visual-analysis.ts", import.meta.url), "utf8");
 
   assert.match(source, /processPendingVideoVisualAnalysisAfterUpload/);
-  assert.match(source, /thumbnail_storage_path/);
-  assert.match(source, /representative_frame_unavailable/);
+  assert.match(source, /validateVisualSwingFrames/);
+  assert.match(source, /swing_frames_required/);
   assert.match(source, /media_hash = \?/);
   assert.match(source, /action === "retry"/);
 });
@@ -185,4 +187,38 @@ test("visual publication requires a valid published parent lesson and archive re
   assert.match(visualSource, /published_to_member_at = NULL/);
   assert.match(videoRouteSource, /retireMemberVisibleVisualAnalysisForLesson/);
   assert.match(videoRouteSource, /publicationStatus !== "Published"/);
+});
+
+
+test("visual review is explicitly opt-in, including development environments", () => {
+  for (const role of ["coach", "admin"]) {
+    assert.equal(shouldRequestVisualAnalysisProcessing({ role }, undefined, { defaultEnabledInDev: true }), false);
+    assert.equal(shouldRequestVisualAnalysisProcessing({ role }, false), false);
+    assert.equal(shouldRequestVisualAnalysisProcessing({ role }, true), true);
+  }
+  assert.equal(shouldRequestVisualAnalysisProcessing({ role: "member" }, true), false);
+  assert.equal(canRequestVisualAnalysis({ role: "coach", id: "other" }, { memberId: "student", coachId: "coach" }, []), false);
+  assert.equal(canRequestVisualAnalysis({ role: "coach", id: "coach" }, { memberId: "student", uploadedByRole: "member" }, ["student"]), true);
+});
+
+test("swing sampling covers the selected segment and stays inside the video", () => {
+  const times = visualSwingFrameTimes(10, 2, 3);
+  assert.equal(times.length, 12);
+  assert.equal(times[0], 2);
+  assert.equal(times.at(-1), 5);
+  assert.ok(visualSwingFrameTimes(4, 2, 3).at(-1) < 4);
+  for (const values of [[0, 0, 3], [10, -1, 3], [10, 10, 3], [10, 0, 7], [10, 9.9, 3], [NaN, 0, 3]]) {
+    assert.throws(() => visualSwingFrameTimes(...values));
+  }
+});
+
+test("frame validation rejects oversized, unordered and out-of-video input", () => {
+  const frames = visualSwingFrameTimes(10).map((timestampSeconds) => ({ timestampSeconds, base64: "/9j/AA==" }));
+  assert.equal(validateVisualSwingFrames(frames, 10).length, 12);
+  assert.throws(() => validateVisualSwingFrames(frames.slice(0, 3), 10));
+  assert.throws(() => validateVisualSwingFrames([...frames, frames[0]], 10));
+  assert.throws(() => validateVisualSwingFrames([...frames].reverse(), 10));
+  assert.throws(() => validateVisualSwingFrames(frames, 1));
+  assert.throws(() => validateVisualSwingFrames(frames.map((frame) => ({ ...frame, base64: "https://example.com/frame.jpg" })), 10));
+  assert.throws(() => validateVisualSwingFrames(frames.map((frame) => ({ ...frame, base64: "/9j/" + "A".repeat(400000) })), 10));
 });
