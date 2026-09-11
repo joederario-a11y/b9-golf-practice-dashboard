@@ -1,6 +1,7 @@
 "use client";
 
 import { LessonFeedback } from "@/components/lesson-feedback";
+import { CoachStudentRoster } from "@/components/coach-student-roster";
 import { lessonSessionMetrics, privateLessonSummary } from "@/lib/lesson-summary-policy.mjs";
 import { startCoachWalkthrough, walkthroughDraftMetadata, canFillWalkthroughSummary } from "@/lib/coach-walkthrough.mjs";
 
@@ -8672,8 +8673,7 @@ export default function Home() {
           )}
         </nav>
         <div className="rail-footer">
-          <span>Total Balls Struck</span>
-          <strong>{ballCountLabel}</strong>
+          {accountUser?.role !== "coach" && <><span>Total Balls Struck</span><strong>{ballCountLabel}</strong></>}
           {showDevBuildInfo && (
             <small className="dev-build-marker">Dev build: {APP_BUILD_INFO.shortCommit}</small>
           )}
@@ -8685,7 +8685,7 @@ export default function Home() {
           <div>
             <p className="eyebrow">{activeTab === "dashboard" ? "Swing analytics" : "MAI Coach"}</p>
             <h1>{activeTab === "dashboard" ? "Performance Review" : activeNavItem?.label}</h1>
-            <p className="page-description">{PAGE_DESCRIPTIONS[activeTab]}</p>
+            <p className="page-description">{activeTab === "coach" && accountUser?.role === "coach" ? "Your Students and their lessons, all in one place." : PAGE_DESCRIPTIONS[activeTab]}</p>
           </div>
           <div className="topbar-actions" aria-label="Session controls">
             <div className={cls("account-pill", accountMode)}>
@@ -8704,9 +8704,9 @@ export default function Home() {
                 Log in
               </button>
             )}
-            <button className="icon-button" title="Refresh analysis" onClick={() => setSessions([...sessions])}>
+            {!(activeTab === "coach" && accountUser?.role === "coach") && <button className="icon-button" title="Refresh analysis" onClick={() => setSessions([...sessions])}>
               ↻
-            </button>
+            </button>}
             {!(accountMode === "user" && (
               accountUser?.role === "coach" ||
               (accountUser?.role === "member" && memberExperienceMode !== "independent")
@@ -12424,7 +12424,7 @@ function CoachView({
 
   return (
     <section className="view-stack">
-      <header className="coach-workspace-header">
+      {viewerRole !== "coach" && <header className="coach-workspace-header">
         <div>
           <p className="eyebrow">{viewerRole === "admin" ? "Admin workspace" : "Coach workspace"}</p>
           <h2>
@@ -12444,9 +12444,9 @@ function CoachView({
           <button className={coachSection === "assistant" ? "active" : ""} onClick={() => setCoachSection("assistant")}>AI Coach</button>
           <button className={coachSection === "video-tools" ? "active" : ""} onClick={() => setCoachSection("video-tools")}>Coach Tools</button>
         </div>
-      </header>
+      </header>}
 
-      {coachSection === "video-tools" ? (
+      {coachSection === "video-tools" || viewerRole === "coach" ? (
         viewerRole === "user" ? (
           <section className="panel coach-access-panel">
             <span className="coach-access-icon" aria-hidden="true">▶</span>
@@ -12574,6 +12574,9 @@ function CoachVideoWorkspace({
   const [videos, setVideos] = useState<VideoLibraryItem[]>([]);
   const [loadingMembers, setLoadingMembers] = useState(true);
   const [loadingVideos, setLoadingVideos] = useState(true);
+  const [rosterError, setRosterError] = useState("");
+  const [rosterLessonsError, setRosterLessonsError] = useState("");
+  const [rosterReload, setRosterReload] = useState(0);
   const [showAddMember, setShowAddMember] = useState(false);
   const [addMemberMode, setAddMemberMode] = useState<"manual" | "first-member" | "lesson-upload">("manual");
   const [memberSaveState, setMemberSaveState] = useState<"idle" | "saving">("idle");
@@ -12731,7 +12734,7 @@ function CoachVideoWorkspace({
     hasMembers: hasUploadableMembers,
     selectedMemberId,
   });
-  const shouldRenderUploadPanel = loadingMembers || (
+  const shouldRenderUploadPanel = !loadingMembers && (
     hasUploadableMembers &&
     (showUploadPanel || Boolean(editingVideoId) || Boolean(uploadResult) || saveState === "saving")
   );
@@ -12826,19 +12829,28 @@ function CoachVideoWorkspace({
       };
     }
 
-    Promise.all([
-      readVideoLibrary(),
+    setLoadingMembers(true);
+    setLoadingVideos(true);
+    setRosterError("");
+    setRosterLessonsError("");
+    void readVideoLibrary().then(records => {
+      if (!cancelled) setVideos(records.map(record => createVideoLibraryItem(record)));
+    }).catch(() => {
+      if (!cancelled) {
+        setRosterLessonsError("Lesson status could not be loaded.");
+        if (viewerRole !== "coach") setWorkspaceMessage("Lesson status could not be loaded.");
+      }
+    }).finally(() => { if (!cancelled) setLoadingVideos(false); });
+    void (
       fetch("/api/members", { cache: "no-store" }).then(async (response) => {
         const payload = await response.json() as MembersResponsePayload;
         if (!response.ok) throw new Error(payload.error ?? "Members could not be loaded.");
         return payload;
-      }),
-    ])
-      .then(([records, membersPayload]) => {
+      })
+    )
+      .then((membersPayload) => {
         if (cancelled) return;
-        const items = records.map((record) => createVideoLibraryItem(record));
         const loadedMembers = applyCoachMembersPayload(membersPayload);
-        setVideos(items);
         setWorkspaceMessage(
           loadedMembers.length
             ? `${loadedMembers.length} ${loadedMembers.length === 1 ? "member" : "members"} ready.`
@@ -12846,22 +12858,26 @@ function CoachVideoWorkspace({
         );
       })
       .catch((error) => {
-        if (!cancelled) setWorkspaceMessage(error instanceof Error ? error.message : "Video storage is unavailable.");
+        if (!cancelled) {
+          const message = error instanceof Error ? error.message : "Students could not be loaded.";
+          setRosterError(message);
+          if (viewerRole !== "coach") setWorkspaceMessage(message);
+        }
       })
       .finally(() => {
         if (!cancelled) {
           setLoadingMembers(false);
-          setLoadingVideos(false);
         }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [authenticated]);
+  }, [authenticated, rosterReload]);
 
   useEffect(() => {
     if (firstMemberOnboardingOpenedRef.current) return;
+    if (rosterError) return;
     if (!shouldOpenFirstMemberOnboarding({
       accountRole: accountUser?.role,
       activeMemberCount,
@@ -12877,7 +12893,7 @@ function CoachVideoWorkspace({
     setMemberInviteRecovery(null);
     setShowAddMember(true);
     setWorkspaceMessage("Start building your roster by inviting your first golfer to MAI Coach.");
-  }, [accountUser?.role, activeMemberCount, authenticated, firstMemberOnboardingStatus, loadingMembers, viewerRole]);
+  }, [accountUser?.role, activeMemberCount, authenticated, firstMemberOnboardingStatus, loadingMembers, viewerRole, rosterError]);
 
   useEffect(() => {
     if (saveState !== "saving" && !uploadResult) return undefined;
@@ -14219,7 +14235,21 @@ function CoachVideoWorkspace({
 
   return (
     <div className="coach-video-workspace">
-      <section className="coach-dashboard-overview">
+      {viewerRole === "coach" && <CoachStudentRoster
+        members={members} videos={videos} loading={loadingMembers} loadingLessons={loadingVideos}
+        error={rosterError} lessonsError={rosterLessonsError} disabled={!authenticated || saveState === "saving"}
+        onAdd={() => openAddMemberDialog("lesson-upload")}
+        onRetry={() => setRosterReload(value => value + 1)}
+        onView={member => onOpenMemberVideos(member.id, member.name)}
+        onUpload={student => {
+          const member = members.find(item => item.id === student.id);
+          if (!member) return;
+          openLessonUpload("quick");
+          chooseMember(member);
+        }}
+        avatar={member => <CoachAvatar coach={member} />}
+      />}
+      {viewerRole !== "coach" && <section className="coach-dashboard-overview">
         <div>
           <p className="eyebrow">Coach dashboard</p>
           <h3>Lesson video delivery</h3>
@@ -14291,9 +14321,9 @@ function CoachVideoWorkspace({
             )}
           </div>
         )}
-      </section>
+      </section>}
 
-      {!loadingMembers && coachDashboardActions.showPrimaryAddMember && (
+      {!loadingMembers && viewerRole !== "coach" && coachDashboardActions.showPrimaryAddMember && (
         <section className="coach-first-member-card">
           <div className="coach-first-member-copy">
             <p className="eyebrow">Start here</p>
@@ -14351,6 +14381,10 @@ function CoachVideoWorkspace({
             </span>
           </div>
           <div className="coach-upload-heading-actions">
+            {viewerRole === "coach" && <button className="text-button" disabled={saveState === "saving"} onClick={() => {
+              resetWorkflow();
+              document.getElementById("coach-roster-title")?.scrollIntoView({ behavior: "smooth", block: "start" });
+            }} type="button">Back to My Students</button>}
             {!isGuidedUpload && (
               <button className="secondary-action compact-action" onClick={() => openLessonUpload("guided")} type="button">
                 Use Guided Upload
@@ -14656,7 +14690,7 @@ function CoachVideoWorkspace({
       </section>
       )}
 
-      <section className="coach-video-management">
+      {viewerRole !== "coach" && <section className="coach-video-management">
         <div className="coach-management-heading">
           <div><p className="eyebrow">Video management</p><h3>Coach uploads</h3></div>
           <span>{loadingVideos ? "Loading..." : `${managedVideos.length} ${managedVideos.length === 1 ? "video" : "videos"}`}</span>
@@ -14779,7 +14813,7 @@ function CoachVideoWorkspace({
             <p>Published videos and drafts will appear here with delivery and viewed status.</p>
           </div>
         )}
-      </section>
+      </section>}
 
       {recapReviewVideo && (
         <AiLessonRecapReviewModal

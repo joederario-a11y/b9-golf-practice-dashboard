@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "../components/lesson-feedback.css";
+@import "../components/coach-student-roster.css";
 
 :root {
   color-scheme: dark;
