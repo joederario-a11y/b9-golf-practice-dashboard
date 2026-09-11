@@ -11,7 +11,17 @@ import {
   mediaProbeResultFromBytes,
   normalizeVideoProcessingSafeCode,
   transcriptionSizeLimitForMedia,
+  videoProcessingFailure,
 } from "../lib/video-media-processing-policy.mjs";
+
+test("workflow-serialized insufficient speech remains a completed no-audio result", () => {
+  const message = "MAI Coach could not detect enough coach voiceover in this video.";
+  for (const error of [new Error(message), { message }, { code: "transcript_empty", message }]) {
+    assert.deepEqual(videoProcessingFailure(error), { code: "transcript_empty", message, status: "no_usable_audio" });
+  }
+  assert.equal(videoProcessingFailure(new Error("Cloudflare Media could not normalize this video for transcription.")).status, "failed");
+  assert.equal(videoProcessingFailure({ code: "processing_cancelled", message: "Cancelled" }).status, "cancelled");
+});
 
 test("WebM media probe detects VP8 video and Opus audio track hints", () => {
   const bytes = new TextEncoder().encode("webm\u0000CodecID\u0000V_VP8\u0000CodecID\u0000A_OPUS");

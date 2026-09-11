@@ -25,6 +25,7 @@ import {
   mediaProbeHasAudio,
   normalizeVideoProcessingSafeCode,
   transcriptionSizeLimitForMedia,
+  videoProcessingFailure,
 } from "@/lib/video-media-processing-policy.mjs";
 import { MAI_CADDY_CORE_INSTRUCTIONS } from "@/lib/mai-caddy-instructions";
 import { sendVideoNotification } from "@/lib/server/video-email";
@@ -342,10 +343,7 @@ function combineRecapText(...values: unknown[]) {
 }
 
 function jobError(error: unknown) {
-  const message = error instanceof Error ? error.message : "Video AI processing failed.";
-  const code = normalizeVideoProcessingSafeCode(error instanceof RecapProcessingError ? error.code : "processing_failed", message);
-  const status = error instanceof RecapProcessingError ? error.status : "failed";
-  return { code, message, status };
+  return videoProcessingFailure(error && typeof error === "object" ? error : {});
 }
 
 function systemActor(coachId?: string | null): AuthIdentity {
@@ -795,22 +793,34 @@ async function processExistingAudioForRecap(database: D1Database, identity: Auth
     summary: `${identity.displayName} requested MAI Coach processing from pre-extracted private lesson audio.`,
     targetUserId: video.member_id,
   });
-  const transcript = await transcribeAudio(runtime, database, job, video, {
-    paths: [normalizedAudioPath],
-    source: "media_chunks",
-  });
-  const draftId = await generateRecapDraft(runtime, database, job, video, transcript);
-  await recordActivity({
-    action: "recap_revision_created",
-    actor: systemActor(job.coach_id),
-    database,
-    entityId: draftId,
-    entityType: "video_lesson_recap_draft",
-    memberId: video.member_id,
-    metadata: { processingJobId: job.id, transcriptId: transcript.transcriptId, videoId: video.id },
-    summary: "MAI Coach created a coach-review lesson recap draft.",
-    targetUserId: video.member_id,
-  });
+  try {
+    const transcript = await transcribeAudio(runtime, database, job, video, {
+      paths: [normalizedAudioPath],
+      source: "media_chunks",
+    });
+    const draftId = await generateRecapDraft(runtime, database, job, video, transcript);
+    await recordActivity({
+      action: "recap_revision_created",
+      actor: systemActor(job.coach_id),
+      database,
+      entityId: draftId,
+      entityType: "video_lesson_recap_draft",
+      memberId: video.member_id,
+      metadata: { processingJobId: job.id, transcriptId: transcript.transcriptId, videoId: video.id },
+      summary: "MAI Coach created a coach-review lesson recap draft.",
+      targetUserId: video.member_id,
+    });
+  } catch (error) {
+    const safe = jobError(error);
+    await cleanupTemporaryAudio(runtime, database, job.id);
+    await markJob(database, job.id, {
+      errorCode: safe.code,
+      errorMessage: safe.message,
+      status: safe.status,
+      step: safe.status === "no_usable_audio" ? "no_usable_audio_detected" : "failed",
+    });
+    if (safe.status !== "no_usable_audio") throw error;
+  }
 }
 
 async function markJob(database: D1Database, jobId: string, values: {

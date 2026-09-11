@@ -5316,7 +5316,7 @@ function coachAudioStatusCopy(state: VideoRecapState | null, video: VideoLibrary
     return {
       action: "",
       code: "no_audio",
-      copy: "Add Coach feedback manually or replace the video if the lesson should contain audio.",
+      copy: "Audio analysis finished, but there was not enough clear coaching speech for a recap. You can add Coach feedback manually.",
       title: "No usable Coach audio detected",
     };
   }
@@ -17240,7 +17240,7 @@ function LessonAudioAnalysisPanel({
     transcript: state?.transcript,
     video,
   });
-  const showAudioProgress = audioStatus.code !== "not_requested";
+  const showAudioProgress = audioStatus.code !== "not_requested" && audioStatus.code !== "no_audio";
   const proof = transcriptProof(state?.transcript);
   const hasDraft = Boolean(state?.draft);
   const canRetry = audioStatus.action === "Retry Audio Analysis" || audioStatus.action === "Analyze Coach Audio";
@@ -17366,7 +17366,11 @@ function LessonAudioAnalysisPanel({
         });
       }
       setState(payload);
-      setMessage(action === "regenerateRecapFromTranscript" ? "Lesson-summary processing started." : "Audio analysis was queued.");
+      setMessage(payload.job?.status === "no_usable_audio"
+        ? "Audio analysis finished. There was not enough clear coaching speech for a recap."
+        : payload.job?.status === "ready_for_review"
+          ? "Audio analysis finished. Review the lesson summary."
+          : action === "regenerateRecapFromTranscript" ? "Lesson-summary processing started." : "Audio analysis was queued.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Audio analysis could not be started.");
     } finally {

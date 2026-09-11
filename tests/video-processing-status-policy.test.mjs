@@ -12,6 +12,18 @@ import {
 
 const ownerId = "member-liam";
 
+test("legacy insufficient-speech errors do not look stuck extracting audio", () => {
+  for (const job of [
+    { status: "failed", currentStep: "failed", errorCode: "processing_failed", errorMessage: "MAI Coach could not detect enough coach voiceover in this video." },
+    { status: "no_usable_audio", currentStep: "no_usable_audio_detected", errorCode: "transcript_empty" },
+  ]) {
+    const input = { job, video: { uploadStatus: "ready" } };
+    assert.equal(lessonProcessingStatus(input).safeFailureCode, "no_usable_audio");
+    assert.equal(lessonProcessingSteps(input).find(step => step.key === "audio").state, "done");
+    assert.doesNotMatch(lessonProcessingProgress(input).currentLabel, /Extracting audio/);
+  }
+});
+
 test("coach-facing libraries show assigned draft and pending processing videos", () => {
   const video = {
     ownerId,
