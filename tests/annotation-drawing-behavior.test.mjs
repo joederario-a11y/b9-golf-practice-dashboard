@@ -23,6 +23,7 @@ function harness() {
   const deps = {
     useState, useRef: initial => useState(() => ({ current: initial }))[0],
     useEffect: () => {}, useCallback: fn => fn, VideoAnnotationOverlay: Overlay,
+    VideoReviewControls: () => null,
     VIDEO_ANNOTATION_COLORS: { red: "red" }, VIDEO_ANNOTATION_STROKES: { medium: 3 },
     normalizeVideoPoint: event => event.point, cls: (...values) => values.filter(Boolean).join(" "),
     formatAnnotationTime: String, annotationLabel: a => a.type,

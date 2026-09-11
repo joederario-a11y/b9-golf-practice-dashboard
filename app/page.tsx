@@ -2,6 +2,8 @@
 
 import { LessonFeedback } from "@/components/lesson-feedback";
 import { CoachStudentRoster } from "@/components/coach-student-roster";
+import { SwingComparison, comparisonRequest } from "@/components/swing-comparison";
+import { VideoReviewControls } from "@/components/video-review-controls";
 import { lessonSessionMetrics, privateLessonSummary } from "@/lib/lesson-summary-policy.mjs";
 import { startCoachWalkthrough, walkthroughDraftMetadata, canFillWalkthroughSummary } from "@/lib/coach-walkthrough.mjs";
 
@@ -15937,6 +15939,8 @@ function AnnotatedLessonVideoPlayer({
   onTimeChange,
   src,
   title = "Lesson video",
+  onReady,
+  precise = false,
 }: {
   annotations: VideoAnnotationObject[];
   className?: string;
@@ -15944,8 +15948,12 @@ function AnnotatedLessonVideoPlayer({
   onTimeChange?: (timeMs: number) => void;
   src: string;
   title?: string;
+  onReady?: (element: HTMLVideoElement | null) => void;
+  precise?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [reviewVideo, setReviewVideo] = useState<HTMLVideoElement | null>(null);
+  useEffect(() => { onReady?.(videoRef.current); return () => onReady?.(null); }, [onReady]);
   const [frameStyle, setFrameStyle] = useState<CSSProperties>({ inset: 0 });
   const [frameSize, setFrameSize] = useState({ height: 1, width: 1 });
   const [timeMs, setTimeMs] = useState(0);
@@ -15981,6 +15989,7 @@ function AnnotatedLessonVideoPlayer({
         controls
         onLoadedMetadata={(event) => {
           updateFrame();
+          setReviewVideo(event.currentTarget);
           event.currentTarget.muted = false;
           if (event.currentTarget.volume === 0) event.currentTarget.volume = 1;
         }}
@@ -16004,6 +16013,7 @@ function AnnotatedLessonVideoPlayer({
           <VideoAnnotationOverlay annotations={visibleAnnotations} frameSize={frameSize} />
         </div>
       )}
+      {precise && <VideoReviewControls video={reviewVideo} />}
     </div>
   );
 }
@@ -16053,14 +16063,17 @@ function VideoAnnotationWorkspace({
   onNarrationReady,
   onStateChange,
   video,
+  initialTime = 0,
 }: {
   annotationState: VideoAnnotationState | null;
   onClose: () => void;
   onNarrationReady?: (recording: CoachWalkthroughRecording) => Promise<void>;
   onStateChange: (state: VideoAnnotationState) => void;
   video: VideoLibraryItem;
+  initialTime?: number;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [reviewVideo, setReviewVideo] = useState<HTMLVideoElement | null>(null);
   const [annotations, setAnnotations] = useState<VideoAnnotationObject[]>(() => annotationState?.draft?.annotations ?? annotationState?.published?.annotations ?? []);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [tool, setTool] = useState<VideoAnnotationTool>("line");
@@ -16415,6 +16428,8 @@ function VideoAnnotationWorkspace({
                 controls
                 onLoadedMetadata={(event) => {
                   updateFrame();
+                  setReviewVideo(event.currentTarget);
+                  event.currentTarget.currentTime = Math.min(initialTime, event.currentTarget.duration || 0);
                   event.currentTarget.playbackRate = playbackSpeed;
                   setCurrentTimeMs(event.currentTarget.currentTime * 1000);
                 }}
@@ -16442,6 +16457,7 @@ function VideoAnnotationWorkspace({
               <span>{formatAnnotationTime(currentTimeMs)}</span>
               <span>{savingState === "saving" ? "Saving..." : savingState === "saved" ? "Saved" : savingState === "failed" ? "Unable to save" : dirty ? "Unsaved changes" : "Ready"}</span>
             </div>
+            <VideoReviewControls video={reviewVideo} />
             <div className="annotation-action-row" role="group" aria-label="Swing playback speed">
               <span>Playback speed</span>
               {[0.25, 0.5, 0.75, 1].map((speed) => (
@@ -18694,6 +18710,9 @@ function VideoDetailView({
         updatedAt: new Date().toISOString(),
       });
       const publishedRecord = await onPublish(patch);
+      let comparisonWarning = "";
+      try { await comparisonRequest(video.id, "publishWithLesson"); }
+      catch { comparisonWarning = "The lesson published, but the comparison could not be shared. Open Compare Swing and publish it again."; }
       const publishedVideo = publishedRecord ?? { ...stripVideoObjectUrl(video), ...patch };
       const confirmation = buildLessonPublishConfirmation({
         includedRecap: feedbackExists,
@@ -18719,6 +18738,7 @@ function VideoDetailView({
           afterEmailStatus: (publishedVideo as VideoLibraryRecord).emailStatus,
         }),
       }));
+      if (comparisonWarning) { setPublishConfirmation(null); setLessonWorkspaceMessage(comparisonWarning); }
     } catch (error) {
       setLessonWorkspaceMessage(error instanceof Error ? error.message : "This lesson could not be published.");
     } finally {
@@ -18909,6 +18929,7 @@ function VideoDetailView({
             <AnnotatedLessonVideoPlayer
               annotations={publishedAnnotations}
               markupsVisible={showCoachMarkups}
+              precise
               src={video.objectUrl}
             />
           )}
@@ -18966,6 +18987,11 @@ function VideoDetailView({
             </div>
           )}
         </section>
+
+        <LessonSwingComparison video={video} onApproveNotes={(text) => {
+          setCoachFeedbackFields(current => ({ ...current, lessonSummary: combineRecapText(current.lessonSummary, text) }));
+          setCoachFeedbackTouched(true); summaryEditVersion.current += 1;
+        }} />
 
         <section className="panel coach-feedback-section">
           {canEditCoachNotes ? (
@@ -19047,46 +19073,63 @@ function StudentLessonContent({ video, summary, session, annotations }: { video:
   const metrics = linked ? lessonSessionMetrics(session, video.club) : [];
   return <div className="student-lesson-content">
     <section className="panel"><h2>Lesson Video</h2><AnnotatedLessonVideoPlayer src={video.objectUrl} annotations={annotations} markupsVisible={true} /></section>
+    <LessonSwingComparison video={video} student />
     <section className="panel"><h2>Lesson Feedback</h2><LessonFeedback text={summary} /></section>
     {metrics.length > 0 && <section className="panel"><h2>Session Data</h2><dl>{metrics.map(([label, value]: string[]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></section>}
   </div>;
 }
 
+async function loadComparisonLessons(memberId: string) {
+  return (await readVideoLibrary(memberId)).map(createVideoLibraryItem);
+}
+
+function ComparisonLessonPlayer({ video, onReady, student, showMarkups }: { video: VideoLibraryItem; onReady: (element: HTMLVideoElement | null) => void; student: boolean; showMarkups: boolean }) {
+  const [state, setState] = useState<VideoAnnotationState | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    readVideoAnnotations(video.id).then(value => { if (active) setState(value); }).catch(() => { if (active) setError("Markups could not be loaded."); });
+    return () => { active = false; };
+  }, [video.id]);
+  return <><AnnotatedLessonVideoPlayer onReady={onReady} src={video.objectUrl} title={video.title} annotations={(student ? state?.published?.annotations : state?.draft?.annotations ?? state?.published?.annotations) ?? []} markupsVisible={!student || showMarkups} />{error && <p role="status">{error}</p>}</>;
+}
+
+function ComparisonAnnotationEditor({ video, onDone, initialTime }: { video: VideoLibraryItem; onDone: () => void; initialTime: number }) {
+  const [state, setState] = useState<VideoAnnotationState | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    readVideoAnnotations(video.id).then(value => { if (active) setState(value); }).catch(() => { if (active) setError("Markups could not be loaded. Close and try again."); });
+    return () => { active = false; };
+  }, [video.id]);
+  if (!state) return <div role="status">{error || "Loading markup tools…"}<button type="button" onClick={onDone}>Back to comparison</button></div>;
+  return <VideoAnnotationWorkspace video={video} initialTime={initialTime} annotationState={state} onStateChange={setState} onClose={onDone} />;
+}
+
+function LessonSwingComparison({ video, student = false, onApproveNotes, initiallyOpen = false, initialPreviousVideoId = "" }: { video: VideoLibraryItem; student?: boolean; onApproveNotes?: (text: string) => void; initiallyOpen?: boolean; initialPreviousVideoId?: string }) {
+  return <SwingComparison video={video} student={student} initiallyOpen={initiallyOpen} initialPreviousVideoId={initialPreviousVideoId} loadVideos={loadComparisonLessons} onApproveNotes={onApproveNotes}
+    renderPlayer={(item, ready, markups) => <ComparisonLessonPlayer video={item} onReady={ready} student={student} showMarkups={markups} />}
+    renderEditor={(item, done, initialTime) => <ComparisonAnnotationEditor key={item.id} video={item} initialTime={initialTime} onDone={done} />} />;
+}
+
 function VideoComparisonView({
   onBack,
-  sessions,
   videos,
+  viewerRole,
 }: {
   onBack: () => void;
-  sessions: Session[];
   videos: VideoLibraryItem[];
+  viewerRole: VideoViewerRole;
 }) {
+  const ordered = [...videos].sort((a, b) => Date.parse(b.uploadedAt) - Date.parse(a.uploadedAt));
   return (
     <section className="view-stack">
       <div className="video-detail-toolbar">
         <button className="secondary-action" onClick={onBack}>← Back to library</button>
         <span className="comparison-label">Side-by-side progress review</span>
       </div>
-      <div className="video-comparison-grid">
-        {videos.map((video) => {
-          const session = sessions.find((item) => item.id === video.sessionId);
-          const playbackMessage = videoUploadPlaybackMessage(video);
-          return (
-            <article className="panel comparison-video" key={video.id}>
-              {playbackMessage ? (
-                <VideoPlaybackUnavailable message={playbackMessage} />
-              ) : (
-                <LessonVideoPlayer src={video.objectUrl} />
-              )}
-              <div>
-                <span>{formatVideoUploadDate(video.uploadedAt)} · {video.type}</span>
-                <h2>{video.title}</h2>
-              </div>
-              <VideoSessionMetrics session={session} video={video} />
-            </article>
-          );
-        })}
-      </div>
+      <LessonSwingComparison video={ordered[0]} initiallyOpen initialPreviousVideoId={ordered[1]?.id} student={viewerRole === "user"} />
+      {viewerRole === "user" && <p>Only comparisons published by your Coach appear here.</p>}
     </section>
   );
 }
@@ -19635,7 +19678,7 @@ function VideosView({
   }
 
   if (showComparison && comparisonVideos.length === 2) {
-    return <VideoComparisonView onBack={() => setShowComparison(false)} sessions={librarySessions} videos={comparisonVideos} />;
+    return <VideoComparisonView onBack={() => setShowComparison(false)} videos={comparisonVideos} viewerRole={viewerRole} />;
   }
 
   return (

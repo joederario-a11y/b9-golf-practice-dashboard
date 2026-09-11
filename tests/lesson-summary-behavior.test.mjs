@@ -209,11 +209,11 @@ test("Student video boundary strips private, legacy, processing and newly-added 
   assert.equal(summary.studentLessonVideo({ publicationStatus: "Draft", lessonSummary: "unapproved" }).lessonSummary, "");
 });
 
-const componentSource = page.slice(page.indexOf("function StudentLessonContent("), page.indexOf("function VideoComparisonView("));
+const componentSource = page.slice(page.indexOf("function StudentLessonContent("), page.indexOf("async function loadComparisonLessons("));
 const feedbackSource = await readFile(new URL("../components/lesson-feedback.tsx", import.meta.url), "utf8");
 const renderCode = ts.transpileModule(feedbackSource + "\n" + componentSource + "\nexports.Component = StudentLessonContent;", { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
 const componentExports = {};
-new Function("require", "exports", "lessonSessionMetrics", "AnnotatedLessonVideoPlayer", renderCode)(name => name.includes("lesson-feedback-format") ? feedbackFormat : jsx, componentExports, summary.lessonSessionMetrics, props => React.createElement("video", { controls: true, playsInline: true, src: props.src, "data-overlays": props.annotations.length }));
+new Function("require", "exports", "lessonSessionMetrics", "AnnotatedLessonVideoPlayer", "LessonSwingComparison", renderCode)(name => name.includes("lesson-feedback-format") ? feedbackFormat : jsx, componentExports, summary.lessonSessionMetrics, props => React.createElement("video", { controls: true, playsInline: true, src: props.src, "data-overlays": props.annotations.length }), () => null);
 const render = (video, text = "", session) => renderToStaticMarkup(React.createElement(componentExports.Component, { video, summary: text, session, annotations: [{ id: "saved-markup" }] }));
 
 test("Student and preview shared renderer shows video, summary, mobile controls and saved overlays", () => {
